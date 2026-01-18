@@ -5,8 +5,12 @@ module.exports = async function handler(req, res) {
   }
 
   const body = req.body ?? {};
+  const authHeader = req.headers.authorization || "";
+  const token = authHeader.startsWith("Bearer ")
+    ? authHeader.slice("Bearer ".length).trim()
+    : "";
   const missing = [];
-  if (!body.api_key) missing.push("api_key");
+  if (!token) missing.push("authorization");
   if (!body.agent_id) missing.push("agent_id");
 
   if (missing.length > 0) {
