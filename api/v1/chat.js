@@ -21,5 +21,10 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  if (token !== "key_333") {
+    res.status(401).json({ error: "Invalid API key" });
+    return;
+  }
+
   res.status(200).json(body);
 };
