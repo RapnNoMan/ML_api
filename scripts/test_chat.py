@@ -12,7 +12,7 @@ def main():
         "chat_id": 99,
         "source": "api test",
     }
-    headers = {"Authorization": "Bearer key_123123"}
+    headers = {"Authorization": "Bearer key_333"}
 
     response = requests.post(url, json=payload, headers=headers, timeout=30)
     print(f"{response.status_code} {response.reason}")

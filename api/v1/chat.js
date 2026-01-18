@@ -26,5 +26,11 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  res.status(200).json(body);
+  const envTest = process.env.ENVTEST || "";
+  const envValue = envTest === "2t" ? "2t" : "not working";
+
+  res.status(200).json({
+    ...body,
+    env: envValue,
+  });
 };
