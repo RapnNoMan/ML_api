@@ -5,7 +5,7 @@ import requests
 
 
 def main():
-    url = "https://www.api.mitsolab.com/v1/chat"
+    url = "https://api.mitsolab.com/v1/chat"
     payload = {
         "agent_id": "AGENT123",
         "anon_id": 1,

@@ -1,3 +1,5 @@
+const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
+
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
     res.status(405).json({ error: "Method not allowed" });
@@ -21,16 +23,18 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  if (token !== "key_333") {
-    res.status(401).json({ error: "Invalid API key" });
+  const validation = await validateAgentKey({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId: body.agent_id,
+    token,
+  });
+  if (!validation.ok) {
+    res.status(validation.status).json({ error: validation.error });
     return;
   }
 
-  const envTest = process.env.ENVTEST || "";
-  const envValue = envTest === "2t" ? "2t" : "not working";
-
   res.status(200).json({
     ...body,
-    env: envValue,
   });
 };
