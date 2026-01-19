@@ -26,17 +26,10 @@ async function checkMessageCap({ supId, supKey, agentId }) {
   }
 
   if (!response.ok) {
-    let details = "";
-    try {
-      details = await response.text();
-    } catch (error) {
-      details = "";
-    }
     return {
       ok: false,
       status: 502,
       error: "Usage service unavailable",
-      details,
     };
   }
 
@@ -48,7 +41,6 @@ async function checkMessageCap({ supId, supKey, agentId }) {
       ok: false,
       status: 502,
       error: "Usage service unavailable",
-      details: "Invalid JSON response",
     };
   }
 

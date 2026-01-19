@@ -41,10 +41,7 @@ module.exports = async function handler(req, res) {
     agentId: body.agent_id,
   });
   if (!usageCheck.ok) {
-    res.status(usageCheck.status).json({
-      error: usageCheck.error,
-      details: usageCheck.details || undefined,
-    });
+    res.status(usageCheck.status).json({ error: usageCheck.error });
     return;
   }
 
