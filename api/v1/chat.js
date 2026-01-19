@@ -1,4 +1,5 @@
 const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
+const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -34,7 +35,17 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const usageCheck = await checkMessageCap({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId: body.agent_id,
+  });
+  if (!usageCheck.ok) {
+    res.status(usageCheck.status).json({ error: usageCheck.error });
+    return;
+  }
+
   res.status(200).json({
-    ...body,
+    message: "You have enough messages",
   });
 };

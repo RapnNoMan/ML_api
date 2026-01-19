@@ -20,22 +20,34 @@ async function validateAgentKey({ supId, supKey, agentId, token }) {
       },
     });
   } catch (error) {
-    return { ok: false, status: 502, error: "Auth lookup failed" };
+    return {
+      ok: false,
+      status: 502,
+      error: "Authorization service unavailable",
+    };
   }
 
   if (!response.ok) {
-    return { ok: false, status: 502, error: "Auth lookup failed" };
+    return {
+      ok: false,
+      status: 502,
+      error: "Authorization service unavailable",
+    };
   }
 
   let rows;
   try {
     rows = await response.json();
   } catch (error) {
-    return { ok: false, status: 502, error: "Auth lookup failed" };
+    return {
+      ok: false,
+      status: 502,
+      error: "Authorization service unavailable",
+    };
   }
 
   if (!Array.isArray(rows) || rows.length === 0) {
-    return { ok: false, status: 401, error: "Invalid API key" };
+    return { ok: false, status: 401, error: "Agent not found" };
   }
 
   const storedKey = rows[0]?.key || "";
