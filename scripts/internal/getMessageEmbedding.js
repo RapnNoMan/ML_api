@@ -12,7 +12,7 @@ async function getMessageEmbedding({ apiKey, message }) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "text-embedding-3-small",
+        model: "text-embedding-3-large",
         input: message,
       }),
     });
