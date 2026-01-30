@@ -70,7 +70,6 @@ module.exports = async function handler(req, res) {
   }
 
   res.status(200).json({
-    embedding: embeddingResult.embedding,
     chunks: vectorResult.chunks,
   });
 };
