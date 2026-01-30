@@ -1,5 +1,7 @@
 const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
+const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
+const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -15,6 +17,7 @@ module.exports = async function handler(req, res) {
   const missing = [];
   if (!token) missing.push("authorization");
   if (!body.agent_id) missing.push("agent_id");
+  if (!body.message) missing.push("message");
 
   if (missing.length > 0) {
     res.status(400).json({
@@ -45,7 +48,16 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const embeddingResult = await getMessageEmbedding({
+    apiKey: process.env.OPENAI_API_KEY,
+    message: body.message,
+  });
+  if (!embeddingResult.ok) {
+    res.status(embeddingResult.status).json({ error: embeddingResult.error });
+    return;
+  }
+
   res.status(200).json({
-    message: "You have enough messages",
+    embedding: embeddingResult.embedding,
   });
 };
