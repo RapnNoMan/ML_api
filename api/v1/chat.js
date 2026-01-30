@@ -2,6 +2,7 @@ const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
+const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -57,7 +58,19 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const vectorResult = await getVectorSearchTexts({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId: body.agent_id,
+    embedding: embeddingResult.embedding,
+  });
+  if (!vectorResult.ok) {
+    res.status(vectorResult.status).json({ error: vectorResult.error });
+    return;
+  }
+
   res.status(200).json({
     embedding: embeddingResult.embedding,
+    chunks: vectorResult.chunks,
   });
 };
