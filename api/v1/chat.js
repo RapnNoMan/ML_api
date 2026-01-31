@@ -49,6 +49,16 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const normalizedMessage = String(body.message)
+    .trim()
+    .toLowerCase()
+    .replace(/^[\s"'`.,!?(){}\[\]<>-]+|[\s"'`.,!?(){}\[\]<>-]+$/g, "")
+    .replace(/\s+/g, " ");
+  if (!normalizedMessage || SKIP_VECTOR_MESSAGES.has(normalizedMessage)) {
+    res.status(200).json([]);
+    return;
+  }
+
   const embeddingResult = await getMessageEmbedding({
     apiKey: process.env.OPENAI_API_KEY,
     message: body.message,
