@@ -100,6 +100,7 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
               strict: RESPONSE_SCHEMA.strict,
               schema: RESPONSE_SCHEMA.schema,
             },
+            schema: RESPONSE_SCHEMA.schema,
           },
         },
       }),
