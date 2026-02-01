@@ -43,20 +43,6 @@ const RESPONSE_SCHEMA = {
       },
     },
     required: ["mode"],
-    allOf: [
-      {
-        if: { properties: { mode: { const: "reply" } } },
-        then: { required: ["reply"] },
-      },
-      {
-        if: { properties: { mode: { const: "clarify" } } },
-        then: { required: ["clarification_question"] },
-      },
-      {
-        if: { properties: { mode: { const: "actions_needed" } } },
-        then: { required: ["action_calls"] },
-      },
-    ],
   },
 };
 
