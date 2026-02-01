@@ -33,23 +33,17 @@ const RESPONSE_SCHEMA = {
           properties: {
             action_key: { type: "string" },
 
-            // ✅ allow arbitrary keys for now
+            // ✅ IMPORTANT: allow keys for now (until you compile per-action schemas)
             variables: { type: "object" },
           },
           required: ["action_key", "variables"],
         },
       },
-      used_chunks: {
-        type: "array",
-        items: { type: "string" },
-      },
+      used_chunks: { type: "array", items: { type: "string" } },
     },
     required: ["mode"],
     allOf: [
-      {
-        if: { properties: { mode: { const: "reply" } } },
-        then: { required: ["reply"] },
-      },
+      { if: { properties: { mode: { const: "reply" } } }, then: { required: ["reply"] } },
       {
         if: { properties: { mode: { const: "clarify" } } },
         then: { required: ["clarification_question"] },
@@ -66,19 +60,12 @@ function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
     type: "message",
     role: message.role,
-    content: [
-      {
-        type: "input_text",
-        text: String(message.content ?? ""),
-      },
-    ],
+    content: [{ type: "input_text", text: String(message.content ?? "") }],
   }));
 }
 
 async function getChatCompletion({ apiKey, model, reasoning, instructions, messages }) {
-  if (!apiKey) {
-    return { ok: false, status: 500, error: "Server configuration error" };
-  }
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
 
   let response;
   try {
@@ -94,15 +81,13 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
         instructions,
         input: toInputItems(messages),
 
-        // ✅ correct Responses API structured outputs shape
+        // ✅ FIXED: name/strict/schema are DIRECTLY under text.format
         text: {
           format: {
             type: "json_schema",
-            json_schema: {
-              name: RESPONSE_SCHEMA.name,
-              strict: RESPONSE_SCHEMA.strict,
-              schema: RESPONSE_SCHEMA.schema,
-            },
+            name: RESPONSE_SCHEMA.name,
+            strict: RESPONSE_SCHEMA.strict,
+            schema: RESPONSE_SCHEMA.schema,
           },
         },
       }),
@@ -115,10 +100,12 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
     let errText = "";
     try {
       errText = await response.text();
-    } catch (_) {
-      errText = "";
-    }
-    return { ok: false, status: response.status, error: errText || "OpenAI request failed" };
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status,
+      error: errText || "OpenAI request failed",
+    };
   }
 
   let payload;
@@ -129,9 +116,7 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
   }
 
   const rawText = extractResponseText(payload);
-  if (!rawText) {
-    return { ok: false, status: 502, error: "Empty model output" };
-  }
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
 
   let data;
   try {
@@ -140,11 +125,7 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
     return { ok: false, status: 502, error: "Model output not valid JSON", raw: rawText };
   }
 
-  const usage = payload?.usage ?? null;
-
-  return { ok: true, data, usage, raw: rawText };
+  return { ok: true, data, usage: payload?.usage ?? null, raw: rawText };
 }
 
-module.exports = {
-  getChatCompletion,
-};
+module.exports = { getChatCompletion };
