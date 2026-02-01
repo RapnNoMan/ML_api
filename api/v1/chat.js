@@ -157,5 +157,7 @@ module.exports = async function handler(req, res) {
   res.status(200).json({
     prompt,
     result: completion.data,
+    tokens: completion.usage?.total_tokens ?? null,
+    usage: completion.usage ?? null,
   });
 };

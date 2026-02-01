@@ -105,7 +105,9 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
     return { ok: false, status: 502, error: "LLM service unavailable" };
   }
 
-  return { ok: true, data };
+  const usage = payload?.usage ?? null;
+
+  return { ok: true, data, usage };
 }
 
 module.exports = {
