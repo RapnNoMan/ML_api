@@ -32,12 +32,9 @@ const RESPONSE_SCHEMA = {
           additionalProperties: false,
           properties: {
             action_key: { type: "string" },
-            variables: {
-              type: "object",
-              additionalProperties: false,
-              properties: {},
-              required: [],
-            },
+
+            // ✅ allow arbitrary keys for now
+            variables: { type: "object" },
           },
           required: ["action_key", "variables"],
         },
@@ -48,6 +45,20 @@ const RESPONSE_SCHEMA = {
       },
     },
     required: ["mode"],
+    allOf: [
+      {
+        if: { properties: { mode: { const: "reply" } } },
+        then: { required: ["reply"] },
+      },
+      {
+        if: { properties: { mode: { const: "clarify" } } },
+        then: { required: ["clarification_question"] },
+      },
+      {
+        if: { properties: { mode: { const: "actions_needed" } } },
+        then: { required: ["action_calls"] },
+      },
+    ],
   },
 };
 
@@ -82,16 +93,16 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
         reasoning,
         instructions,
         input: toInputItems(messages),
+
+        // ✅ correct Responses API structured outputs shape
         text: {
           format: {
             type: "json_schema",
-            name: RESPONSE_SCHEMA.name,
             json_schema: {
               name: RESPONSE_SCHEMA.name,
               strict: RESPONSE_SCHEMA.strict,
               schema: RESPONSE_SCHEMA.schema,
             },
-            schema: RESPONSE_SCHEMA.schema,
           },
         },
       }),
