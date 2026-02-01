@@ -8,9 +8,9 @@ def main():
     url = "https://api.mitsolab.com/v1/chat"
     payload = {
         "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-        "message": "hello",
-        "anon_id": 1,
-        "chat_id": 99,
+        "message": "can i piss?",
+#        "anon_id": 1,
+#        "chat_id": 99,
         "source": "api test",
     }
     headers = {"Authorization": "Bearer key_333"}
