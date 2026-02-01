@@ -3,13 +3,12 @@
  * Responses API + Structured Outputs (JSON Schema) for GPT-5-mini
  *
  * ✅ Fixes:
- * - Uses correct Responses API structured output format: text.format.{type,name,strict,schema}
- * - Removes forbidden JSON Schema keywords (no allOf/anyOf/oneOf/if/then/else)
- * - Allows action variables (not forced to {})
- * - Adds server-side validation enforcing mode rules (since schema can't)
- * - Better error messages from OpenAI
- *
- * Drop-in replacement for: ../../scripts/internal/getChatCompletion.js
+ * - Correct Responses API structured output format: text.format.{type,name,strict,schema}
+ * - Avoids forbidden JSON Schema keywords (no allOf/if/then/oneOf/etc.)
+ * - STRICT mode compatible: every object includes additionalProperties:false
+ * - variables are represented as a KV array (strict-compatible, flexible)
+ * - Server-side validation enforces mode rules
+ * - Converts KV array -> variables object for your app to consume
  */
 
 function extractResponseText(payload) {
@@ -29,7 +28,12 @@ function extractResponseText(payload) {
   return "";
 }
 
-// ✅ Structured Outputs schema (restricted subset; NO allOf/if/then/etc.)
+/**
+ * STRICT Structured Outputs schema (restricted subset)
+ * - NO allOf / oneOf / anyOf / if / then / else
+ * - ALL objects must include additionalProperties:false
+ * - variables cannot be an open object in strict mode => use KV array
+ */
 const RESPONSE_SCHEMA = {
   name: "agent_response",
   strict: true,
@@ -39,7 +43,6 @@ const RESPONSE_SCHEMA = {
     properties: {
       mode: { type: "string", enum: ["reply", "clarify", "actions_needed"] },
 
-      // optional per mode, enforced by server-side validator below
       reply: { type: "string" },
       clarification_question: { type: "string" },
 
@@ -51,14 +54,32 @@ const RESPONSE_SCHEMA = {
           properties: {
             action_key: { type: "string" },
 
-            // ✅ allow any keys for now; you'll validate per action_key server-side later
-            variables: { type: "object" },
+            // ✅ KV array: flexible + strict-safe
+            variables: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  key: { type: "string" },
+                  value_type: {
+                    type: "string",
+                    enum: ["string", "number", "boolean", "json", "null"],
+                  },
+                  value: { type: "string" }, // store everything as string; parse later
+                },
+                required: ["key", "value_type", "value"],
+              },
+            },
           },
           required: ["action_key", "variables"],
         },
       },
 
-      used_chunks: { type: "array", items: { type: "string" } },
+      used_chunks: {
+        type: "array",
+        items: { type: "string" },
+      },
     },
     required: ["mode"],
   },
@@ -68,16 +89,11 @@ function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
     type: "message",
     role: message.role,
-    content: [
-      {
-        type: "input_text",
-        text: String(message.content ?? ""),
-      },
-    ],
+    content: [{ type: "input_text", text: String(message.content ?? "") }],
   }));
 }
 
-// Enforce conditional rules not supported by Structured Outputs schema subset
+// Conditional rules not supported by strict schema subset
 function validateAgentOutput(obj) {
   if (!obj || typeof obj !== "object") return "Output is not an object.";
   if (!["reply", "clarify", "actions_needed"].includes(obj.mode)) return "Invalid mode.";
@@ -109,21 +125,66 @@ function validateAgentOutput(obj) {
   return null;
 }
 
-async function getChatCompletion({ apiKey, model, reasoning, instructions, messages }) {
-  if (!apiKey) {
-    return { ok: false, status: 500, error: "Server configuration error" };
+// Convert KV array -> plain object for your backend convenience
+function kvArrayToObject(kvArr) {
+  const out = {};
+  if (!Array.isArray(kvArr)) return out;
+
+  for (const item of kvArr) {
+    const key = item?.key;
+    const valueType = item?.value_type;
+    const valueStr = item?.value;
+
+    if (typeof key !== "string" || !key) continue;
+
+    if (valueType === "null") {
+      out[key] = null;
+      continue;
+    }
+
+    if (valueType === "boolean") {
+      // accept "true"/"false"
+      out[key] = String(valueStr).toLowerCase() === "true";
+      continue;
+    }
+
+    if (valueType === "number") {
+      const n = Number(valueStr);
+      out[key] = Number.isFinite(n) ? n : null;
+      continue;
+    }
+
+    if (valueType === "json") {
+      try {
+        out[key] = JSON.parse(String(valueStr));
+      } catch {
+        out[key] = null;
+      }
+      continue;
+    }
+
+    // default string
+    out[key] = String(valueStr);
   }
 
-  // Strong system rules to reduce bad outputs even further
+  return out;
+}
+
+async function getChatCompletion({ apiKey, model, reasoning, instructions, messages }) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
   const systemRules = `
 OUTPUT RULES (MUST FOLLOW):
-- Output must be valid JSON matching the provided schema.
-- Set mode to exactly one of: reply, clarify, actions_needed.
+- Output must be valid JSON matching the provided schema exactly.
+- mode must be one of: reply, clarify, actions_needed.
 - If mode="reply": include "reply" (non-empty). Do NOT include action_calls or clarification_question.
 - If mode="clarify": include "clarification_question" (non-empty). Do NOT include action_calls or reply.
-- If mode="actions_needed": include "action_calls" with at least 1 item. Do NOT include reply or clarification_question.
+- If mode="actions_needed": include action_calls with at least 1 item. Do NOT include reply or clarification_question.
 - action_calls[].action_key MUST be one of the action_key values provided in the ACTIONS list.
-- action_calls[].variables MUST be an object (can be empty only if truly no variables are needed).
+- variables are a list of key/value entries:
+  - key: variable name
+  - value_type: one of string|number|boolean|json|null
+  - value: always a string (for json, value must be JSON text)
 `.trim();
 
   const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
@@ -142,7 +203,7 @@ OUTPUT RULES (MUST FOLLOW):
         instructions: finalInstructions,
         input: toInputItems(messages),
 
-        // ✅ Correct for /v1/responses (and matches your server's requirement for text.format.name)
+        // ✅ Correct strict Structured Outputs shape for /v1/responses
         text: {
           format: {
             type: "json_schema",
@@ -161,11 +222,7 @@ OUTPUT RULES (MUST FOLLOW):
     let errText = "";
     try {
       errText = await response.text();
-    } catch (_) {
-      errText = "";
-    }
-
-    // Keep the raw error for debugging
+    } catch (_) {}
     return {
       ok: false,
       status: response.status || 502,
@@ -181,9 +238,7 @@ OUTPUT RULES (MUST FOLLOW):
   }
 
   const rawText = extractResponseText(payload);
-  if (!rawText) {
-    return { ok: false, status: 502, error: "Empty model output" };
-  }
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
 
   let data;
   try {
@@ -192,7 +247,6 @@ OUTPUT RULES (MUST FOLLOW):
     return { ok: false, status: 502, error: "Model output not valid JSON", raw: rawText };
   }
 
-  // Server-side enforcement of conditional rules
   const validationError = validateAgentOutput(data);
   if (validationError) {
     return {
@@ -204,9 +258,15 @@ OUTPUT RULES (MUST FOLLOW):
     };
   }
 
-  const usage = payload?.usage ?? null;
+  // ✅ Convert variables KV arrays into objects for downstream usage
+  if (Array.isArray(data.action_calls)) {
+    data.action_calls = data.action_calls.map((c) => ({
+      ...c,
+      variables: kvArrayToObject(c.variables),
+    }));
+  }
 
-  return { ok: true, data, usage, raw: rawText };
+  return { ok: true, data, usage: payload?.usage ?? null, raw: rawText };
 }
 
 module.exports = {
