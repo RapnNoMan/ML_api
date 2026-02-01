@@ -83,7 +83,18 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
   }
 
   if (!response.ok) {
-    return { ok: false, status: 502, error: "LLM service unavailable" };
+    let errorBody = "";
+    try {
+      errorBody = await response.text();
+    } catch (error) {
+      errorBody = "";
+    }
+    const detail = errorBody ? ` ${errorBody}` : "";
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: `LLM service unavailable.${detail}`.trim(),
+    };
   }
 
   let payload;
