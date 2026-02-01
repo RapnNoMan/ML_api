@@ -156,7 +156,10 @@ module.exports = async function handler(req, res) {
 
   res.status(200).json({
     reply: completion.data?.reply ?? "",
-    action: completion.data?.mode === "action" ? completion.data?.action_calls ?? [] : [],
+    action:
+      completion.data?.mode === "action" || completion.data?.mode === "actions_needed"
+        ? completion.data?.action_calls ?? []
+        : [],
     input_tokens: completion.usage?.input_tokens ?? null,
     output_tokens: completion.usage?.output_tokens ?? null,
   });
