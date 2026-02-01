@@ -1,3 +1,17 @@
+/**
+ * getChatCompletion.js
+ * Responses API + Structured Outputs (JSON Schema) for GPT-5-mini
+ *
+ * ✅ Fixes:
+ * - Uses correct Responses API structured output format: text.format.{type,name,strict,schema}
+ * - Removes forbidden JSON Schema keywords (no allOf/anyOf/oneOf/if/then/else)
+ * - Allows action variables (not forced to {})
+ * - Adds server-side validation enforcing mode rules (since schema can't)
+ * - Better error messages from OpenAI
+ *
+ * Drop-in replacement for: ../../scripts/internal/getChatCompletion.js
+ */
+
 function extractResponseText(payload) {
   if (!payload) return "";
   if (typeof payload.output_text === "string" && payload.output_text.trim()) {
@@ -15,6 +29,7 @@ function extractResponseText(payload) {
   return "";
 }
 
+// ✅ Structured Outputs schema (restricted subset; NO allOf/if/then/etc.)
 const RESPONSE_SCHEMA = {
   name: "agent_response",
   strict: true,
@@ -23,8 +38,11 @@ const RESPONSE_SCHEMA = {
     additionalProperties: false,
     properties: {
       mode: { type: "string", enum: ["reply", "clarify", "actions_needed"] },
+
+      // optional per mode, enforced by server-side validator below
       reply: { type: "string" },
       clarification_question: { type: "string" },
+
       action_calls: {
         type: "array",
         items: {
@@ -33,26 +51,16 @@ const RESPONSE_SCHEMA = {
           properties: {
             action_key: { type: "string" },
 
-            // ✅ IMPORTANT: allow keys for now (until you compile per-action schemas)
+            // ✅ allow any keys for now; you'll validate per action_key server-side later
             variables: { type: "object" },
           },
           required: ["action_key", "variables"],
         },
       },
+
       used_chunks: { type: "array", items: { type: "string" } },
     },
     required: ["mode"],
-    allOf: [
-      { if: { properties: { mode: { const: "reply" } } }, then: { required: ["reply"] } },
-      {
-        if: { properties: { mode: { const: "clarify" } } },
-        then: { required: ["clarification_question"] },
-      },
-      {
-        if: { properties: { mode: { const: "actions_needed" } } },
-        then: { required: ["action_calls"] },
-      },
-    ],
   },
 };
 
@@ -60,12 +68,65 @@ function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
     type: "message",
     role: message.role,
-    content: [{ type: "input_text", text: String(message.content ?? "") }],
+    content: [
+      {
+        type: "input_text",
+        text: String(message.content ?? ""),
+      },
+    ],
   }));
 }
 
+// Enforce conditional rules not supported by Structured Outputs schema subset
+function validateAgentOutput(obj) {
+  if (!obj || typeof obj !== "object") return "Output is not an object.";
+  if (!["reply", "clarify", "actions_needed"].includes(obj.mode)) return "Invalid mode.";
+
+  const hasActions = Array.isArray(obj.action_calls) && obj.action_calls.length > 0;
+  const hasReply = typeof obj.reply === "string" && obj.reply.trim().length > 0;
+  const hasClarify =
+    typeof obj.clarification_question === "string" &&
+    obj.clarification_question.trim().length > 0;
+
+  if (obj.mode === "reply") {
+    if (!hasReply) return 'mode="reply" requires non-empty "reply".';
+    if (hasActions) return 'mode="reply" must not include "action_calls".';
+    if (hasClarify) return 'mode="reply" must not include "clarification_question".';
+  }
+
+  if (obj.mode === "clarify") {
+    if (!hasClarify) return 'mode="clarify" requires non-empty "clarification_question".';
+    if (hasActions) return 'mode="clarify" must not include "action_calls".';
+    if (hasReply) return 'mode="clarify" must not include "reply".';
+  }
+
+  if (obj.mode === "actions_needed") {
+    if (!hasActions) return 'mode="actions_needed" requires non-empty "action_calls".';
+    if (hasReply) return 'mode="actions_needed" must not include "reply".';
+    if (hasClarify) return 'mode="actions_needed" must not include "clarification_question".';
+  }
+
+  return null;
+}
+
 async function getChatCompletion({ apiKey, model, reasoning, instructions, messages }) {
-  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+  if (!apiKey) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  // Strong system rules to reduce bad outputs even further
+  const systemRules = `
+OUTPUT RULES (MUST FOLLOW):
+- Output must be valid JSON matching the provided schema.
+- Set mode to exactly one of: reply, clarify, actions_needed.
+- If mode="reply": include "reply" (non-empty). Do NOT include action_calls or clarification_question.
+- If mode="clarify": include "clarification_question" (non-empty). Do NOT include action_calls or reply.
+- If mode="actions_needed": include "action_calls" with at least 1 item. Do NOT include reply or clarification_question.
+- action_calls[].action_key MUST be one of the action_key values provided in the ACTIONS list.
+- action_calls[].variables MUST be an object (can be empty only if truly no variables are needed).
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
 
   let response;
   try {
@@ -78,10 +139,10 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
       body: JSON.stringify({
         model,
         reasoning,
-        instructions,
+        instructions: finalInstructions,
         input: toInputItems(messages),
 
-        // ✅ FIXED: name/strict/schema are DIRECTLY under text.format
+        // ✅ Correct for /v1/responses (and matches your server's requirement for text.format.name)
         text: {
           format: {
             type: "json_schema",
@@ -100,10 +161,14 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
     let errText = "";
     try {
       errText = await response.text();
-    } catch (_) {}
+    } catch (_) {
+      errText = "";
+    }
+
+    // Keep the raw error for debugging
     return {
       ok: false,
-      status: response.status,
+      status: response.status || 502,
       error: errText || "OpenAI request failed",
     };
   }
@@ -116,7 +181,9 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
   }
 
   const rawText = extractResponseText(payload);
-  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+  if (!rawText) {
+    return { ok: false, status: 502, error: "Empty model output" };
+  }
 
   let data;
   try {
@@ -125,7 +192,23 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
     return { ok: false, status: 502, error: "Model output not valid JSON", raw: rawText };
   }
 
-  return { ok: true, data, usage: payload?.usage ?? null, raw: rawText };
+  // Server-side enforcement of conditional rules
+  const validationError = validateAgentOutput(data);
+  if (validationError) {
+    return {
+      ok: false,
+      status: 502,
+      error: `Model output failed validation: ${validationError}`,
+      raw: rawText,
+      data,
+    };
+  }
+
+  const usage = payload?.usage ?? null;
+
+  return { ok: true, data, usage, raw: rawText };
 }
 
-module.exports = { getChatCompletion };
+module.exports = {
+  getChatCompletion,
+};
