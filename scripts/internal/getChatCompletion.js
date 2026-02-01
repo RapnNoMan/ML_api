@@ -1,11 +1,13 @@
 function extractResponseText(payload) {
   if (!payload) return "";
-  if (typeof payload.output_text === "string") return payload.output_text;
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text;
+  }
   const output = Array.isArray(payload.output) ? payload.output : [];
   for (const item of output) {
     const content = Array.isArray(item?.content) ? item.content : [];
     for (const part of content) {
-      if (typeof part?.text === "string") {
+      if (typeof part?.text === "string" && part.text.trim()) {
         return part.text;
       }
     }
@@ -15,33 +17,47 @@ function extractResponseText(payload) {
 
 const RESPONSE_SCHEMA = {
   name: "agent_response",
-  description: "Structured assistant response with optional actions.",
+  strict: true,
   schema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      assistant_text: { type: "string" },
-      actions: {
+      mode: { type: "string", enum: ["reply", "clarify", "actions_needed"] },
+      reply: { type: "string" },
+      clarification_question: { type: "string" },
+      action_calls: {
         type: "array",
         items: {
           type: "object",
           additionalProperties: false,
           properties: {
             action_key: { type: "string" },
-            vars: {
-              type: "object",
-              additionalProperties: false,
-              properties: {},
-              required: [],
-            },
+            variables: { type: "object" },
           },
-          required: ["action_key", "vars"],
+          required: ["action_key", "variables"],
         },
       },
+      used_chunks: {
+        type: "array",
+        items: { type: "string" },
+      },
     },
-    required: ["assistant_text", "actions"],
+    required: ["mode"],
+    allOf: [
+      {
+        if: { properties: { mode: { const: "reply" } } },
+        then: { required: ["reply"] },
+      },
+      {
+        if: { properties: { mode: { const: "clarify" } } },
+        then: { required: ["clarification_question"] },
+      },
+      {
+        if: { properties: { mode: { const: "actions_needed" } } },
+        then: { required: ["action_calls"] },
+      },
+    ],
   },
-  strict: true,
 };
 
 function toInputItems(messages) {
@@ -78,54 +94,51 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
         text: {
           format: {
             type: "json_schema",
-            name: RESPONSE_SCHEMA.name,
-            schema: RESPONSE_SCHEMA.schema,
-            strict: RESPONSE_SCHEMA.strict,
+            json_schema: {
+              name: RESPONSE_SCHEMA.name,
+              strict: RESPONSE_SCHEMA.strict,
+              schema: RESPONSE_SCHEMA.schema,
+            },
           },
         },
       }),
     });
   } catch (error) {
-    return { ok: false, status: 502, error: "LLM service unavailable" };
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
   }
 
   if (!response.ok) {
-    let errorBody = "";
+    let errText = "";
     try {
-      errorBody = await response.text();
-    } catch (error) {
-      errorBody = "";
+      errText = await response.text();
+    } catch (_) {
+      errText = "";
     }
-    const detail = errorBody ? ` ${errorBody}` : "";
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: `LLM service unavailable.${detail}`.trim(),
-    };
+    return { ok: false, status: response.status, error: errText || "OpenAI request failed" };
   }
 
   let payload;
   try {
     payload = await response.json();
   } catch (error) {
-    return { ok: false, status: 502, error: "LLM service unavailable" };
+    return { ok: false, status: 502, error: "Invalid JSON from OpenAI" };
   }
 
-  const text = extractResponseText(payload);
-  if (!text) {
-    return { ok: false, status: 502, error: "LLM service unavailable" };
+  const rawText = extractResponseText(payload);
+  if (!rawText) {
+    return { ok: false, status: 502, error: "Empty model output" };
   }
 
   let data;
   try {
-    data = JSON.parse(text);
+    data = JSON.parse(rawText);
   } catch (error) {
-    return { ok: false, status: 502, error: "LLM service unavailable" };
+    return { ok: false, status: 502, error: "Model output not valid JSON", raw: rawText };
   }
 
   const usage = payload?.usage ?? null;
 
-  return { ok: true, data, usage };
+  return { ok: true, data, usage, raw: rawText };
 }
 
 module.exports = {
