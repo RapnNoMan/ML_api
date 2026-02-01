@@ -74,7 +74,7 @@ async function getChatCompletion({ apiKey, model, reasoning, instructions, messa
           format: {
             type: "json_schema",
             name: RESPONSE_SCHEMA.name,
-            json_schema: RESPONSE_SCHEMA.schema,
+            schema: RESPONSE_SCHEMA.schema,
             strict: RESPONSE_SCHEMA.strict,
           },
         },
