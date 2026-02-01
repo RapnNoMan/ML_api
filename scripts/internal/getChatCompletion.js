@@ -28,7 +28,7 @@ const RESPONSE_SCHEMA = {
           additionalProperties: false,
           properties: {
             action_key: { type: "string" },
-            vars: { type: "object" },
+            vars: { type: "object", additionalProperties: false },
           },
           required: ["action_key", "vars"],
         },
