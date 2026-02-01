@@ -41,7 +41,7 @@ const RESPONSE_SCHEMA = {
     type: "object",
     additionalProperties: false,
     properties: {
-      mode: { type: "string", enum: ["reply", "clarify", "actions_needed"] },
+      mode: { type: "string", enum: ["reply", "clarify", "action"] },
 
       reply: { type: "string" },
       clarification_question: { type: "string" },
@@ -81,7 +81,7 @@ const RESPONSE_SCHEMA = {
         items: { type: "string" },
       },
     },
-    required: ["mode"],
+    required: ["mode", "reply", "clarification_question", "action_calls", "used_chunks"],
   },
 };
 
