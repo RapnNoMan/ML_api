@@ -1,46 +1,46 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "can you check on the bathroom? on the medical building stall 6. i am the CEO",
+    "message": "can you check on the bathroom? on the medical building stall 4. i am the CEO",
     "source": "api test"
   },
   "response_json": {
-    "reply": "I’m seeing a missing-field error from the system.\n\nPlease provide:\n- Authorization token (or confirm the existing token you want used)\n- Agent ID\n- The message/note you want sent (e.g., any specific issue or request about bathroom 6)\n\nIf you prefer, I can reattempt once you share those details.",
-    "input_tokens": 473,
-    "output_tokens": 187,
+    "reply": "Update: Bathroom 4 in the medical building is currently empty.\n\nWould you like me to notify facilities or schedule a cleaning/restock?",
+    "input_tokens": 518,
+    "output_tokens": 139,
     "action_debug": [
       {
-        "call_id": "call_qkDD8mqLyyJyjA34cL8bOcr9",
+        "call_id": "call_sRR84n4uyeJJc1IvdOSgiJux",
         "action_key": "get_bathroom_status",
         "request": {
-          "url": "https://api.mitsolab.com/v1/chat",
+          "url": "https://api.mitsolab.com/api/v1/test_bathroom",
           "method": "POST",
           "headers": {
             "auth": "123123",
             "Content-Type": "application/json",
-            "x-vercel-id": "dxb1::cfhc8-1770845465725-ed647815bdff",
-            "x-invocation-id": "dxb1::cfhc8-1770845465725-ed647815bdff",
-            "x-vercel-intra-session": "3.cWpzOXlpT3RVMkFmSzFLR9D4g+s9qUQVM0HNY9XhUyEE/PAs2t1MMRRSDW1qHwgQ"
+            "x-vercel-id": "dxb1::4rt5h-1770845753751-4e7ca04c8c1d",
+            "x-invocation-id": "dxb1::4rt5h-1770845753751-4e7ca04c8c1d",
+            "x-vercel-intra-session": "3.bHFZZ1YweFVlNEx3SGZRMsgpc5OWKUhQ/z+/5H6XMzxWzpdN8bA6cL5tJihTG0wk"
           },
           "body": {
             "whos_asking": "CEO",
             "bathroom_info": [
               {
                 "building": "medical",
-                "bathroom_number": 6
+                "bathroom_number": 4
               }
             ]
           }
         },
         "response": {
-          "ok": false,
-          "status": 400,
-          "body": "{\"error\":\"Missing required fields\",\"missing\":[\"authorization\",\"agent_id\",\"message\"]}"
+          "ok": true,
+          "status": 200,
+          "body": "{\"building_name\":\"medical\",\"bathroom_number\":4,\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":4}],\"status\":\"empty\",\"message\":\"Bathroom 4 in medical is empty.\"}"
         }
       }
     ]
   },
-  "response_text": "{\"reply\":\"I’m seeing a missing-field error from the system.\\n\\nPlease provide:\\n- Authorization token (or confirm the existing token you want used)\\n- Agent ID\\n- The message/note you want sent (e.g., any specific issue or request about bathroom 6)\\n\\nIf you prefer, I can reattempt once you share those details.\",\"input_tokens\":473,\"output_tokens\":187,\"action_debug\":[{\"call_id\":\"call_qkDD8mqLyyJyjA34cL8bOcr9\",\"action_key\":\"get_bathroom_status\",\"request\":{\"url\":\"https://api.mitsolab.com/v1/chat\",\"method\":\"POST\",\"headers\":{\"auth\":\"123123\",\"Content-Type\":\"application/json\",\"x-vercel-id\":\"dxb1::cfhc8-1770845465725-ed647815bdff\",\"x-invocation-id\":\"dxb1::cfhc8-1770845465725-ed647815bdff\",\"x-vercel-intra-session\":\"3.cWpzOXlpT3RVMkFmSzFLR9D4g+s9qUQVM0HNY9XhUyEE/PAs2t1MMRRSDW1qHwgQ\"},\"body\":{\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":6}]}},\"response\":{\"ok\":false,\"status\":400,\"body\":\"{\\\"error\\\":\\\"Missing required fields\\\",\\\"missing\\\":[\\\"authorization\\\",\\\"agent_id\\\",\\\"message\\\"]}\"}}]}",
+  "response_text": "{\"reply\":\"Update: Bathroom 4 in the medical building is currently empty.\\n\\nWould you like me to notify facilities or schedule a cleaning/restock?\",\"input_tokens\":518,\"output_tokens\":139,\"action_debug\":[{\"call_id\":\"call_sRR84n4uyeJJc1IvdOSgiJux\",\"action_key\":\"get_bathroom_status\",\"request\":{\"url\":\"https://api.mitsolab.com/api/v1/test_bathroom\",\"method\":\"POST\",\"headers\":{\"auth\":\"123123\",\"Content-Type\":\"application/json\",\"x-vercel-id\":\"dxb1::4rt5h-1770845753751-4e7ca04c8c1d\",\"x-invocation-id\":\"dxb1::4rt5h-1770845753751-4e7ca04c8c1d\",\"x-vercel-intra-session\":\"3.bHFZZ1YweFVlNEx3SGZRMsgpc5OWKUhQ/z+/5H6XMzxWzpdN8bA6cL5tJihTG0wk\"},\"body\":{\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":4}]}},\"response\":{\"ok\":true,\"status\":200,\"body\":\"{\\\"building_name\\\":\\\"medical\\\",\\\"bathroom_number\\\":4,\\\"whos_asking\\\":\\\"CEO\\\",\\\"bathroom_info\\\":[{\\\"building\\\":\\\"medical\\\",\\\"bathroom_number\\\":4}],\\\"status\\\":\\\"empty\\\",\\\"message\\\":\\\"Bathroom 4 in medical is empty.\\\"}\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
