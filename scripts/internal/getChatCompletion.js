@@ -50,13 +50,21 @@ function extractFunctionCalls(payload) {
   return calls;
 }
 
-async function getChatCompletion({ apiKey, model, reasoning, instructions, messages, tools }) {
+async function getChatCompletion({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+}) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
 
   const systemRules = `
 TOOL RULES (MUST FOLLOW):
 - Use the provided tools when needed.
-- If you call a tool, include only the arguments required by its schema.
+- Never make the tool call without having the full info from the user.
 `.trim();
 
   const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
@@ -65,7 +73,7 @@ TOOL RULES (MUST FOLLOW):
     model,
     reasoning,
     instructions: finalInstructions,
-    input: toInputItems(messages),
+    input: Array.isArray(inputItems) ? inputItems : toInputItems(messages),
     text: { verbosity: "low" },
   };
 
@@ -118,6 +126,7 @@ TOOL RULES (MUST FOLLOW):
       },
       usage: payload?.usage ?? null,
       raw: "",
+      output_items: Array.isArray(payload?.output) ? payload.output : [],
       openai_request: requestBody,
       openai_response: payload,
     };

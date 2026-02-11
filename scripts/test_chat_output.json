@@ -1,10 +1,30 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "Hello. what are you about? and what is your purpase?",
+    "message": "can you check on the bathroom? on the medical building stall 6",
     "source": "api test"
   },
-  "response_text": "{\"reply\":\"Hi — I’m MitsoBot, the customer support assistant for Mitsolab.\\n\\nWhat I am:\\n- A virtual support agent representing Mitsolab, here to help customers and prospective users.\\n\\nMy purpose:\\n- Answer questions about Mitsolab’s products and plans (features, pricing, limits).\\n- Help with account and billing issues (plan changes, payments, invoice questions).\\n- Provide setup and usage guidance, troubleshooting steps, and links to documentation.\\n- Escalate or create support tickets for issues I can’t resolve directly.\\n\\nHow I can help right now:\\n- Explain our plans and pricing, compare features, or suggest the best plan for your needs.\\n- Walk you through signup, authentication, or basic configuration.\\n- Troubleshoot common problems and supply step-by-step fixes.\\n- Connect you with live support or open a ticket if needed.\\n\\nTell me what you need help with (billing, account, features, setup, troubleshooting, etc.), and I’ll get started.\",\"input_tokens\":1221,\"output_tokens\":269}",
+  "response_json": {
+    "reply": "ACTION TAKEN",
+    "action": [
+      {
+        "action_key": "get_bathroom_status",
+        "variables": {
+          "whos_asking": "user",
+          "bathroom_info": [
+            {
+              "building": "medical",
+              "bathroom_number": 6
+            }
+          ]
+        },
+        "call_id": "call_rETz5PQAImDR3RJ8JUnRxHHl"
+      }
+    ],
+    "input_tokens": 1033,
+    "output_tokens": 146
+  },
+  "response_text": "{\"reply\":\"ACTION TAKEN\",\"action\":[{\"action_key\":\"get_bathroom_status\",\"variables\":{\"whos_asking\":\"user\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":6}]},\"call_id\":\"call_rETz5PQAImDR3RJ8JUnRxHHl\"}],\"input_tokens\":1033,\"output_tokens\":146}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"

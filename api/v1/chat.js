@@ -5,8 +5,17 @@ const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedd
 const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentCustomApiTools } = require("../../scripts/internal/getAgentCustomApiTools");
+const { getAgentCustomApiActionMap } = require("../../scripts/internal/getAgentCustomApiActionMap");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
+
+function toInputItems(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => ({
+    type: "message",
+    role: message.role,
+    content: [{ type: "input_text", text: String(message.content ?? "") }],
+  }));
+}
 
 module.exports = async function handler(req, res) {
   if (req.method !== "POST") {
@@ -129,6 +138,9 @@ module.exports = async function handler(req, res) {
   }
 
   const prompt = promptSections.join("\n\n");
+  const promptNoChunks = promptSections
+    .filter((section) => !section.startsWith("KNOWLEDGE CHUNKS"))
+    .join("\n\n");
 
   let historyMessages = [];
   if (body.anon_id && body.chat_id) {
@@ -168,11 +180,118 @@ module.exports = async function handler(req, res) {
     completion.data?.mode === "action" || completion.data?.mode === "actions_needed";
 
   if (hasToolCalls) {
+    const actionMapResult = await getAgentCustomApiActionMap({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId: body.agent_id,
+    });
+    if (!actionMapResult.ok) {
+      res.status(actionMapResult.status).json({ error: actionMapResult.error });
+      return;
+    }
+
+    const actionCalls = Array.isArray(completion.data?.action_calls)
+      ? completion.data.action_calls
+      : [];
+
+    const toolResults = [];
+    for (const call of actionCalls) {
+      const actionDef = actionMapResult.actionMap.get(call.action_key);
+      if (!actionDef || !actionDef.url) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          ok: false,
+          error: "Unknown action",
+        });
+        continue;
+      }
+
+      let headers = {};
+      if (actionDef.headers && typeof actionDef.headers === "object") {
+        headers = { ...actionDef.headers };
+      } else if (typeof actionDef.headers === "string") {
+        try {
+          const parsed = JSON.parse(actionDef.headers);
+          if (parsed && typeof parsed === "object") headers = { ...parsed };
+        } catch (_) {}
+      }
+
+      const method = String(actionDef.method || "POST").toUpperCase();
+      const variables = call?.variables ?? {};
+      let url = actionDef.url;
+      let body;
+
+      if (method === "GET") {
+        const qs = new URLSearchParams();
+        for (const [key, value] of Object.entries(variables)) {
+          if (value === undefined) continue;
+          qs.append(key, typeof value === "string" ? value : JSON.stringify(value));
+        }
+        const qsText = qs.toString();
+        if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+      } else {
+        body = JSON.stringify(variables);
+        if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      }
+
+      let actionResponse;
+      try {
+        const actionRes = await fetch(url, {
+          method,
+          headers,
+          body,
+        });
+        const text = await actionRes.text();
+        actionResponse = {
+          ok: actionRes.ok,
+          status: actionRes.status,
+          body: text,
+        };
+      } catch (error) {
+        actionResponse = {
+          ok: false,
+          status: 502,
+          error: "Action request failed",
+        };
+      }
+
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        response: actionResponse,
+      });
+    }
+
+    const inputItems = [
+      ...toInputItems(messages),
+      ...((completion.output_items && Array.isArray(completion.output_items))
+        ? completion.output_items
+        : []),
+      ...toolResults.map((result) => ({
+        type: "function_call_output",
+        call_id: result.call_id,
+        output: JSON.stringify(result),
+      })),
+    ];
+
+    const followup = await getChatCompletion({
+      apiKey: process.env.OPENAI_API_KEY,
+      model: "gpt-5-nano",
+      reasoning: { effort: "low" },
+      instructions: promptNoChunks,
+      messages,
+      inputItems: [...inputItems],
+    });
+
+    if (!followup.ok) {
+      res.status(followup.status).json({ error: followup.error });
+      return;
+    }
+
     res.status(200).json({
-      reply: "ACTION TAKEN",
-      action: completion.data?.action_calls ?? [],
-      input_tokens: completion.usage?.input_tokens ?? null,
-      output_tokens: completion.usage?.output_tokens ?? null,
+      reply: followup.data?.reply ?? "",
+      input_tokens: followup.usage?.input_tokens ?? null,
+      output_tokens: followup.usage?.output_tokens ?? null,
     });
     return;
   }
