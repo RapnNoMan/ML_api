@@ -5,15 +5,17 @@ module.exports = async function handler(req, res) {
   }
 
   const body = req.body ?? {};
-  const buildingName = String(body.building_name ?? "").trim();
-  const bathroomNumberRaw = String(body.bathroom_number ?? "").trim();
   const whosAsking = String(body.whos_asking ?? "").trim();
+  const bathroomInfo = Array.isArray(body.bathroom_info) ? body.bathroom_info : [];
+  const firstBathroom = bathroomInfo.length > 0 ? bathroomInfo[0] : {};
+  const buildingName = String(firstBathroom.building ?? "").trim();
+  const bathroomNumberRaw = String(firstBathroom.bathroom_number ?? "").trim();
   const bathroomNumber = Number(bathroomNumberRaw);
 
   if (!buildingName || !Number.isFinite(bathroomNumber) || !whosAsking) {
     res.status(400).json({
       error: "Missing required body params",
-      required: ["building_name", "bathroom_number", "whos_asking"],
+      required: ["whos_asking", "bathroom_info[0].building", "bathroom_info[0].bathroom_number"],
     });
     return;
   }
@@ -23,6 +25,7 @@ module.exports = async function handler(req, res) {
     building_name: buildingName,
     bathroom_number: bathroomNumber,
     whos_asking: whosAsking,
+    bathroom_info: bathroomInfo,
     status,
     message: `Bathroom ${bathroomNumber} in ${buildingName} is ${status}.`,
   });
