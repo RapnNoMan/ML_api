@@ -5,26 +5,11 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "ACTION TAKEN",
-    "action": [
-      {
-        "action_key": "get_bathroom_status",
-        "variables": {
-          "whos_asking": "user",
-          "bathroom_info": [
-            {
-              "building": "medical",
-              "bathroom_number": 6
-            }
-          ]
-        },
-        "call_id": "call_rETz5PQAImDR3RJ8JUnRxHHl"
-      }
-    ],
-    "input_tokens": 1033,
-    "output_tokens": 146
+    "reply": "I’m having trouble retrieving the bathroom status right now (system error, 502).\n\nWould you like me to retry the check now, or would you prefer I escalate to facilities to confirm stall 6 in the medical building?",
+    "input_tokens": 288,
+    "output_tokens": 181
   },
-  "response_text": "{\"reply\":\"ACTION TAKEN\",\"action\":[{\"action_key\":\"get_bathroom_status\",\"variables\":{\"whos_asking\":\"user\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":6}]},\"call_id\":\"call_rETz5PQAImDR3RJ8JUnRxHHl\"}],\"input_tokens\":1033,\"output_tokens\":146}",
+  "response_text": "{\"reply\":\"I’m having trouble retrieving the bathroom status right now (system error, 502).\\n\\nWould you like me to retry the check now, or would you prefer I escalate to facilities to confirm stall 6 in the medical building?\",\"input_tokens\":288,\"output_tokens\":181}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
