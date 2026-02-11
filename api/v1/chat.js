@@ -258,6 +258,12 @@ module.exports = async function handler(req, res) {
       toolResults.push({
         call_id: call.call_id ?? null,
         action_key: call.action_key,
+        request: {
+          url,
+          method,
+          headers,
+          body: method === "GET" ? null : variables,
+        },
         response: actionResponse,
       });
     }
@@ -292,6 +298,7 @@ module.exports = async function handler(req, res) {
       reply: followup.data?.reply ?? "",
       input_tokens: followup.usage?.input_tokens ?? null,
       output_tokens: followup.usage?.output_tokens ?? null,
+      action_debug: toolResults,
     });
     return;
   }
