@@ -168,9 +168,18 @@ module.exports = async function handler(req, res) {
     completion.data?.mode === "action" || completion.data?.mode === "actions_needed";
 
   if (hasToolCalls) {
-    res.status(200).json({ reply: "ACTION TAKEN" });
+    res.status(200).json({
+      reply: "ACTION TAKEN",
+      action: completion.data?.action_calls ?? [],
+      input_tokens: completion.usage?.input_tokens ?? null,
+      output_tokens: completion.usage?.output_tokens ?? null,
+    });
     return;
   }
 
-  res.status(200).json(completion.openai_response ?? { reply: completion.data?.reply ?? "" });
+  res.status(200).json({
+    reply: completion.data?.reply ?? "",
+    input_tokens: completion.usage?.input_tokens ?? null,
+    output_tokens: completion.usage?.output_tokens ?? null,
+  });
 };
