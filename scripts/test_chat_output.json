@@ -5,28 +5,28 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "I can help, but the request failed due to missing fields. Please provide:\n- Authorization token (or confirm how you want to authenticate)\n- Agent ID\n- Message content to send\n\nIf you prefer, I can draft a formal request to facilities with your details once you share authorization and agent_id.",
-    "input_tokens": 480,
-    "output_tokens": 193,
+    "reply": "I’m seeing a missing-field error from the system.\n\nPlease provide:\n- Authorization token (or confirm the existing token you want used)\n- Agent ID\n- The message/note you want sent (e.g., any specific issue or request about bathroom 6)\n\nIf you prefer, I can reattempt once you share those details.",
+    "input_tokens": 473,
+    "output_tokens": 187,
     "action_debug": [
       {
-        "call_id": "call_m89oJi2IUUhAnlb8rDTShTKX",
+        "call_id": "call_qkDD8mqLyyJyjA34cL8bOcr9",
         "action_key": "get_bathroom_status",
         "request": {
-          "url": "https://api.mitsolab.com/api/v1/chat",
+          "url": "https://api.mitsolab.com/v1/chat",
           "method": "POST",
           "headers": {
             "auth": "123123",
             "Content-Type": "application/json",
-            "x-vercel-id": "dxb1::xrztq-1770845288401-56da51cf4f7e",
-            "x-invocation-id": "dxb1::xrztq-1770845288401-56da51cf4f7e",
-            "x-vercel-intra-session": "3.ekM4bDg4bHpZT29RSnFpeY1CCDjMQJN0X24PohfJuop2oiBg43ICwwXblWqeTt2O"
+            "x-vercel-id": "dxb1::cfhc8-1770845465725-ed647815bdff",
+            "x-invocation-id": "dxb1::cfhc8-1770845465725-ed647815bdff",
+            "x-vercel-intra-session": "3.cWpzOXlpT3RVMkFmSzFLR9D4g+s9qUQVM0HNY9XhUyEE/PAs2t1MMRRSDW1qHwgQ"
           },
           "body": {
             "whos_asking": "CEO",
             "bathroom_info": [
               {
-                "building": "medical building",
+                "building": "medical",
                 "bathroom_number": 6
               }
             ]
@@ -40,7 +40,7 @@
       }
     ]
   },
-  "response_text": "{\"reply\":\"I can help, but the request failed due to missing fields. Please provide:\\n- Authorization token (or confirm how you want to authenticate)\\n- Agent ID\\n- Message content to send\\n\\nIf you prefer, I can draft a formal request to facilities with your details once you share authorization and agent_id.\",\"input_tokens\":480,\"output_tokens\":193,\"action_debug\":[{\"call_id\":\"call_m89oJi2IUUhAnlb8rDTShTKX\",\"action_key\":\"get_bathroom_status\",\"request\":{\"url\":\"https://api.mitsolab.com/api/v1/chat\",\"method\":\"POST\",\"headers\":{\"auth\":\"123123\",\"Content-Type\":\"application/json\",\"x-vercel-id\":\"dxb1::xrztq-1770845288401-56da51cf4f7e\",\"x-invocation-id\":\"dxb1::xrztq-1770845288401-56da51cf4f7e\",\"x-vercel-intra-session\":\"3.ekM4bDg4bHpZT29RSnFpeY1CCDjMQJN0X24PohfJuop2oiBg43ICwwXblWqeTt2O\"},\"body\":{\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical building\",\"bathroom_number\":6}]}},\"response\":{\"ok\":false,\"status\":400,\"body\":\"{\\\"error\\\":\\\"Missing required fields\\\",\\\"missing\\\":[\\\"authorization\\\",\\\"agent_id\\\",\\\"message\\\"]}\"}}]}",
+  "response_text": "{\"reply\":\"I’m seeing a missing-field error from the system.\\n\\nPlease provide:\\n- Authorization token (or confirm the existing token you want used)\\n- Agent ID\\n- The message/note you want sent (e.g., any specific issue or request about bathroom 6)\\n\\nIf you prefer, I can reattempt once you share those details.\",\"input_tokens\":473,\"output_tokens\":187,\"action_debug\":[{\"call_id\":\"call_qkDD8mqLyyJyjA34cL8bOcr9\",\"action_key\":\"get_bathroom_status\",\"request\":{\"url\":\"https://api.mitsolab.com/v1/chat\",\"method\":\"POST\",\"headers\":{\"auth\":\"123123\",\"Content-Type\":\"application/json\",\"x-vercel-id\":\"dxb1::cfhc8-1770845465725-ed647815bdff\",\"x-invocation-id\":\"dxb1::cfhc8-1770845465725-ed647815bdff\",\"x-vercel-intra-session\":\"3.cWpzOXlpT3RVMkFmSzFLR9D4g+s9qUQVM0HNY9XhUyEE/PAs2t1MMRRSDW1qHwgQ\"},\"body\":{\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":6}]}},\"response\":{\"ok\":false,\"status\":400,\"body\":\"{\\\"error\\\":\\\"Missing required fields\\\",\\\"missing\\\":[\\\"authorization\\\",\\\"agent_id\\\",\\\"message\\\"]}\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
