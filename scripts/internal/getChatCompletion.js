@@ -66,6 +66,7 @@ TOOL RULES (MUST FOLLOW):
     reasoning,
     instructions: finalInstructions,
     input: toInputItems(messages),
+    text: { verbosity: "low" },
   };
 
   if (Array.isArray(tools) && tools.length > 0) {
