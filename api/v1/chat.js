@@ -111,6 +111,11 @@ function getHourInTimeZone(isoValue, timeZone) {
   if (typeof isoValue !== "string") return null;
   const date = new Date(isoValue);
   if (!Number.isFinite(date.getTime())) return null;
+  const fixedOffset = parseFixedOffsetMinutes(timeZone);
+  if (fixedOffset !== null) {
+    const local = new Date(date.getTime() + fixedOffset * 60000);
+    return local.getUTCHours();
+  }
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
       timeZone: timeZone || "UTC",
@@ -129,6 +134,11 @@ function getMinuteInTimeZone(isoValue, timeZone) {
   if (typeof isoValue !== "string") return null;
   const date = new Date(isoValue);
   if (!Number.isFinite(date.getTime())) return null;
+  const fixedOffset = parseFixedOffsetMinutes(timeZone);
+  if (fixedOffset !== null) {
+    const local = new Date(date.getTime() + fixedOffset * 60000);
+    return local.getUTCMinutes();
+  }
   try {
     const formatter = new Intl.DateTimeFormat("en-US", {
       timeZone: timeZone || "UTC",

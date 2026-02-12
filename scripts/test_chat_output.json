@@ -5,12 +5,12 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "Our schedule shows that 11:00 tomorrow is outside our open hours. Our available window is 11:00–20:00, but it seems the requested start time conflicted.\n\nWould you like me to:\n- book a 11:30 or 12:00 meeting instead, or\n- book within 11:00–20:00 at another time today or tomorrow?\n\nPlease confirm the preferred time, and I’ll arrange it for rasheedhijazi12@gmail.com.",
-    "input_tokens": 680,
-    "output_tokens": 118,
+    "reply": "Our scheduling shows open hours 11:00–20:00 GMT+03. The requested time 11:00 tomorrow is exactly at opening time, but the system indicates a conflict with open hours.\n\nWould you like me to:\n- Try an alternative time tomorrow (e.g., 11:30 or 12:00), or\n- Book for a different day within our hours?\n\nPlease confirm the preferred time.",
+    "input_tokens": 677,
+    "output_tokens": 103,
     "action_debug": [
       {
-        "call_id": "call_HG9WCMMmVepxCEVCiJwQ4Skt",
+        "call_id": "call_XTYGl66Xv3SPRgTIDvyYZQOA",
         "action_key": "book_event",
         "request": {
           "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
@@ -33,7 +33,7 @@
       }
     ]
   },
-  "response_text": "{\"reply\":\"Our schedule shows that 11:00 tomorrow is outside our open hours. Our available window is 11:00–20:00, but it seems the requested start time conflicted.\\n\\nWould you like me to:\\n- book a 11:30 or 12:00 meeting instead, or\\n- book within 11:00–20:00 at another time today or tomorrow?\\n\\nPlease confirm the preferred time, and I’ll arrange it for rasheedhijazi12@gmail.com.\",\"input_tokens\":680,\"output_tokens\":118,\"action_debug\":[{\"call_id\":\"call_HG9WCMMmVepxCEVCiJwQ4Skt\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\"},\"body\":{\"start_time\":\"2026-02-13T11:00:00+03:00\",\"attendees\":[\"rasheedhijazi12@gmail.com\"]}},\"response\":{\"ok\":false,\"status\":409,\"error\":\"Requested time is outside of open hours\"}}]}",
+  "response_text": "{\"reply\":\"Our scheduling shows open hours 11:00–20:00 GMT+03. The requested time 11:00 tomorrow is exactly at opening time, but the system indicates a conflict with open hours.\\n\\nWould you like me to:\\n- Try an alternative time tomorrow (e.g., 11:30 or 12:00), or\\n- Book for a different day within our hours?\\n\\nPlease confirm the preferred time.\",\"input_tokens\":677,\"output_tokens\":103,\"action_debug\":[{\"call_id\":\"call_XTYGl66Xv3SPRgTIDvyYZQOA\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\"},\"body\":{\"start_time\":\"2026-02-13T11:00:00+03:00\",\"attendees\":[\"rasheedhijazi12@gmail.com\"]}},\"response\":{\"ok\":false,\"status\":409,\"error\":\"Requested time is outside of open hours\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
