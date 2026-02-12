@@ -336,9 +336,11 @@ module.exports = async function handler(req, res) {
           const endHour = getHourInTimeZone(endTime, calendarTimeZone);
           const hasOpenHours =
             Number.isFinite(openHour) && Number.isFinite(closeHour) && openHour >= 0 && closeHour <= 24;
+          const isAllDayOpen = hasOpenHours && openHour === 0 && closeHour === 24;
 
           if (
             hasOpenHours &&
+            !isAllDayOpen &&
             (startHour === null ||
               endHour === null ||
               startHour < openHour ||
