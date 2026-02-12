@@ -18,12 +18,70 @@ function toInputItems(messages) {
   }));
 }
 
-function normalizeRfc3339(value) {
+function getTimeZoneOffsetMinutes(date, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+
+    const map = {};
+    for (const part of parts) {
+      if (part.type !== "literal") map[part.type] = part.value;
+    }
+
+    const localMillis = Date.UTC(
+      Number(map.year),
+      Number(map.month) - 1,
+      Number(map.day),
+      Number(map.hour),
+      Number(map.minute),
+      Number(map.second)
+    );
+
+    return Math.round((localMillis - date.getTime()) / 60000);
+  } catch {
+    return 0;
+  }
+}
+
+function parseLocalToUtcIso(value, timeZone) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+    String(value || "").trim()
+  );
+  if (!match) return String(value || "");
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6] || "0");
+
+  let utcMillis = Date.UTC(year, month - 1, day, hour, minute, second);
+  for (let i = 0; i < 2; i += 1) {
+    const offset = getTimeZoneOffsetMinutes(new Date(utcMillis), timeZone);
+    utcMillis = Date.UTC(year, month - 1, day, hour, minute, second) - offset * 60000;
+  }
+
+  return new Date(utcMillis).toISOString();
+}
+
+function normalizeRfc3339(value, timeZone) {
   if (typeof value !== "string") return value;
   const trimmed = value.trim();
   if (!trimmed) return value;
   if (/[zZ]$/.test(trimmed)) return trimmed;
   if (/[+-]\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+  if (timeZone) {
+    return parseLocalToUtcIso(trimmed, timeZone);
+  }
   return `${trimmed}Z`;
 }
 
@@ -325,11 +383,11 @@ module.exports = async function handler(req, res) {
         headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
 
         if (actionDef.kind === "calendar_create") {
-          const startTime = normalizeRfc3339(variables?.start_time);
+          const calendarTimeZone = actionDef.timezone || "UTC";
+          const startTime = normalizeRfc3339(variables?.start_time, calendarTimeZone);
           const durationMins = Number(actionDef.duration_mins);
           const effectiveDuration = Number.isFinite(durationMins) && durationMins > 0 ? durationMins : 30;
           const endTime = addMinutesToRfc3339(startTime, effectiveDuration);
-          const calendarTimeZone = actionDef.timezone || "UTC";
           const openHour = Number(actionDef.open_hour);
           const closeHour = Number(actionDef.close_hour);
           const startHour = getHourInTimeZone(startTime, calendarTimeZone);
@@ -462,8 +520,9 @@ module.exports = async function handler(req, res) {
           if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
         } else if (actionDef.kind === "calendar_list") {
           const qs = new URLSearchParams();
-          qs.append("timeMin", normalizeRfc3339(variables?.time_min));
-          qs.append("timeMax", normalizeRfc3339(variables?.time_max));
+          const calendarTimeZone = actionDef.timezone || "UTC";
+          qs.append("timeMin", normalizeRfc3339(variables?.time_min, calendarTimeZone));
+          qs.append("timeMax", normalizeRfc3339(variables?.time_max, calendarTimeZone));
           qs.append("singleEvents", "true");
           qs.append("orderBy", "startTime");
           if (Number.isFinite(Number(variables?.max_results))) {
