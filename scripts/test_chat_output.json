@@ -4,8 +4,11 @@
     "message": "can you notify the IT guy about the bug in the app that i told him to fix. send him an email at james123.ja35@gmail.com. you can decide the subject and email body",
     "source": "api test"
   },
-  "response_json": null,
-  "response_text": "A server error has occurred\n\nFUNCTION_INVOCATION_FAILED\n\ndxb1::rwshn-1770917139973-134dc4b0e149\n",
+  "response_json": {
+    "error": "Server error",
+    "detail": "Cannot read properties of undefined (reading 'agent_id')"
+  },
+  "response_text": "{\"error\":\"Server error\",\"detail\":\"Cannot read properties of undefined (reading 'agent_id')\"}",
   "status_code": 500,
   "reason": "Internal Server Error",
   "url": "https://api.mitsolab.com/v1/chat"

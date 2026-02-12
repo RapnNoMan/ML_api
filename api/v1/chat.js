@@ -357,6 +357,7 @@ module.exports = async function handler(req, res) {
     res.status(500).json({
       error: "Server error",
       detail: String(error?.message || error || "Unknown error"),
+      stack: typeof error?.stack === "string" ? error.stack : null,
     });
   }
 };
