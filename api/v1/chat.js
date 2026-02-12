@@ -399,11 +399,9 @@ module.exports = async function handler(req, res) {
           const startTime = normalizeRfc3339(variables?.start_time, calendarTimeZone);
           const durationMins = Number(actionDef.duration_mins);
           const effectiveDuration = Number.isFinite(durationMins) && durationMins > 0 ? durationMins : 30;
-          const endTime = addMinutesToRfc3339(startTime, effectiveDuration);
-          const endTimeForCheck = addMinutesToRfc3339(
-            startTime,
-            Math.max(1, effectiveDuration - 1)
-          );
+          const reducedDuration = Math.max(1, Math.floor(effectiveDuration * 0.95));
+          const endTime = addMinutesToRfc3339(startTime, reducedDuration);
+          const endTimeForCheck = addMinutesToRfc3339(startTime, reducedDuration);
           const openHour = Number(actionDef.open_hour);
           const closeHour = Number(actionDef.close_hour);
           const startHour = getHourInTimeZone(startTime, calendarTimeZone);
@@ -654,7 +652,9 @@ module.exports = async function handler(req, res) {
             ? `Open hours: ${calendarContext.open_hour}:00-${calendarContext.close_hour}:00`
             : "Open hours: not set",
           calendarContext.event_type ? `Event type: ${calendarContext.event_type}` : "Event type: not set",
-          "Use we/our and refer to the business calendar (not the user's).",
+          "You are speaking to a customer about the business schedule.",
+          "Refer to the business schedule in neutral terms (e.g., 'our schedule' or 'our availability').",
+          "Do not imply this is the customer's personal calendar.",
           "Do not ask for timezone or duration; use the settings above.",
           "If availability is checked, do not reveal event details.",
         ].join("\n")
