@@ -504,7 +504,7 @@ module.exports = async function handler(req, res) {
             ? variables.attendees.map((email) => ({ email }))
             : undefined;
           requestBody = JSON.stringify({
-            summary: variables?.summary,
+            summary: actionDef.event_type || "Event",
             location: actionDef.location ?? undefined,
             start: {
               dateTime: startTime,
@@ -594,7 +594,6 @@ module.exports = async function handler(req, res) {
               ? { to: variables?.to, subject: variables?.subject, body: variables?.body, cc: variables?.cc, bcc: variables?.bcc }
               : actionDef.kind === "calendar_create"
               ? {
-                  summary: variables?.summary,
                   start_time: variables?.start_time,
                   attendees: variables?.attendees,
                 }

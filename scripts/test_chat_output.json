@@ -5,20 +5,20 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "It looks like you want a haircut appointment tomorrow at 4:00 PM. I attempted to book it, but there’s a scheduling conflict: the calendar shows you’re busy from 2:00 PM on 2026-02-13 to 1:15 AM on 2026-02-14 (local +04:00). \n\nWould you like me to:\n- try a different time tomorrow (e.g., 5:00 PM or earlier), or\n- look for the next available slot, or\n- check another calendar?",
-    "input_tokens": 679,
-    "output_tokens": 130,
+    "reply": "I can’t schedule that right now. The 4:00 PM slot is busy tomorrow (Feb 13) from 14:00 to Feb 14 01:15. Would you like me to:\n\n- choose a different available time tomorrow, or\n- book for another day, or\n- check other nearby times?",
+    "input_tokens": 684,
+    "output_tokens": 85,
     "action_debug": [
       {
-        "call_id": "call_dUZNCqoN78jNQ5onF567Jbh7",
+        "call_id": "call_SU5ksQFAR68M41dqUFNXekIl",
         "action_key": "book_event",
         "request": {
-          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T16%3A00%3A00%2B02%3A00&timeMax=2026-02-13T15%3A00%3A00.000Z&singleEvents=true&orderBy=startTime",
+          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T16%3A00%3A00%2B03%3A00&timeMax=2026-02-13T14%3A00%3A00.000Z&singleEvents=true&orderBy=startTime",
           "method": "GET",
           "headers": {
             "Authorization": "Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207",
-            "x-vercel-id": "dxb1::ml9dd-1770922793705-a0941aad0aff",
-            "x-invocation-id": "dxb1::ml9dd-1770922793705-a0941aad0aff"
+            "x-vercel-id": "dxb1::s2qf5-1770923366779-923f4c2386ec",
+            "x-invocation-id": "dxb1::s2qf5-1770923366779-923f4c2386ec"
           },
           "body": null
         },
@@ -30,7 +30,7 @@
       }
     ]
   },
-  "response_text": "{\"reply\":\"It looks like you want a haircut appointment tomorrow at 4:00 PM. I attempted to book it, but there’s a scheduling conflict: the calendar shows you’re busy from 2:00 PM on 2026-02-13 to 1:15 AM on 2026-02-14 (local +04:00). \\n\\nWould you like me to:\\n- try a different time tomorrow (e.g., 5:00 PM or earlier), or\\n- look for the next available slot, or\\n- check another calendar?\",\"input_tokens\":679,\"output_tokens\":130,\"action_debug\":[{\"call_id\":\"call_dUZNCqoN78jNQ5onF567Jbh7\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T16%3A00%3A00%2B02%3A00&timeMax=2026-02-13T15%3A00%3A00.000Z&singleEvents=true&orderBy=startTime\",\"method\":\"GET\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\",\"x-vercel-id\":\"dxb1::ml9dd-1770922793705-a0941aad0aff\",\"x-invocation-id\":\"dxb1::ml9dd-1770922793705-a0941aad0aff\"},\"body\":null},\"response\":{\"ok\":false,\"status\":409,\"body\":\"{\\\"busy\\\":[{\\\"start\\\":\\\"2026-02-13T14:00:00+04:00\\\",\\\"end\\\":\\\"2026-02-14T01:15:00+04:00\\\"}]}\"}}]}",
+  "response_text": "{\"reply\":\"I can’t schedule that right now. The 4:00 PM slot is busy tomorrow (Feb 13) from 14:00 to Feb 14 01:15. Would you like me to:\\n\\n- choose a different available time tomorrow, or\\n- book for another day, or\\n- check other nearby times?\",\"input_tokens\":684,\"output_tokens\":85,\"action_debug\":[{\"call_id\":\"call_SU5ksQFAR68M41dqUFNXekIl\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T16%3A00%3A00%2B03%3A00&timeMax=2026-02-13T14%3A00%3A00.000Z&singleEvents=true&orderBy=startTime\",\"method\":\"GET\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\",\"x-vercel-id\":\"dxb1::s2qf5-1770923366779-923f4c2386ec\",\"x-invocation-id\":\"dxb1::s2qf5-1770923366779-923f4c2386ec\"},\"body\":null},\"response\":{\"ok\":false,\"status\":409,\"body\":\"{\\\"busy\\\":[{\\\"start\\\":\\\"2026-02-13T14:00:00+04:00\\\",\\\"end\\\":\\\"2026-02-14T01:15:00+04:00\\\"}]}\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
