@@ -258,11 +258,25 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       const requiredFields = attendeesRequired
         ? ["summary", "start_time", "attendees"]
         : ["summary", "start_time"];
+      const calendarTimeZone = calendarAction.timezone ?? "UTC";
+      const durationMins =
+        Number.isFinite(Number(calendarAction.duration_mins)) && Number(calendarAction.duration_mins) > 0
+          ? Number(calendarAction.duration_mins)
+          : 30;
+      const openHour = Number(calendarAction.open_hour);
+      const closeHour = Number(calendarAction.close_hour);
+      const hoursText =
+        Number.isFinite(openHour) && Number.isFinite(closeHour)
+          ? `Open hours: ${openHour}:00-${closeHour}:00. `
+          : "";
+      const attendeesText = attendeesRequired
+        ? "Attendees are required and must be email addresses. "
+        : "Attendees are optional; use emails if provided. ";
 
       tools.push({
         type: "function",
         name: toolName,
-        description: "Create a Google Calendar event.",
+        description: `Create a Google Calendar event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -282,7 +296,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Create Calendar Event",
-        description: "Create a Google Calendar event.",
+        description: `Create a Google Calendar event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "POST",
         headers: {},
@@ -306,10 +320,17 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
 
     if (calendarAction.list_events === true) {
       const toolName = sanitizeToolName("list_calendar_events", calendarAction.id, usedNames);
+      const calendarTimeZone = calendarAction.timezone ?? "UTC";
+      const openHour = Number(calendarAction.open_hour);
+      const closeHour = Number(calendarAction.close_hour);
+      const hoursText =
+        Number.isFinite(openHour) && Number.isFinite(closeHour)
+          ? `Open hours: ${openHour}:00-${closeHour}:00. `
+          : "";
       tools.push({
         type: "function",
         name: toolName,
-        description: "List Google Calendar events.",
+        description: `List Google Calendar events. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -326,7 +347,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "List Calendar Events",
-        description: "List Google Calendar events.",
+        description: `List Google Calendar events. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "GET",
         headers: {},
