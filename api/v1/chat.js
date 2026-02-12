@@ -18,6 +18,42 @@ function toInputItems(messages) {
   }));
 }
 
+function normalizeRfc3339(value) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (/[zZ]$/.test(trimmed)) return trimmed;
+  if (/[+-]\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+  return `${trimmed}Z`;
+}
+
+function addMinutesToRfc3339(value, minutes) {
+  if (typeof value !== "string") return value;
+  const ts = Date.parse(value);
+  if (!Number.isFinite(ts)) return value;
+  const ms = Number(minutes) * 60 * 1000;
+  const next = new Date(ts + ms);
+  return next.toISOString();
+}
+
+function getHourInTimeZone(isoValue, timeZone) {
+  if (typeof isoValue !== "string") return null;
+  const date = new Date(isoValue);
+  if (!Number.isFinite(date.getTime())) return null;
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || "UTC",
+      hour: "2-digit",
+      hour12: false,
+    });
+    const hourText = formatter.format(date);
+    const hour = Number(hourText);
+    return Number.isFinite(hour) ? hour : null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -288,28 +324,143 @@ module.exports = async function handler(req, res) {
         headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
 
         if (actionDef.kind === "calendar_create") {
+          const startTime = normalizeRfc3339(variables?.start_time);
+          const durationMins = Number(actionDef.duration_mins);
+          const effectiveDuration = Number.isFinite(durationMins) && durationMins > 0 ? durationMins : 30;
+          const endTime = addMinutesToRfc3339(startTime, effectiveDuration);
+          const calendarTimeZone = actionDef.timezone || "UTC";
+          const openHour = Number(actionDef.open_hour);
+          const closeHour = Number(actionDef.close_hour);
+          const startHour = getHourInTimeZone(startTime, calendarTimeZone);
+          const endHour = getHourInTimeZone(endTime, calendarTimeZone);
+          const hasOpenHours =
+            Number.isFinite(openHour) && Number.isFinite(closeHour) && openHour >= 0 && closeHour <= 24;
+
+          if (
+            hasOpenHours &&
+            (startHour === null ||
+              endHour === null ||
+              startHour < openHour ||
+              endHour > closeHour ||
+              startHour >= closeHour)
+          ) {
+            toolResults.push({
+              call_id: call.call_id ?? null,
+              action_key: call.action_key,
+              request: {
+                url,
+                method,
+                headers,
+                body: variables,
+              },
+              response: {
+                ok: false,
+                status: 409,
+                error: "Requested time is outside of open hours",
+              },
+            });
+            continue;
+          }
+
+          const availabilityParams = new URLSearchParams();
+          availabilityParams.append("timeMin", startTime);
+          availabilityParams.append("timeMax", endTime);
+          availabilityParams.append("singleEvents", "true");
+          availabilityParams.append("orderBy", "startTime");
+          const availabilityUrl = `${url}?${availabilityParams.toString()}`;
+
+          let availabilityItems = [];
+          try {
+            const availabilityRes = await fetch(availabilityUrl, {
+              method: "GET",
+              headers,
+            });
+            if (!availabilityRes.ok) {
+              const errText = await availabilityRes.text();
+              toolResults.push({
+                call_id: call.call_id ?? null,
+                action_key: call.action_key,
+                request: {
+                  url: availabilityUrl,
+                  method: "GET",
+                  headers,
+                  body: null,
+                },
+                response: {
+                  ok: false,
+                  status: availabilityRes.status,
+                  body: errText,
+                },
+              });
+              continue;
+            }
+            const availabilityPayload = await availabilityRes.json();
+            availabilityItems = Array.isArray(availabilityPayload?.items)
+              ? availabilityPayload.items
+              : [];
+          } catch (error) {
+            toolResults.push({
+              call_id: call.call_id ?? null,
+              action_key: call.action_key,
+              request: {
+                url: availabilityUrl,
+                method: "GET",
+                headers,
+                body: null,
+              },
+              response: {
+                ok: false,
+                status: 502,
+                error: "Calendar availability check failed",
+              },
+            });
+            continue;
+          }
+
+          if (availabilityItems.length > 0) {
+            const busy = availabilityItems.map((item) => ({
+              start: item?.start?.dateTime || item?.start?.date || null,
+              end: item?.end?.dateTime || item?.end?.date || null,
+            }));
+            toolResults.push({
+              call_id: call.call_id ?? null,
+              action_key: call.action_key,
+              request: {
+                url: availabilityUrl,
+                method: "GET",
+                headers,
+                body: null,
+              },
+              response: {
+                ok: false,
+                status: 409,
+                body: JSON.stringify({ busy }),
+              },
+            });
+            continue;
+          }
+
           const attendees = Array.isArray(variables?.attendees)
             ? variables.attendees.map((email) => ({ email }))
             : undefined;
           requestBody = JSON.stringify({
             summary: variables?.summary,
-            description: variables?.description,
-            location: variables?.location,
+            location: actionDef.location ?? undefined,
             start: {
-              dateTime: variables?.start_time,
-              timeZone: variables?.timezone || "UTC",
+              dateTime: startTime,
+              timeZone: calendarTimeZone,
             },
             end: {
-              dateTime: variables?.end_time,
-              timeZone: variables?.timezone || "UTC",
+              dateTime: endTime,
+              timeZone: calendarTimeZone,
             },
             attendees,
           });
           if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
         } else if (actionDef.kind === "calendar_list") {
           const qs = new URLSearchParams();
-          qs.append("timeMin", variables?.time_min);
-          qs.append("timeMax", variables?.time_max);
+          qs.append("timeMin", normalizeRfc3339(variables?.time_min));
+          qs.append("timeMax", normalizeRfc3339(variables?.time_max));
           qs.append("singleEvents", "true");
           qs.append("orderBy", "startTime");
           if (Number.isFinite(Number(variables?.max_results))) {
@@ -383,11 +534,7 @@ module.exports = async function handler(req, res) {
               : actionDef.kind === "calendar_create"
               ? {
                   summary: variables?.summary,
-                  description: variables?.description,
-                  location: variables?.location,
                   start_time: variables?.start_time,
-                  end_time: variables?.end_time,
-                  timezone: variables?.timezone,
                   attendees: variables?.attendees,
                 }
               : actionDef.kind === "calendar_list"

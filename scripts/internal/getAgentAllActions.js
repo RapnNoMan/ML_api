@@ -136,7 +136,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       supKey,
       agentId,
       table: "google_calendar_actions",
-      fields: "id,agent_id,create_event,list_events",
+      fields: "id,agent_id,create_event,list_events,duration_mins,location,timezone,open_hour,close_hour,attendees_required",
     });
     if (!calendarActions.ok) return calendarActions;
     calendarActionsRows = calendarActions.rows;
@@ -254,6 +254,11 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
   if (calendarAction && calendarConnection) {
     if (calendarAction.create_event === true) {
       const toolName = sanitizeToolName("create_calendar_event", calendarAction.id, usedNames);
+      const attendeesRequired = calendarAction.attendees_required === true;
+      const requiredFields = attendeesRequired
+        ? ["summary", "start_time", "attendees"]
+        : ["summary", "start_time"];
+
       tools.push({
         type: "function",
         name: toolName,
@@ -262,17 +267,13 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
           type: "object",
           properties: {
             summary: { type: "string" },
-            description: { type: "string" },
-            location: { type: "string" },
             start_time: { type: "string" },
-            end_time: { type: "string" },
-            timezone: { type: "string" },
             attendees: {
               type: "array",
               items: { type: "string" },
             },
           },
-          required: ["summary", "start_time", "end_time"],
+          required: requiredFields,
           additionalProperties: false,
         },
       });
@@ -288,6 +289,12 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         body_template: null,
         kind: "calendar_create",
         username: null,
+        duration_mins: calendarAction.duration_mins ?? null,
+        location: calendarAction.location ?? null,
+        timezone: calendarAction.timezone ?? null,
+        open_hour: calendarAction.open_hour ?? null,
+        close_hour: calendarAction.close_hour ?? null,
+        attendees_required: attendeesRequired,
         calendar_connection: {
           access_token: calendarConnection.access_token,
           refresh_token: calendarConnection.refresh_token,
@@ -326,6 +333,9 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         body_template: null,
         kind: "calendar_list",
         username: null,
+        timezone: calendarAction.timezone ?? null,
+        open_hour: calendarAction.open_hour ?? null,
+        close_hour: calendarAction.close_hour ?? null,
         calendar_connection: {
           access_token: calendarConnection.access_token,
           refresh_token: calendarConnection.refresh_token,
