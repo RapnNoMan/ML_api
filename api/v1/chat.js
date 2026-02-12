@@ -112,6 +112,26 @@ function getHourInTimeZone(isoValue, timeZone) {
   }
 }
 
+function getMinuteInTimeZone(isoValue, timeZone) {
+  if (typeof isoValue !== "string") return null;
+  const date = new Date(isoValue);
+  if (!Number.isFinite(date.getTime())) return null;
+  try {
+    const formatter = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || "UTC",
+      minute: "2-digit",
+      hour: "2-digit",
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(date);
+    const minutePart = parts.find((p) => p.type === "minute");
+    const minute = Number(minutePart?.value);
+    return Number.isFinite(minute) ? minute : null;
+  } catch {
+    return null;
+  }
+}
+
 module.exports = async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -406,6 +426,8 @@ module.exports = async function handler(req, res) {
           const closeHour = Number(actionDef.close_hour);
           const startHour = getHourInTimeZone(startTime, calendarTimeZone);
           const endHour = getHourInTimeZone(endTime, calendarTimeZone);
+          const startMin = getMinuteInTimeZone(startTime, calendarTimeZone);
+          const endMin = getMinuteInTimeZone(endTime, calendarTimeZone);
           const hasOpenHours =
             Number.isFinite(openHour) && Number.isFinite(closeHour) && openHour >= 0 && closeHour <= 24;
           const isAllDayOpen = hasOpenHours && openHour === 0 && closeHour === 24;
@@ -415,9 +437,35 @@ module.exports = async function handler(req, res) {
             !isAllDayOpen &&
             startHour !== null &&
             endHour !== null &&
-            (startHour < openHour ||
-              endHour > closeHour ||
-              startHour >= closeHour)
+            startMin !== null &&
+            endMin !== null
+          ) {
+            const startTotal = startHour * 60 + startMin;
+            const endTotal = endHour * 60 + endMin;
+            const openTotal = Math.max(0, openHour * 60 - 1);
+            const closeTotal = Math.min(24 * 60, closeHour * 60 + 1);
+            if (startTotal < openTotal || endTotal > closeTotal || startTotal >= closeTotal) {
+              toolResults.push({
+                call_id: call.call_id ?? null,
+                action_key: call.action_key,
+                request: {
+                  url,
+                  method,
+                  headers,
+                  body: variables,
+                },
+                response: {
+                  ok: false,
+                  status: 409,
+                  error: "Requested time is outside of open hours",
+                },
+              });
+              continue;
+            }
+          } else if (
+            hasOpenHours &&
+            !isAllDayOpen &&
+            (startHour === null || endHour === null || startMin === null || endMin === null)
           ) {
             toolResults.push({
               call_id: call.call_id ?? null,
