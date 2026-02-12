@@ -399,9 +399,9 @@ module.exports = async function handler(req, res) {
           if (
             hasOpenHours &&
             !isAllDayOpen &&
-            (startHour === null ||
-              endHour === null ||
-              startHour < openHour ||
+            startHour !== null &&
+            endHour !== null &&
+            (startHour < openHour ||
               endHour > closeHour ||
               startHour >= closeHour)
           ) {

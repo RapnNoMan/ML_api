@@ -5,12 +5,12 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "I can’t complete that booking because 12:00 tomorrow is outside the appointment open hours. \n\nPlease share:\n- the preferred time within open hours\n- or the exact open hours for tomorrow\n\nI’ll book it right away for Resheed.",
-    "input_tokens": 586,
-    "output_tokens": 68,
+    "reply": "I can help with that. It looks like 12:00 PM tomorrow is outside your calendar’s open hours. \n\nPlease confirm:\n- The desired time and date (tomorrow at 12:00 PM local time, or another time)?\n- Your preferred duration (default 30 minutes, or different)?\n- Attendees (e.g., your barber/studio) and any notes?\n\nOnce you confirm, I’ll try booking again.",
+    "input_tokens": 577,
+    "output_tokens": 106,
     "action_debug": [
       {
-        "call_id": "call_IgCMDdIW2QFJeGAfvYpCyScZ",
+        "call_id": "call_Y6LOGR3oQaSfUNj84UlNjbGB",
         "action_key": "book_event",
         "request": {
           "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
@@ -19,8 +19,8 @@
             "Authorization": "Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207"
           },
           "body": {
-            "summary": "Haircut for Resheed",
-            "start_time": "2026-02-13T12:00:00+02:00",
+            "summary": "Haircut - Resheed",
+            "start_time": "2026-02-13T12:00:00",
             "attendees": []
           }
         },
@@ -32,7 +32,7 @@
       }
     ]
   },
-  "response_text": "{\"reply\":\"I can’t complete that booking because 12:00 tomorrow is outside the appointment open hours. \\n\\nPlease share:\\n- the preferred time within open hours\\n- or the exact open hours for tomorrow\\n\\nI’ll book it right away for Resheed.\",\"input_tokens\":586,\"output_tokens\":68,\"action_debug\":[{\"call_id\":\"call_IgCMDdIW2QFJeGAfvYpCyScZ\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207\"},\"body\":{\"summary\":\"Haircut for Resheed\",\"start_time\":\"2026-02-13T12:00:00+02:00\",\"attendees\":[]}},\"response\":{\"ok\":false,\"status\":409,\"error\":\"Requested time is outside of open hours\"}}]}",
+  "response_text": "{\"reply\":\"I can help with that. It looks like 12:00 PM tomorrow is outside your calendar’s open hours. \\n\\nPlease confirm:\\n- The desired time and date (tomorrow at 12:00 PM local time, or another time)?\\n- Your preferred duration (default 30 minutes, or different)?\\n- Attendees (e.g., your barber/studio) and any notes?\\n\\nOnce you confirm, I’ll try booking again.\",\"input_tokens\":577,\"output_tokens\":106,\"action_debug\":[{\"call_id\":\"call_Y6LOGR3oQaSfUNj84UlNjbGB\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207\"},\"body\":{\"summary\":\"Haircut - Resheed\",\"start_time\":\"2026-02-13T12:00:00\",\"attendees\":[]}},\"response\":{\"ok\":false,\"status\":409,\"error\":\"Requested time is outside of open hours\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
