@@ -5,12 +5,40 @@
     "source": "api test"
   },
   "response_json": {
-    "error": "Server error",
-    "detail": "Cannot read properties of undefined (reading 'agent_id')",
-    "stack": "TypeError: Cannot read properties of undefined (reading 'agent_id')\n    at Object.handler (/var/task/api/v1/chat.js:220:25)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async r (/opt/rust/nodejs.js:2:15572)\n    at async Server.<anonymous> (/opt/rust/nodejs.js:2:11594)\n    at async Server.<anonymous> (/opt/rust/nodejs.js:17:10042)"
+    "reply": "Email sent to james123.ja35@gmail.com with the subject and body you requested. Let me know if you want any changes or a follow-up reminder.",
+    "input_tokens": 855,
+    "output_tokens": 50,
+    "action_debug": [
+      {
+        "call_id": "call_wdURm3kVgq7lP6tsU0vqxKO6",
+        "action_key": "send_gmail_email",
+        "request": {
+          "url": "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+          "method": "POST",
+          "headers": {
+            "Authorization": "Bearer ya29.a0AUMWg_KgiMbuwZcz5ERR10OVQGbUHBdodPUzgzOKKqXntQzS5Rh5_aHHadpjp5VxdGP81SeT0tVkRgb3eH5wTnG5lcwHtuPa3gQiL5bSRPNmhGCS0U6nFr8SXYzWlRZyjI48RxoBSgiEkHz4vr4EG5rwERs5mlkVJgIWBT3VKnAVhBh3dl-6QZLBbSgnbmK3EYUvRCQaCgYKAd4SARISFQHGX2Mi7l-024YRR6ytIcJX85Ot5Q0206",
+            "Content-Type": "application/json",
+            "x-vercel-id": "dxb1::m5k8t-1770917578235-8837f0affdc7",
+            "x-invocation-id": "dxb1::m5k8t-1770917578235-8837f0affdc7"
+          },
+          "body": {
+            "to": "james123.ja35@gmail.com",
+            "subject": "Urgent: Please fix the app bug I reported",
+            "body": "Hi James,\n\nPlease address the bug in the app that I previously asked you to fix. It’s causing unexpected behavior and needs prompt attention. Could you confirm you’ve received this and provide an estimated time to resolve? If you need more details or steps to reproduce, let me know and I will send them.\n\nThanks,\nMitsoBot (on behalf of the requester)",
+            "cc": "",
+            "bcc": ""
+          }
+        },
+        "response": {
+          "ok": true,
+          "status": 200,
+          "body": "{\n  \"id\": \"19c52e9f21d05f58\",\n  \"threadId\": \"19c52e9f21d05f58\",\n  \"labelIds\": [\n    \"SENT\"\n  ]\n}\n"
+        }
+      }
+    ]
   },
-  "response_text": "{\"error\":\"Server error\",\"detail\":\"Cannot read properties of undefined (reading 'agent_id')\",\"stack\":\"TypeError: Cannot read properties of undefined (reading 'agent_id')\\n    at Object.handler (/var/task/api/v1/chat.js:220:25)\\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\\n    at async r (/opt/rust/nodejs.js:2:15572)\\n    at async Server.<anonymous> (/opt/rust/nodejs.js:2:11594)\\n    at async Server.<anonymous> (/opt/rust/nodejs.js:17:10042)\"}",
-  "status_code": 500,
-  "reason": "Internal Server Error",
+  "response_text": "{\"reply\":\"Email sent to james123.ja35@gmail.com with the subject and body you requested. Let me know if you want any changes or a follow-up reminder.\",\"input_tokens\":855,\"output_tokens\":50,\"action_debug\":[{\"call_id\":\"call_wdURm3kVgq7lP6tsU0vqxKO6\",\"action_key\":\"send_gmail_email\",\"request\":{\"url\":\"https://gmail.googleapis.com/gmail/v1/users/me/messages/send\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_KgiMbuwZcz5ERR10OVQGbUHBdodPUzgzOKKqXntQzS5Rh5_aHHadpjp5VxdGP81SeT0tVkRgb3eH5wTnG5lcwHtuPa3gQiL5bSRPNmhGCS0U6nFr8SXYzWlRZyjI48RxoBSgiEkHz4vr4EG5rwERs5mlkVJgIWBT3VKnAVhBh3dl-6QZLBbSgnbmK3EYUvRCQaCgYKAd4SARISFQHGX2Mi7l-024YRR6ytIcJX85Ot5Q0206\",\"Content-Type\":\"application/json\",\"x-vercel-id\":\"dxb1::m5k8t-1770917578235-8837f0affdc7\",\"x-invocation-id\":\"dxb1::m5k8t-1770917578235-8837f0affdc7\"},\"body\":{\"to\":\"james123.ja35@gmail.com\",\"subject\":\"Urgent: Please fix the app bug I reported\",\"body\":\"Hi James,\\n\\nPlease address the bug in the app that I previously asked you to fix. It’s causing unexpected behavior and needs prompt attention. Could you confirm you’ve received this and provide an estimated time to resolve? If you need more details or steps to reproduce, let me know and I will send them.\\n\\nThanks,\\nMitsoBot (on behalf of the requester)\",\"cc\":\"\",\"bcc\":\"\"}},\"response\":{\"ok\":true,\"status\":200,\"body\":\"{\\n  \\\"id\\\": \\\"19c52e9f21d05f58\\\",\\n  \\\"threadId\\\": \\\"19c52e9f21d05f58\\\",\\n  \\\"labelIds\\\": [\\n    \\\"SENT\\\"\\n  ]\\n}\\n\"}}]}",
+  "status_code": 200,
+  "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
 }

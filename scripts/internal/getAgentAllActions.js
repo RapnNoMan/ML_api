@@ -67,6 +67,8 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
   let slackRows = [];
   let gmailActionsRows = [];
   let gmailConnectionsRows = [];
+  let calendarActionsRows = [];
+  let calendarConnectionsRows = [];
 
   try {
     const custom = await fetchTable({
@@ -128,6 +130,26 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
     });
     if (!gmailConnections.ok) return gmailConnections;
     gmailConnectionsRows = gmailConnections.rows;
+
+    const calendarActions = await fetchTable({
+      supId,
+      supKey,
+      agentId,
+      table: "google_calendar_actions",
+      fields: "id,agent_id,create_event,list_events",
+    });
+    if (!calendarActions.ok) return calendarActions;
+    calendarActionsRows = calendarActions.rows;
+
+    const calendarConnections = await fetchTable({
+      supId,
+      supKey,
+      agentId,
+      table: "google_calendar_connections",
+      fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
+    });
+    if (!calendarConnections.ok) return calendarConnections;
+    calendarConnectionsRows = calendarConnections.rows;
   } catch (error) {
     return { ok: false, status: 502, error: "Actions service unavailable" };
   }
@@ -221,6 +243,97 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         expires_at: gmailConnection.expires_at,
       },
     });
+  }
+
+  const calendarAction = calendarActionsRows.find(
+    (row) => row?.create_event === true || row?.list_events === true
+  );
+  const calendarConnection = calendarConnectionsRows.find(
+    (row) => row?.agent_id === agentId
+  );
+  if (calendarAction && calendarConnection) {
+    if (calendarAction.create_event === true) {
+      const toolName = sanitizeToolName("create_calendar_event", calendarAction.id, usedNames);
+      tools.push({
+        type: "function",
+        name: toolName,
+        description: "Create a Google Calendar event.",
+        parameters: {
+          type: "object",
+          properties: {
+            summary: { type: "string" },
+            description: { type: "string" },
+            location: { type: "string" },
+            start_time: { type: "string" },
+            end_time: { type: "string" },
+            timezone: { type: "string" },
+            attendees: {
+              type: "array",
+              items: { type: "string" },
+            },
+          },
+          required: ["summary", "start_time", "end_time"],
+          additionalProperties: false,
+        },
+      });
+
+      actionMap.set(toolName, {
+        tool_name: toolName,
+        id: calendarAction.id ?? null,
+        title: "Create Calendar Event",
+        description: "Create a Google Calendar event.",
+        url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        method: "POST",
+        headers: {},
+        body_template: null,
+        kind: "calendar_create",
+        username: null,
+        calendar_connection: {
+          access_token: calendarConnection.access_token,
+          refresh_token: calendarConnection.refresh_token,
+          token_type: calendarConnection.token_type || "Bearer",
+          expires_at: calendarConnection.expires_at,
+        },
+      });
+    }
+
+    if (calendarAction.list_events === true) {
+      const toolName = sanitizeToolName("list_calendar_events", calendarAction.id, usedNames);
+      tools.push({
+        type: "function",
+        name: toolName,
+        description: "List Google Calendar events.",
+        parameters: {
+          type: "object",
+          properties: {
+            time_min: { type: "string" },
+            time_max: { type: "string" },
+            max_results: { type: "integer" },
+          },
+          required: ["time_min", "time_max"],
+          additionalProperties: false,
+        },
+      });
+
+      actionMap.set(toolName, {
+        tool_name: toolName,
+        id: calendarAction.id ?? null,
+        title: "List Calendar Events",
+        description: "List Google Calendar events.",
+        url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+        method: "GET",
+        headers: {},
+        body_template: null,
+        kind: "calendar_list",
+        username: null,
+        calendar_connection: {
+          access_token: calendarConnection.access_token,
+          refresh_token: calendarConnection.refresh_token,
+          token_type: calendarConnection.token_type || "Bearer",
+          expires_at: calendarConnection.expires_at,
+        },
+      });
+    }
   }
 
   return { ok: true, tools, actionMap };

@@ -8,6 +8,7 @@ const { getAgentAllActions } = require("../../scripts/internal/getAgentAllAction
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
+const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 
 function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
@@ -132,6 +133,8 @@ module.exports = async function handler(req, res) {
       "Respond clearly, professionally, and only with user-relevant information.",
     ].join("\n")
   );
+  const now = new Date();
+  promptSections.push(["CURRENT DATE", now.toISOString()].join("\n"));
   if (profileLines.length > 0) {
     promptSections.push(["AGENT PROFILE", ...profileLines].join("\n"));
   }
@@ -253,6 +256,68 @@ module.exports = async function handler(req, res) {
           }),
         });
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      } else if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
+        const tokenResult = await ensureCalendarAccessToken({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId: body.agent_id,
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          connection: actionDef.calendar_connection,
+        });
+
+        if (!tokenResult.ok) {
+          toolResults.push({
+            call_id: call.call_id ?? null,
+            action_key: call.action_key,
+            request: {
+              url,
+              method,
+              headers,
+              body: variables,
+            },
+            response: {
+              ok: false,
+              status: 401,
+              error: tokenResult.error || "Calendar authorization failed",
+            },
+          });
+          continue;
+        }
+
+        headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
+
+        if (actionDef.kind === "calendar_create") {
+          const attendees = Array.isArray(variables?.attendees)
+            ? variables.attendees.map((email) => ({ email }))
+            : undefined;
+          requestBody = JSON.stringify({
+            summary: variables?.summary,
+            description: variables?.description,
+            location: variables?.location,
+            start: {
+              dateTime: variables?.start_time,
+              timeZone: variables?.timezone || "UTC",
+            },
+            end: {
+              dateTime: variables?.end_time,
+              timeZone: variables?.timezone || "UTC",
+            },
+            attendees,
+          });
+          if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+        } else if (actionDef.kind === "calendar_list") {
+          const qs = new URLSearchParams();
+          qs.append("timeMin", variables?.time_min);
+          qs.append("timeMax", variables?.time_max);
+          qs.append("singleEvents", "true");
+          qs.append("orderBy", "startTime");
+          if (Number.isFinite(Number(variables?.max_results))) {
+            qs.append("maxResults", String(Number(variables.max_results)));
+          }
+          const qsText = qs.toString();
+          if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+        }
       } else if (actionDef.kind === "slack") {
         requestBody = JSON.stringify({
           text: typeof variables?.message === "string" ? variables.message : "",
@@ -280,10 +345,22 @@ module.exports = async function handler(req, res) {
           body: requestBody,
         });
         const text = await actionRes.text();
+        let responseBody = text;
+        if (actionDef.kind === "calendar_list" && actionRes.ok) {
+          try {
+            const parsed = JSON.parse(text);
+            const items = Array.isArray(parsed?.items) ? parsed.items : [];
+            const busy = items.map((item) => ({
+              start: item?.start?.dateTime || item?.start?.date || null,
+              end: item?.end?.dateTime || item?.end?.date || null,
+            }));
+            responseBody = JSON.stringify({ busy });
+          } catch (_) {}
+        }
         actionResponse = {
           ok: actionRes.ok,
           status: actionRes.status,
-          body: text,
+          body: responseBody,
         };
       } catch (error) {
         actionResponse = {
@@ -303,6 +380,22 @@ module.exports = async function handler(req, res) {
           body:
             actionDef.kind === "gmail_send"
               ? { to: variables?.to, subject: variables?.subject, body: variables?.body, cc: variables?.cc, bcc: variables?.bcc }
+              : actionDef.kind === "calendar_create"
+              ? {
+                  summary: variables?.summary,
+                  description: variables?.description,
+                  location: variables?.location,
+                  start_time: variables?.start_time,
+                  end_time: variables?.end_time,
+                  timezone: variables?.timezone,
+                  attendees: variables?.attendees,
+                }
+              : actionDef.kind === "calendar_list"
+              ? {
+                  time_min: variables?.time_min,
+                  time_max: variables?.time_max,
+                  max_results: variables?.max_results,
+                }
               : actionDef.kind === "slack"
               ? { text: variables?.message ?? "", username: actionDef.username || "MitsoLab" }
               : method === "GET"
