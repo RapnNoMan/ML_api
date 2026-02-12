@@ -272,7 +272,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       const attendeesText = attendeesRequired
         ? "Attendees required (emails). "
         : "Attendees optional (emails). ";
-      const voiceText = "Use we/our; this is the business calendar. ";
+      const voiceText = "Never say 'your calendar'; say 'our business calendar' and use we/our. ";
 
       tools.push({
         type: "function",
@@ -331,7 +331,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `Check schedule (availability only). Use we/our; business calendar. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check schedule (availability only). Never say 'your calendar'; say 'our business calendar' and use we/our. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -348,7 +348,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Check Calendar Schedule",
-        description: `Check schedule (availability only). Use we/our; business calendar. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check schedule (availability only). Never say 'your calendar'; say 'our business calendar' and use we/our. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "GET",
         headers: {},
