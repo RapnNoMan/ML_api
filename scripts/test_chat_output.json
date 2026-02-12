@@ -5,11 +5,11 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "Which timezone are you in? And how long should the meeting be (e.g., 30 min, 1 hr)? Do you want me to check your calendar for free slots after 12:00 — if so, I’ll need permission to access it.",
-    "input_tokens": 655,
-    "output_tokens": 171
+    "reply": "Which timezone are you in, and how long should the meeting be?",
+    "input_tokens": 711,
+    "output_tokens": 250
   },
-  "response_text": "{\"reply\":\"Which timezone are you in? And how long should the meeting be (e.g., 30 min, 1 hr)? Do you want me to check your calendar for free slots after 12:00 — if so, I’ll need permission to access it.\",\"input_tokens\":655,\"output_tokens\":171}",
+  "response_text": "{\"reply\":\"Which timezone are you in, and how long should the meeting be?\",\"input_tokens\":711,\"output_tokens\":250}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"

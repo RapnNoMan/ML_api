@@ -253,7 +253,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
   );
   if (calendarAction && calendarConnection) {
     if (calendarAction.create_event === true) {
-      const toolName = sanitizeToolName("create_calendar_event", calendarAction.id, usedNames);
+      const toolName = sanitizeToolName("book_event", calendarAction.id, usedNames);
       const attendeesRequired = calendarAction.attendees_required === true;
       const requiredFields = attendeesRequired
         ? ["summary", "start_time", "attendees"]
@@ -276,7 +276,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `Create a Google Calendar event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -295,8 +295,8 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       actionMap.set(toolName, {
         tool_name: toolName,
         id: calendarAction.id ?? null,
-        title: "Create Calendar Event",
-        description: `Create a Google Calendar event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        title: "Book Event",
+        description: `Book an event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "POST",
         headers: {},
@@ -319,7 +319,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
     }
 
     if (calendarAction.list_events === true) {
-      const toolName = sanitizeToolName("list_calendar_events", calendarAction.id, usedNames);
+      const toolName = sanitizeToolName("check_calendar_schedule", calendarAction.id, usedNames);
       const calendarTimeZone = calendarAction.timezone ?? "UTC";
       const openHour = Number(calendarAction.open_hour);
       const closeHour = Number(calendarAction.close_hour);
@@ -330,7 +330,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `List Google Calendar events. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check calendar schedule (availability only, no event details). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -346,8 +346,8 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       actionMap.set(toolName, {
         tool_name: toolName,
         id: calendarAction.id ?? null,
-        title: "List Calendar Events",
-        description: `List Google Calendar events. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        title: "Check Calendar Schedule",
+        description: `Check calendar schedule (availability only, no event details). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "GET",
         headers: {},
