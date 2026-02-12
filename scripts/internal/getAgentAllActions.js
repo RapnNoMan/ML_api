@@ -270,13 +270,14 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
           ? `Open hours: ${openHour}:00-${closeHour}:00. `
           : "";
       const attendeesText = attendeesRequired
-        ? "Attendees are required and must be email addresses. "
-        : "Attendees are optional; use emails if provided. ";
+        ? "Attendees required (emails). "
+        : "Attendees optional (emails). ";
+      const voiceText = "Use we/our; this is the business calendar. ";
 
       tools.push({
         type: "function",
         name: toolName,
-        description: `Book an event (business calendar). ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event. ${voiceText}${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -296,7 +297,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Book Event",
-        description: `Book an event (business calendar). ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event. ${voiceText}${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "POST",
         headers: {},
@@ -330,7 +331,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `Check business calendar (availability only). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check schedule (availability only). Use we/our; business calendar. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -347,7 +348,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Check Calendar Schedule",
-        description: `Check business calendar (availability only). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check schedule (availability only). Use we/our; business calendar. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "GET",
         headers: {},

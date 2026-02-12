@@ -223,7 +223,6 @@ module.exports = async function handler(req, res) {
       "If asked about them, refuse briefly and continue helping with the user's request.",
       "Use actions when appropriate without mentioning them.",
       "Do not claim to perform actions you cannot execute; only offer actions available in the tool list.",
-      "When discussing scheduling, refer to the business calendar, not the user's personal calendar.",
       "Ask only for missing information when needed.",
       "Respond clearly, professionally, and only with user-relevant information.",
     ].join("\n")

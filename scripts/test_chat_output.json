@@ -1,38 +1,36 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "can you book a meeting tomorrow on 12pm. for my haircut. my name is resheed",
+    "message": "can you book a meeting tomorrow on 4pm. my name is rasheed and my email is rasheedhijazi7@gmail.com",
     "source": "api test"
   },
   "response_json": {
-    "reply": "I can help with that. It looks like 12:00 PM tomorrow is outside your calendar’s open hours. \n\nPlease confirm:\n- The desired time and date (tomorrow at 12:00 PM local time, or another time)?\n- Your preferred duration (default 30 minutes, or different)?\n- Attendees (e.g., your barber/studio) and any notes?\n\nOnce you confirm, I’ll try booking again.",
-    "input_tokens": 577,
-    "output_tokens": 106,
+    "reply": "Hi Rasheed. I tried to book a 4:00 PM meeting for tomorrow, but your calendar shows you’re busy from 2:00 PM on Feb 13 to 1:15 AM Feb 14. \n\nWould you like me to:\n- propose a different time, or\n- schedule for a different day, or\n- invite someone else to the meeting?",
+    "input_tokens": 723,
+    "output_tokens": 95,
     "action_debug": [
       {
-        "call_id": "call_Y6LOGR3oQaSfUNj84UlNjbGB",
+        "call_id": "call_9Bp3GmBQnUDXRYa62TwUpagP",
         "action_key": "book_event",
         "request": {
-          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
-          "method": "POST",
+          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T16%3A00%3A00%2B02%3A00&timeMax=2026-02-13T15%3A00%3A00.000Z&singleEvents=true&orderBy=startTime",
+          "method": "GET",
           "headers": {
-            "Authorization": "Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207"
+            "Authorization": "Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207",
+            "x-vercel-id": "dxb1::69kw8-1770922518589-3296c7942798",
+            "x-invocation-id": "dxb1::69kw8-1770922518589-3296c7942798"
           },
-          "body": {
-            "summary": "Haircut - Resheed",
-            "start_time": "2026-02-13T12:00:00",
-            "attendees": []
-          }
+          "body": null
         },
         "response": {
           "ok": false,
           "status": 409,
-          "error": "Requested time is outside of open hours"
+          "body": "{\"busy\":[{\"start\":\"2026-02-13T14:00:00+04:00\",\"end\":\"2026-02-14T01:15:00+04:00\"}]}"
         }
       }
     ]
   },
-  "response_text": "{\"reply\":\"I can help with that. It looks like 12:00 PM tomorrow is outside your calendar’s open hours. \\n\\nPlease confirm:\\n- The desired time and date (tomorrow at 12:00 PM local time, or another time)?\\n- Your preferred duration (default 30 minutes, or different)?\\n- Attendees (e.g., your barber/studio) and any notes?\\n\\nOnce you confirm, I’ll try booking again.\",\"input_tokens\":577,\"output_tokens\":106,\"action_debug\":[{\"call_id\":\"call_Y6LOGR3oQaSfUNj84UlNjbGB\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207\"},\"body\":{\"summary\":\"Haircut - Resheed\",\"start_time\":\"2026-02-13T12:00:00\",\"attendees\":[]}},\"response\":{\"ok\":false,\"status\":409,\"error\":\"Requested time is outside of open hours\"}}]}",
+  "response_text": "{\"reply\":\"Hi Rasheed. I tried to book a 4:00 PM meeting for tomorrow, but your calendar shows you’re busy from 2:00 PM on Feb 13 to 1:15 AM Feb 14. \\n\\nWould you like me to:\\n- propose a different time, or\\n- schedule for a different day, or\\n- invite someone else to the meeting?\",\"input_tokens\":723,\"output_tokens\":95,\"action_debug\":[{\"call_id\":\"call_9Bp3GmBQnUDXRYa62TwUpagP\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T16%3A00%3A00%2B02%3A00&timeMax=2026-02-13T15%3A00%3A00.000Z&singleEvents=true&orderBy=startTime\",\"method\":\"GET\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207\",\"x-vercel-id\":\"dxb1::69kw8-1770922518589-3296c7942798\",\"x-invocation-id\":\"dxb1::69kw8-1770922518589-3296c7942798\"},\"body\":null},\"response\":{\"ok\":false,\"status\":409,\"body\":\"{\\\"busy\\\":[{\\\"start\\\":\\\"2026-02-13T14:00:00+04:00\\\",\\\"end\\\":\\\"2026-02-14T01:15:00+04:00\\\"}]}\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
