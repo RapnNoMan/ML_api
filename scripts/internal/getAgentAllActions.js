@@ -276,7 +276,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `Book an event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event (business calendar). ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -296,7 +296,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Book Event",
-        description: `Book an event. ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event (business calendar). ${attendeesText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "POST",
         headers: {},
@@ -330,7 +330,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `Check calendar schedule (availability only, no event details). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check business calendar (availability only). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -347,7 +347,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Check Calendar Schedule",
-        description: `Check calendar schedule (availability only, no event details). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check business calendar (availability only). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "GET",
         headers: {},

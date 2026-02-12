@@ -1,15 +1,40 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "what time are you free tomorrow after 12pm",
+    "message": "when are you free tomorrow?",
     "source": "api test"
   },
   "response_json": {
-    "reply": "Which timezone are you in, and how long should the meeting be?",
-    "input_tokens": 711,
-    "output_tokens": 250
+    "reply": "I’m available outside your calendar busy times. Based on tomorrow’s schedule, you’re busy from 14:00 on 2026-02-13 to 01:15 on 2026-02-14 (your local time). \n\nWould you like me to propose a few open time slots tomorrow? If you prefer, share your preferred duration and time window.",
+    "input_tokens": 747,
+    "output_tokens": 93,
+    "action_debug": [
+      {
+        "call_id": "call_MAG7hnqLcgYHhjLsl53JJduL",
+        "action_key": "check_calendar_schedule",
+        "request": {
+          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T00%3A00%3A00%2B02%3A00&timeMax=2026-02-13T23%3A59%3A59%2B02%3A00&singleEvents=true&orderBy=startTime&maxResults=10",
+          "method": "GET",
+          "headers": {
+            "Authorization": "Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207",
+            "x-vercel-id": "dxb1::bx6tk-1770921468106-a6e8559d4925",
+            "x-invocation-id": "dxb1::bx6tk-1770921468106-a6e8559d4925"
+          },
+          "body": {
+            "time_min": "2026-02-13T00:00:00+02:00",
+            "time_max": "2026-02-13T23:59:59+02:00",
+            "max_results": 10
+          }
+        },
+        "response": {
+          "ok": true,
+          "status": 200,
+          "body": "{\"busy\":[{\"start\":\"2026-02-13T14:00:00+04:00\",\"end\":\"2026-02-14T01:15:00+04:00\"}]}"
+        }
+      }
+    ]
   },
-  "response_text": "{\"reply\":\"Which timezone are you in, and how long should the meeting be?\",\"input_tokens\":711,\"output_tokens\":250}",
+  "response_text": "{\"reply\":\"I’m available outside your calendar busy times. Based on tomorrow’s schedule, you’re busy from 14:00 on 2026-02-13 to 01:15 on 2026-02-14 (your local time). \\n\\nWould you like me to propose a few open time slots tomorrow? If you prefer, share your preferred duration and time window.\",\"input_tokens\":747,\"output_tokens\":93,\"action_debug\":[{\"call_id\":\"call_MAG7hnqLcgYHhjLsl53JJduL\",\"action_key\":\"check_calendar_schedule\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T00%3A00%3A00%2B02%3A00&timeMax=2026-02-13T23%3A59%3A59%2B02%3A00&singleEvents=true&orderBy=startTime&maxResults=10\",\"method\":\"GET\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_LVPzlJ1fVv0w7EMEw9mwwCq4EDmDY6YlE1H-NfpN2_TD5dlGrQUEBsFWXZf4OhgEYqKJoa24eKqCPiLEFBlCWVuq7PgvT0oRc_DPloqGYCqU34VyZpk-b_-aaYeU_goAz8lWicR64WWIvexlo8bIexPq4IM4mgiMQ_fPg8HPp4YvftsMPMBB5FGWn3NPIFxlpdaCgYKAcgSARISFQHGX2MixvB1_5roxE81fOyI4U1rcQ0207\",\"x-vercel-id\":\"dxb1::bx6tk-1770921468106-a6e8559d4925\",\"x-invocation-id\":\"dxb1::bx6tk-1770921468106-a6e8559d4925\"},\"body\":{\"time_min\":\"2026-02-13T00:00:00+02:00\",\"time_max\":\"2026-02-13T23:59:59+02:00\",\"max_results\":10}},\"response\":{\"ok\":true,\"status\":200,\"body\":\"{\\\"busy\\\":[{\\\"start\\\":\\\"2026-02-13T14:00:00+04:00\\\",\\\"end\\\":\\\"2026-02-14T01:15:00+04:00\\\"}]}\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
