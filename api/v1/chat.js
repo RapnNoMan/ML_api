@@ -18,10 +18,11 @@ function toInputItems(messages) {
 }
 
 module.exports = async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
-  }
+  try {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
 
   const body = req.body ?? {};
   const authHeader = req.headers.authorization || "";
@@ -347,9 +348,15 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  res.status(200).json({
-    reply: completion.data?.reply ?? "",
-    input_tokens: completion.usage?.input_tokens ?? null,
-    output_tokens: completion.usage?.output_tokens ?? null,
-  });
+    res.status(200).json({
+      reply: completion.data?.reply ?? "",
+      input_tokens: completion.usage?.input_tokens ?? null,
+      output_tokens: completion.usage?.output_tokens ?? null,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: "Server error",
+      detail: String(error?.message || error || "Unknown error"),
+    });
+  }
 };
