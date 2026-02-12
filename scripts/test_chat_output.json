@@ -5,32 +5,11 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "I can’t complete that booking because the calendar shows you’re busy tomorrow from 2:00 PM to 1:15 AM the next day. \n\nWould you like me to:\n- find the next available 1:00 PM slot, or\n- set a reminder for that time and propose a different time?",
-    "input_tokens": 683,
-    "output_tokens": 82,
-    "action_debug": [
-      {
-        "call_id": "call_kgQX3OYhXZggppCSuIDt4AS0",
-        "action_key": "book_event",
-        "request": {
-          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T13%3A00%3A00%2B03%3A00&timeMax=2026-02-13T11%3A00%3A00.000Z&singleEvents=true&orderBy=startTime",
-          "method": "GET",
-          "headers": {
-            "Authorization": "Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207",
-            "x-vercel-id": "dxb1::9jbp7-1770923518466-f9fb6079979f",
-            "x-invocation-id": "dxb1::9jbp7-1770923518466-f9fb6079979f"
-          },
-          "body": null
-        },
-        "response": {
-          "ok": false,
-          "status": 409,
-          "body": "{\"busy\":[{\"start\":\"2026-02-13T14:00:00+04:00\",\"end\":\"2026-02-14T01:15:00+04:00\"}]}"
-        }
-      }
-    ]
+    "reply": "I can do that. Quick clarifications before I book on our business calendar:\n\n1) Confirm date/time: tomorrow (2026-02-13) at 13:00 Amman/Jordan — is that correct?  \n2) Any attendees to add (email addresses)? If none, I will leave attendees blank.",
+    "input_tokens": 875,
+    "output_tokens": 322
   },
-  "response_text": "{\"reply\":\"I can’t complete that booking because the calendar shows you’re busy tomorrow from 2:00 PM to 1:15 AM the next day. \\n\\nWould you like me to:\\n- find the next available 1:00 PM slot, or\\n- set a reminder for that time and propose a different time?\",\"input_tokens\":683,\"output_tokens\":82,\"action_debug\":[{\"call_id\":\"call_kgQX3OYhXZggppCSuIDt4AS0\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T13%3A00%3A00%2B03%3A00&timeMax=2026-02-13T11%3A00%3A00.000Z&singleEvents=true&orderBy=startTime\",\"method\":\"GET\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\",\"x-vercel-id\":\"dxb1::9jbp7-1770923518466-f9fb6079979f\",\"x-invocation-id\":\"dxb1::9jbp7-1770923518466-f9fb6079979f\"},\"body\":null},\"response\":{\"ok\":false,\"status\":409,\"body\":\"{\\\"busy\\\":[{\\\"start\\\":\\\"2026-02-13T14:00:00+04:00\\\",\\\"end\\\":\\\"2026-02-14T01:15:00+04:00\\\"}]}\"}}]}",
+  "response_text": "{\"reply\":\"I can do that. Quick clarifications before I book on our business calendar:\\n\\n1) Confirm date/time: tomorrow (2026-02-13) at 13:00 Amman/Jordan — is that correct?  \\n2) Any attendees to add (email addresses)? If none, I will leave attendees blank.\",\"input_tokens\":875,\"output_tokens\":322}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"

@@ -258,6 +258,9 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       const requiredFields = attendeesRequired
         ? ["start_time", "attendees"]
         : ["start_time"];
+      const attendeesText = attendeesRequired
+        ? "Attendees required (emails). "
+        : "Attendees optional (emails). ";
       const calendarTimeZone = calendarAction.timezone ?? "UTC";
       const durationMins =
         Number.isFinite(Number(calendarAction.duration_mins)) && Number(calendarAction.duration_mins) > 0
@@ -269,18 +272,14 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         Number.isFinite(openHour) && Number.isFinite(closeHour)
           ? `Open hours: ${openHour}:00-${closeHour}:00. `
           : "";
-      const attendeesText = attendeesRequired
-        ? "Attendees required (emails). "
-        : "Attendees optional (emails). ";
       const eventTypeText = calendarAction.event_type
         ? `Event type: ${calendarAction.event_type}. `
         : "";
-      const voiceText = "Never say 'your calendar'; say 'our business calendar' and use we/our. ";
 
       tools.push({
         type: "function",
         name: toolName,
-        description: `Book an event. ${voiceText}${attendeesText}${eventTypeText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event. ${attendeesText}${eventTypeText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -299,7 +298,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Book Event",
-        description: `Book an event. ${voiceText}${attendeesText}${eventTypeText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
+        description: `Book an event. ${attendeesText}${eventTypeText}Timezone: ${calendarTimeZone}. Duration: ${durationMins} minutes. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "POST",
         headers: {},
@@ -334,7 +333,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       tools.push({
         type: "function",
         name: toolName,
-        description: `Check schedule (availability only). Never say 'your calendar'; say 'our business calendar' and use we/our. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check schedule availability (no event details). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         parameters: {
           type: "object",
           properties: {
@@ -351,7 +350,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         tool_name: toolName,
         id: calendarAction.id ?? null,
         title: "Check Calendar Schedule",
-        description: `Check schedule (availability only). Never say 'your calendar'; say 'our business calendar' and use we/our. Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
+        description: `Check schedule availability (no event details). Timezone: ${calendarTimeZone}. ${hoursText}`.trim(),
         url: "https://www.googleapis.com/calendar/v3/calendars/primary/events",
         method: "GET",
         headers: {},

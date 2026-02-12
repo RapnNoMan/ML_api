@@ -284,6 +284,7 @@ module.exports = async function handler(req, res) {
       : [];
 
     const toolResults = [];
+    let calendarContext = null;
     for (const call of actionCalls) {
       const actionDef = toolsResult.actionMap.get(call.action_key);
       if (!actionDef || !actionDef.url) {
@@ -293,6 +294,18 @@ module.exports = async function handler(req, res) {
           error: "Unknown action",
         });
         continue;
+      }
+
+      if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
+        if (!calendarContext) {
+          calendarContext = {
+            timezone: actionDef.timezone || "UTC",
+            duration_mins: actionDef.duration_mins ?? null,
+            open_hour: actionDef.open_hour ?? null,
+            close_hour: actionDef.close_hour ?? null,
+            event_type: actionDef.event_type ?? null,
+          };
+        }
       }
 
       let headers = {};
@@ -387,6 +400,10 @@ module.exports = async function handler(req, res) {
           const durationMins = Number(actionDef.duration_mins);
           const effectiveDuration = Number.isFinite(durationMins) && durationMins > 0 ? durationMins : 30;
           const endTime = addMinutesToRfc3339(startTime, effectiveDuration);
+          const endTimeForCheck = addMinutesToRfc3339(
+            startTime,
+            Math.max(1, effectiveDuration - 1)
+          );
           const openHour = Number(actionDef.open_hour);
           const closeHour = Number(actionDef.close_hour);
           const startHour = getHourInTimeZone(startTime, calendarTimeZone);
@@ -424,7 +441,7 @@ module.exports = async function handler(req, res) {
 
           const availabilityParams = new URLSearchParams();
           availabilityParams.append("timeMin", startTime);
-          availabilityParams.append("timeMax", endTime);
+          availabilityParams.append("timeMax", endTimeForCheck);
           availabilityParams.append("singleEvents", "true");
           availabilityParams.append("orderBy", "startTime");
           const availabilityUrl = `${url}?${availabilityParams.toString()}`;
@@ -625,11 +642,33 @@ module.exports = async function handler(req, res) {
       })),
     ];
 
+    const calendarNote = calendarContext
+      ? [
+          "CALENDAR SETTINGS",
+          `Timezone: ${calendarContext.timezone}`,
+          calendarContext.duration_mins !== null
+            ? `Duration: ${calendarContext.duration_mins} minutes`
+            : "Duration: default",
+          Number.isFinite(Number(calendarContext.open_hour)) &&
+          Number.isFinite(Number(calendarContext.close_hour))
+            ? `Open hours: ${calendarContext.open_hour}:00-${calendarContext.close_hour}:00`
+            : "Open hours: not set",
+          calendarContext.event_type ? `Event type: ${calendarContext.event_type}` : "Event type: not set",
+          "Use we/our and refer to the business calendar (not the user's).",
+          "Do not ask for timezone or duration; use the settings above.",
+          "If availability is checked, do not reveal event details.",
+        ].join("\n")
+      : null;
+
+    const followupInstructions = calendarNote
+      ? [promptNoChunks, calendarNote].join("\n\n")
+      : promptNoChunks;
+
     const followup = await getChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
       model: "gpt-5-nano",
       reasoning: { effort: "minimal" },
-      instructions: promptNoChunks,
+      instructions: followupInstructions,
       messages,
       inputItems: [...inputItems],
     });
