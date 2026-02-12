@@ -18,7 +18,20 @@ function toInputItems(messages) {
   }));
 }
 
+function parseFixedOffsetMinutes(timeZone) {
+  if (typeof timeZone !== "string") return null;
+  const match = timeZone.trim().match(/^GMT([+-])(\d{2}):(\d{2})$/i);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1 : 1;
+  const hours = Number(match[2]);
+  const minutes = Number(match[3]);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
+  return sign * (hours * 60 + minutes);
+}
+
 function getTimeZoneOffsetMinutes(date, timeZone) {
+  const fixedOffset = parseFixedOffsetMinutes(timeZone);
+  if (fixedOffset !== null) return fixedOffset;
   try {
     const parts = new Intl.DateTimeFormat("en-US", {
       timeZone,

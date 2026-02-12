@@ -5,32 +5,35 @@
     "source": "api test"
   },
   "response_json": {
-    "reply": "I tried to book tomorrow at 11:00, but that time conflicts with an existing event (12:00–12:57 in our calendar). \n\nWould you like me to:\n- Book at 11:00 another day, or\n- Schedule at 10:00 or 13:00 instead, or\n- Try 11:00 with a shorter duration (if possible)?\n\nPlease confirm your preferred option.",
-    "input_tokens": 803,
-    "output_tokens": 104,
+    "reply": "Our schedule shows that 11:00 tomorrow is outside our open hours. Our available window is 11:00–20:00, but it seems the requested start time conflicted.\n\nWould you like me to:\n- book a 11:30 or 12:00 meeting instead, or\n- book within 11:00–20:00 at another time today or tomorrow?\n\nPlease confirm the preferred time, and I’ll arrange it for rasheedhijazi12@gmail.com.",
+    "input_tokens": 680,
+    "output_tokens": 118,
     "action_debug": [
       {
-        "call_id": "call_csdtuYtqVpQ4x7uNs9R4KDQv",
+        "call_id": "call_HG9WCMMmVepxCEVCiJwQ4Skt",
         "action_key": "book_event",
         "request": {
-          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T11%3A00%3A00%2B02%3A00&timeMax=2026-02-13T09%3A57%3A00.000Z&singleEvents=true&orderBy=startTime",
-          "method": "GET",
+          "url": "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+          "method": "POST",
           "headers": {
-            "Authorization": "Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207",
-            "x-vercel-id": "dxb1::9jbp7-1770925554679-5eedaee88bfc",
-            "x-invocation-id": "dxb1::9jbp7-1770925554679-5eedaee88bfc"
+            "Authorization": "Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207"
           },
-          "body": null
+          "body": {
+            "start_time": "2026-02-13T11:00:00+03:00",
+            "attendees": [
+              "rasheedhijazi12@gmail.com"
+            ]
+          }
         },
         "response": {
           "ok": false,
           "status": 409,
-          "body": "{\"busy\":[{\"start\":\"2026-02-13T12:00:00+03:00\",\"end\":\"2026-02-13T12:57:00+03:00\"}]}"
+          "error": "Requested time is outside of open hours"
         }
       }
     ]
   },
-  "response_text": "{\"reply\":\"I tried to book tomorrow at 11:00, but that time conflicts with an existing event (12:00–12:57 in our calendar). \\n\\nWould you like me to:\\n- Book at 11:00 another day, or\\n- Schedule at 10:00 or 13:00 instead, or\\n- Try 11:00 with a shorter duration (if possible)?\\n\\nPlease confirm your preferred option.\",\"input_tokens\":803,\"output_tokens\":104,\"action_debug\":[{\"call_id\":\"call_csdtuYtqVpQ4x7uNs9R4KDQv\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events?timeMin=2026-02-13T11%3A00%3A00%2B02%3A00&timeMax=2026-02-13T09%3A57%3A00.000Z&singleEvents=true&orderBy=startTime\",\"method\":\"GET\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\",\"x-vercel-id\":\"dxb1::9jbp7-1770925554679-5eedaee88bfc\",\"x-invocation-id\":\"dxb1::9jbp7-1770925554679-5eedaee88bfc\"},\"body\":null},\"response\":{\"ok\":false,\"status\":409,\"body\":\"{\\\"busy\\\":[{\\\"start\\\":\\\"2026-02-13T12:00:00+03:00\\\",\\\"end\\\":\\\"2026-02-13T12:57:00+03:00\\\"}]}\"}}]}",
+  "response_text": "{\"reply\":\"Our schedule shows that 11:00 tomorrow is outside our open hours. Our available window is 11:00–20:00, but it seems the requested start time conflicted.\\n\\nWould you like me to:\\n- book a 11:30 or 12:00 meeting instead, or\\n- book within 11:00–20:00 at another time today or tomorrow?\\n\\nPlease confirm the preferred time, and I’ll arrange it for rasheedhijazi12@gmail.com.\",\"input_tokens\":680,\"output_tokens\":118,\"action_debug\":[{\"call_id\":\"call_HG9WCMMmVepxCEVCiJwQ4Skt\",\"action_key\":\"book_event\",\"request\":{\"url\":\"https://www.googleapis.com/calendar/v3/calendars/primary/events\",\"method\":\"POST\",\"headers\":{\"Authorization\":\"Bearer ya29.a0AUMWg_I6WBbhNSej7XLU8LVZjEGj7xVOmzaJxuLFWU64Tn6GImmMUR16pVdvSiw1YculCQO0MIR7PRvgli8LH-l7v2UvYqEi9dAKq9LAlvUdnibLh9BIzc9bjR5PxDZ96KpYf9SC48y4t5nJewyd1uINbUcEgemkGjS2pKrdfHzGGpDwk8AiRSHolmEN40aG9_8ePEIYaCgYKASASARISFQHGX2Mi7IbfRcX4MqDkX9jHYle9Iw0207\"},\"body\":{\"start_time\":\"2026-02-13T11:00:00+03:00\",\"attendees\":[\"rasheedhijazi12@gmail.com\"]}},\"response\":{\"ok\":false,\"status\":409,\"error\":\"Requested time is outside of open hours\"}}]}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
