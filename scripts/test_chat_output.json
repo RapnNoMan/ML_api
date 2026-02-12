@@ -1,46 +1,15 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "can you check on the bathroom? on the medical building stall 4. i am the CEO",
+    "message": "can you send a notification to security about my new client coming today at 5 PM",
     "source": "api test"
   },
   "response_json": {
-    "reply": "Update: Bathroom 4 in the medical building is currently empty.\n\nWould you like me to notify facilities or schedule a cleaning/restock?",
-    "input_tokens": 518,
-    "output_tokens": 139,
-    "action_debug": [
-      {
-        "call_id": "call_sRR84n4uyeJJc1IvdOSgiJux",
-        "action_key": "get_bathroom_status",
-        "request": {
-          "url": "https://api.mitsolab.com/api/v1/test_bathroom",
-          "method": "POST",
-          "headers": {
-            "auth": "123123",
-            "Content-Type": "application/json",
-            "x-vercel-id": "dxb1::4rt5h-1770845753751-4e7ca04c8c1d",
-            "x-invocation-id": "dxb1::4rt5h-1770845753751-4e7ca04c8c1d",
-            "x-vercel-intra-session": "3.bHFZZ1YweFVlNEx3SGZRMsgpc5OWKUhQ/z+/5H6XMzxWzpdN8bA6cL5tJihTG0wk"
-          },
-          "body": {
-            "whos_asking": "CEO",
-            "bathroom_info": [
-              {
-                "building": "medical",
-                "bathroom_number": 4
-              }
-            ]
-          }
-        },
-        "response": {
-          "ok": true,
-          "status": 200,
-          "body": "{\"building_name\":\"medical\",\"bathroom_number\":4,\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":4}],\"status\":\"empty\",\"message\":\"Bathroom 4 in medical is empty.\"}"
-        }
-      }
-    ]
+    "reply": "I can’t send notifications directly. I can draft the notification for you — please confirm the details below or provide any missing info:\n\nRequired:\n- Client name:\n- Date (if not today):\n- Time: 5:00 PM (confirmed)\n- Location/building/office:\n- Security contact method (email, SMS, internal system) and recipient address/phone:\n- Any special instructions (ID check, escort, parking, access code):\n\nPreview template I will send once you confirm:\n\"Security Alert: New client [Client name] will arrive on [Date] at 5:00 PM at [Location]. Please be prepared to [special instructions]. Contact [your name/phone] for questions.\"\n\nReply with the details and whether you want me to adjust the wording.",
+    "input_tokens": 1871,
+    "output_tokens": 277
   },
-  "response_text": "{\"reply\":\"Update: Bathroom 4 in the medical building is currently empty.\\n\\nWould you like me to notify facilities or schedule a cleaning/restock?\",\"input_tokens\":518,\"output_tokens\":139,\"action_debug\":[{\"call_id\":\"call_sRR84n4uyeJJc1IvdOSgiJux\",\"action_key\":\"get_bathroom_status\",\"request\":{\"url\":\"https://api.mitsolab.com/api/v1/test_bathroom\",\"method\":\"POST\",\"headers\":{\"auth\":\"123123\",\"Content-Type\":\"application/json\",\"x-vercel-id\":\"dxb1::4rt5h-1770845753751-4e7ca04c8c1d\",\"x-invocation-id\":\"dxb1::4rt5h-1770845753751-4e7ca04c8c1d\",\"x-vercel-intra-session\":\"3.bHFZZ1YweFVlNEx3SGZRMsgpc5OWKUhQ/z+/5H6XMzxWzpdN8bA6cL5tJihTG0wk\"},\"body\":{\"whos_asking\":\"CEO\",\"bathroom_info\":[{\"building\":\"medical\",\"bathroom_number\":4}]}},\"response\":{\"ok\":true,\"status\":200,\"body\":\"{\\\"building_name\\\":\\\"medical\\\",\\\"bathroom_number\\\":4,\\\"whos_asking\\\":\\\"CEO\\\",\\\"bathroom_info\\\":[{\\\"building\\\":\\\"medical\\\",\\\"bathroom_number\\\":4}],\\\"status\\\":\\\"empty\\\",\\\"message\\\":\\\"Bathroom 4 in medical is empty.\\\"}\"}}]}",
+  "response_text": "{\"reply\":\"I can’t send notifications directly. I can draft the notification for you — please confirm the details below or provide any missing info:\\n\\nRequired:\\n- Client name:\\n- Date (if not today):\\n- Time: 5:00 PM (confirmed)\\n- Location/building/office:\\n- Security contact method (email, SMS, internal system) and recipient address/phone:\\n- Any special instructions (ID check, escort, parking, access code):\\n\\nPreview template I will send once you confirm:\\n\\\"Security Alert: New client [Client name] will arrive on [Date] at 5:00 PM at [Location]. Please be prepared to [special instructions]. Contact [your name/phone] for questions.\\\"\\n\\nReply with the details and whether you want me to adjust the wording.\",\"input_tokens\":1871,\"output_tokens\":277}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"

@@ -4,8 +4,7 @@ const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessa
 const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
 const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
-const { getAgentCustomApiTools } = require("../../scripts/internal/getAgentCustomApiTools");
-const { getAgentCustomApiActionMap } = require("../../scripts/internal/getAgentCustomApiActionMap");
+const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
 
@@ -100,7 +99,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const toolsResult = await getAgentCustomApiTools({
+  const toolsResult = await getAgentAllActions({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId: body.agent_id,
@@ -181,23 +180,13 @@ module.exports = async function handler(req, res) {
     completion.data?.mode === "action" || completion.data?.mode === "actions_needed";
 
   if (hasToolCalls) {
-    const actionMapResult = await getAgentCustomApiActionMap({
-      supId: process.env.SUP_ID,
-      supKey: process.env.SUP_KEY,
-      agentId: body.agent_id,
-    });
-    if (!actionMapResult.ok) {
-      res.status(actionMapResult.status).json({ error: actionMapResult.error });
-      return;
-    }
-
     const actionCalls = Array.isArray(completion.data?.action_calls)
       ? completion.data.action_calls
       : [];
 
     const toolResults = [];
     for (const call of actionCalls) {
-      const actionDef = actionMapResult.actionMap.get(call.action_key);
+      const actionDef = toolsResult.actionMap.get(call.action_key);
       if (!actionDef || !actionDef.url) {
         toolResults.push({
           call_id: call.call_id ?? null,
@@ -222,7 +211,13 @@ module.exports = async function handler(req, res) {
       let url = actionDef.url;
       let body;
 
-      if (method === "GET") {
+      if (actionDef.kind === "slack") {
+        body = JSON.stringify({
+          text: typeof variables?.message === "string" ? variables.message : "",
+          username: actionDef.username || "MitsoLab",
+        });
+        if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      } else if (method === "GET") {
         const qs = new URLSearchParams();
         for (const [key, value] of Object.entries(variables)) {
           if (value === undefined) continue;
@@ -263,7 +258,12 @@ module.exports = async function handler(req, res) {
           url,
           method,
           headers,
-          body: method === "GET" ? null : variables,
+          body:
+            actionDef.kind === "slack"
+              ? { text: variables?.message ?? "", username: actionDef.username || "MitsoLab" }
+              : method === "GET"
+                ? null
+                : variables,
         },
         response: actionResponse,
       });
