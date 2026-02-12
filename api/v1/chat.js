@@ -211,7 +211,7 @@ module.exports = async function handler(req, res) {
       const method = String(actionDef.method || "POST").toUpperCase();
       const variables = call?.variables ?? {};
       let url = actionDef.url;
-      let body;
+      let requestBody;
 
       if (actionDef.kind === "gmail_send") {
         const tokenResult = await ensureAccessToken({
@@ -243,7 +243,7 @@ module.exports = async function handler(req, res) {
         }
 
         headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
-        body = JSON.stringify({
+        requestBody = JSON.stringify({
           raw: buildRawEmail({
             to: variables?.to,
             subject: variables?.subject,
@@ -254,7 +254,7 @@ module.exports = async function handler(req, res) {
         });
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (actionDef.kind === "slack") {
-        body = JSON.stringify({
+        requestBody = JSON.stringify({
           text: typeof variables?.message === "string" ? variables.message : "",
           username: actionDef.username || "MitsoLab",
         });
@@ -268,7 +268,7 @@ module.exports = async function handler(req, res) {
         const qsText = qs.toString();
         if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
       } else {
-        body = JSON.stringify(variables);
+        requestBody = JSON.stringify(variables);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       }
 
@@ -277,7 +277,7 @@ module.exports = async function handler(req, res) {
         const actionRes = await fetch(url, {
           method,
           headers,
-          body,
+          body: requestBody,
         });
         const text = await actionRes.text();
         actionResponse = {

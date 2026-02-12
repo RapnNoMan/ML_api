@@ -6,9 +6,10 @@
   },
   "response_json": {
     "error": "Server error",
-    "detail": "Cannot read properties of undefined (reading 'agent_id')"
+    "detail": "Cannot read properties of undefined (reading 'agent_id')",
+    "stack": "TypeError: Cannot read properties of undefined (reading 'agent_id')\n    at Object.handler (/var/task/api/v1/chat.js:220:25)\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\n    at async r (/opt/rust/nodejs.js:2:15572)\n    at async Server.<anonymous> (/opt/rust/nodejs.js:2:11594)\n    at async Server.<anonymous> (/opt/rust/nodejs.js:17:10042)"
   },
-  "response_text": "{\"error\":\"Server error\",\"detail\":\"Cannot read properties of undefined (reading 'agent_id')\"}",
+  "response_text": "{\"error\":\"Server error\",\"detail\":\"Cannot read properties of undefined (reading 'agent_id')\",\"stack\":\"TypeError: Cannot read properties of undefined (reading 'agent_id')\\n    at Object.handler (/var/task/api/v1/chat.js:220:25)\\n    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)\\n    at async r (/opt/rust/nodejs.js:2:15572)\\n    at async Server.<anonymous> (/opt/rust/nodejs.js:2:11594)\\n    at async Server.<anonymous> (/opt/rust/nodejs.js:17:10042)\"}",
   "status_code": 500,
   "reason": "Internal Server Error",
   "url": "https://api.mitsolab.com/v1/chat"
