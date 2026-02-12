@@ -65,6 +65,8 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
   let zapierRows = [];
   let makeRows = [];
   let slackRows = [];
+  let gmailActionsRows = [];
+  let gmailConnectionsRows = [];
 
   try {
     const custom = await fetchTable({
@@ -106,6 +108,26 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
     });
     if (!slack.ok) return slack;
     slackRows = slack.rows;
+
+    const gmailActions = await fetchTable({
+      supId,
+      supKey,
+      agentId,
+      table: "google_gmail_actions",
+      fields: "id,agent_id,send_email",
+    });
+    if (!gmailActions.ok) return gmailActions;
+    gmailActionsRows = gmailActions.rows;
+
+    const gmailConnections = await fetchTable({
+      supId,
+      supKey,
+      agentId,
+      table: "google_gmail_connections",
+      fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
+    });
+    if (!gmailConnections.ok) return gmailConnections;
+    gmailConnectionsRows = gmailConnections.rows;
   } catch (error) {
     return { ok: false, status: 502, error: "Actions service unavailable" };
   }
@@ -158,6 +180,48 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       additionalProperties: false,
     },
   });
+
+  const gmailAction = gmailActionsRows.find((row) => row?.send_email === true);
+  const gmailConnection = gmailConnectionsRows.find((row) => row?.agent_id === agentId);
+  if (gmailAction && gmailConnection) {
+    const toolName = sanitizeToolName("send_gmail_email", gmailAction.id, usedNames);
+    tools.push({
+      type: "function",
+      name: toolName,
+      description: "Send an email via Gmail.",
+      parameters: {
+        type: "object",
+        properties: {
+          to: { type: "string" },
+          subject: { type: "string" },
+          body: { type: "string" },
+          cc: { type: "string" },
+          bcc: { type: "string" },
+        },
+        required: ["to", "subject", "body"],
+        additionalProperties: false,
+      },
+    });
+
+    actionMap.set(toolName, {
+      tool_name: toolName,
+      id: gmailAction.id ?? null,
+      title: "Send Gmail Email",
+      description: "Send an email via Gmail.",
+      url: "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+      method: "POST",
+      headers: {},
+      body_template: null,
+      kind: "gmail_send",
+      username: null,
+      gmail_connection: {
+        access_token: gmailConnection.access_token,
+        refresh_token: gmailConnection.refresh_token,
+        token_type: gmailConnection.token_type || "Bearer",
+        expires_at: gmailConnection.expires_at,
+      },
+    });
+  }
 
   return { ok: true, tools, actionMap };
 }

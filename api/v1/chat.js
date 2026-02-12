@@ -7,6 +7,7 @@ const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
+const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 
 function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
@@ -211,7 +212,47 @@ module.exports = async function handler(req, res) {
       let url = actionDef.url;
       let body;
 
-      if (actionDef.kind === "slack") {
+      if (actionDef.kind === "gmail_send") {
+        const tokenResult = await ensureAccessToken({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId: body.agent_id,
+          clientId: process.env.GOOGLE_CLIENT_ID,
+          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+          connection: actionDef.gmail_connection,
+        });
+
+        if (!tokenResult.ok) {
+          toolResults.push({
+            call_id: call.call_id ?? null,
+            action_key: call.action_key,
+            request: {
+              url,
+              method,
+              headers,
+              body: variables,
+            },
+            response: {
+              ok: false,
+              status: 401,
+              error: tokenResult.error || "Gmail authorization failed",
+            },
+          });
+          continue;
+        }
+
+        headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
+        body = JSON.stringify({
+          raw: buildRawEmail({
+            to: variables?.to,
+            subject: variables?.subject,
+            body: variables?.body,
+            cc: variables?.cc,
+            bcc: variables?.bcc,
+          }),
+        });
+        if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      } else if (actionDef.kind === "slack") {
         body = JSON.stringify({
           text: typeof variables?.message === "string" ? variables.message : "",
           username: actionDef.username || "MitsoLab",
@@ -259,7 +300,9 @@ module.exports = async function handler(req, res) {
           method,
           headers,
           body:
-            actionDef.kind === "slack"
+            actionDef.kind === "gmail_send"
+              ? { to: variables?.to, subject: variables?.subject, body: variables?.body, cc: variables?.cc, bcc: variables?.bcc }
+              : actionDef.kind === "slack"
               ? { text: variables?.message ?? "", username: actionDef.username || "MitsoLab" }
               : method === "GET"
                 ? null
