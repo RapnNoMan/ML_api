@@ -197,6 +197,31 @@ function parseHeaderUrlHostPath(value) {
   }
 }
 
+function getOriginHost(headers) {
+  const originRaw = headers?.origin;
+  if (!originRaw || typeof originRaw !== "string") return "";
+  try {
+    return String(new URL(originRaw).hostname || "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isAllowedWidgetOriginHost(host) {
+  return host === "app.mitsolab.com" || host === "www.app.mitsolab.com";
+}
+
+function setWidgetCorsHeaders(req, res) {
+  const originRaw = typeof req?.headers?.origin === "string" ? req.headers.origin : "";
+  const originHost = getOriginHost(req?.headers);
+  if (originRaw && isAllowedWidgetOriginHost(originHost)) {
+    res.setHeader("Access-Control-Allow-Origin", originRaw);
+    res.setHeader("Vary", "Origin");
+  }
+  res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+}
+
 function isAllowedWidgetCaller(headers) {
   const allowedHosts = new Set(["app.mitsolab.com", "www.app.mitsolab.com"]);
   const originRaw = headers?.origin;
@@ -214,6 +239,17 @@ function isAllowedWidgetCaller(headers) {
 
 module.exports = async function handler(req, res) {
   try {
+    setWidgetCorsHeaders(req, res);
+    if (req.method === "OPTIONS") {
+      const originHost = getOriginHost(req.headers);
+      if (!isAllowedWidgetOriginHost(originHost)) {
+        res.status(403).json({ error: "Forbidden origin" });
+        return;
+      }
+      res.status(204).end();
+      return;
+    }
+
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
       return;
