@@ -1,16 +1,15 @@
-const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
-const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
-const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
-const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
-const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
-const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
-const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
-const { getChatHistory } = require("../../scripts/internal/getChatHistory");
-const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
-const { saveMessage } = require("../../scripts/internal/saveMessage");
-const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
-const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
-const { randomBytes } = require("node:crypto");
+const { checkMessageCap } = require("../../../scripts/internal/checkMessageCap");
+const { checkWidgetEmbedEnabled } = require("../../../scripts/internal/checkWidgetEmbedEnabled");
+const { SKIP_VECTOR_MESSAGES } = require("../../../scripts/internal/skipVectorMessages");
+const { getMessageEmbedding } = require("../../../scripts/internal/getMessageEmbedding");
+const { getVectorSearchTexts } = require("../../../scripts/internal/getVectorSearchTexts");
+const { getAgentInfo } = require("../../../scripts/internal/getAgentInfo");
+const { getAgentAllActions } = require("../../../scripts/internal/getAgentAllActions");
+const { getChatHistory } = require("../../../scripts/internal/getChatHistory");
+const { getChatCompletion } = require("../../../scripts/internal/getChatCompletion");
+const { saveMessage } = require("../../../scripts/internal/saveMessage");
+const { ensureAccessToken, buildRawEmail } = require("../../../scripts/internal/googleGmail");
+const { ensureAccessToken: ensureCalendarAccessToken } = require("../../../scripts/internal/googleCalendar");
 
 function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
@@ -163,11 +162,6 @@ function normalizeIdValue(value) {
   return text;
 }
 
-function makeGeneratedId() {
-  const token = randomBytes(4).toString("base64url").replace(/[^a-zA-Z0-9]/g, "");
-  return `id_${token || "anon"}`;
-}
-
 function normalizeCountry(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim().toUpperCase();
@@ -184,6 +178,40 @@ function getRequestCountry(headers) {
   );
 }
 
+function parseAgentIdFromRequest(req) {
+  const value = req?.query?.agent_id;
+  if (Array.isArray(value)) return String(value[0] || "").trim();
+  return String(value || "").trim();
+}
+
+function parseHeaderUrlHostPath(value) {
+  if (!value || typeof value !== "string") return { host: "", path: "" };
+  try {
+    const parsed = new URL(value);
+    return {
+      host: String(parsed.hostname || "").toLowerCase(),
+      path: String(parsed.pathname || ""),
+    };
+  } catch {
+    return { host: "", path: "" };
+  }
+}
+
+function isAllowedWidgetCaller(headers) {
+  const allowedHosts = new Set(["app.mitsolab.com", "www.app.mitsolab.com"]);
+  const originRaw = headers?.origin;
+  const refererRaw = headers?.referer;
+
+  const originInfo = parseHeaderUrlHostPath(originRaw);
+  const refererInfo = parseHeaderUrlHostPath(refererRaw);
+
+  const originAllowed = allowedHosts.has(originInfo.host);
+  const refererAllowed =
+    allowedHosts.has(refererInfo.host) && refererInfo.path.startsWith("/widget");
+
+  return originAllowed || refererAllowed;
+}
+
 module.exports = async function handler(req, res) {
   try {
     if (req.method !== "POST") {
@@ -193,14 +221,12 @@ module.exports = async function handler(req, res) {
 
   const body = req.body ?? {};
   const requestCountry = getRequestCountry(req.headers);
-  const authHeader = req.headers.authorization || "";
-  const token = authHeader.startsWith("Bearer ")
-    ? authHeader.slice("Bearer ".length).trim()
-    : "";
+  const agentId = parseAgentIdFromRequest(req);
   const missing = [];
-  if (!token) missing.push("authorization");
-  if (!body.agent_id) missing.push("agent_id");
+  if (!agentId) missing.push("agent_id (path)");
   if (!body.message) missing.push("message");
+  if (!normalizeIdValue(body.anon_id)) missing.push("anon_id");
+  if (!normalizeIdValue(body.chat_id)) missing.push("chat_id");
 
   if (missing.length > 0) {
     res.status(400).json({
@@ -210,35 +236,28 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const incomingAnonId = normalizeIdValue(body.anon_id);
-  const incomingChatId = normalizeIdValue(body.chat_id);
-  let anonId = incomingAnonId;
-  let chatId = incomingChatId;
-  if (!anonId && !chatId) {
-    const sessionId = makeGeneratedId();
-    anonId = sessionId;
-    chatId = sessionId;
-  } else if (!anonId) {
-    anonId = makeGeneratedId();
-  } else if (!chatId) {
-    chatId = makeGeneratedId();
-  }
-
-  const validation = await validateAgentKey({
+  const widgetEnabled = await checkWidgetEmbedEnabled({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    agentId: body.agent_id,
-    token,
+    agentId,
   });
-  if (!validation.ok) {
-    res.status(validation.status).json({ error: validation.error });
+  if (!widgetEnabled.ok) {
+    res.status(widgetEnabled.status).json({ error: widgetEnabled.error });
     return;
   }
+
+  if (!isAllowedWidgetCaller(req.headers)) {
+    res.status(403).json({ error: "Forbidden origin" });
+    return;
+  }
+
+  const anonId = normalizeIdValue(body.anon_id);
+  const chatId = normalizeIdValue(body.chat_id);
 
   const usageCheck = await checkMessageCap({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    agentId: body.agent_id,
+    agentId,
   });
   if (!usageCheck.ok) {
     res.status(usageCheck.status).json({ error: usageCheck.error });
@@ -264,7 +283,7 @@ module.exports = async function handler(req, res) {
     vectorResult = await getVectorSearchTexts({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
-      agentId: body.agent_id,
+      agentId,
       embedding: embeddingResult.embedding,
     });
     if (!vectorResult.ok) {
@@ -276,7 +295,7 @@ module.exports = async function handler(req, res) {
   const agentInfo = await getAgentInfo({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    agentId: body.agent_id,
+    agentId,
   });
   if (!agentInfo.ok) {
     res.status(agentInfo.status).json({ error: agentInfo.error });
@@ -286,7 +305,7 @@ module.exports = async function handler(req, res) {
   const toolsResult = await getAgentAllActions({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    agentId: body.agent_id,
+    agentId,
   });
   if (!toolsResult.ok) {
     res.status(toolsResult.status).json({ error: toolsResult.error });
@@ -333,7 +352,7 @@ module.exports = async function handler(req, res) {
     const historyResult = await getChatHistory({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
-      agentId: body.agent_id,
+      agentId,
       anonId,
       chatId,
       maxRows: 3,
@@ -415,7 +434,7 @@ module.exports = async function handler(req, res) {
         const tokenResult = await ensureAccessToken({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
-          agentId: body.agent_id,
+          agentId,
           clientId: process.env.GOOGLE_CLIENT_ID,
           clientSecret: process.env.GOOGLE_CLIENT_SECRET,
           connection: actionDef.gmail_connection,
@@ -455,7 +474,7 @@ module.exports = async function handler(req, res) {
         const tokenResult = await ensureCalendarAccessToken({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
-          agentId: body.agent_id,
+          agentId,
           clientId: process.env.GOOGLE_CLIENT_ID,
           clientSecret: process.env.GOOGLE_CLIENT_SECRET,
           connection: actionDef.calendar_connection,
@@ -798,7 +817,7 @@ module.exports = async function handler(req, res) {
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
-      agentId: body.agent_id,
+      agentId,
       workspaceId: agentInfo.workspace_id,
       anonId,
       chatId,
@@ -823,7 +842,7 @@ module.exports = async function handler(req, res) {
   const saveResult = await saveMessage({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    agentId: body.agent_id,
+    agentId,
     workspaceId: agentInfo.workspace_id,
     anonId,
     chatId,

@@ -1,10 +1,10 @@
-async function getAgentInfo({ supId, supKey, agentId }) {
+async function checkWidgetEmbedEnabled({ supId, supKey, agentId }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
 
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-  const url = `${baseUrl}/agents?select=name,role,policies,workspace_id&id=eq.${agentId}&limit=1`;
+  const url = `${baseUrl}/widget_embed?select=id&agent_id=eq.${agentId}&limit=1`;
 
   let response;
   try {
@@ -19,7 +19,7 @@ async function getAgentInfo({ supId, supKey, agentId }) {
     return {
       ok: false,
       status: 502,
-      error: "Agent service unavailable",
+      error: "Widget service unavailable",
     };
   }
 
@@ -27,7 +27,7 @@ async function getAgentInfo({ supId, supKey, agentId }) {
     return {
       ok: false,
       status: 502,
-      error: "Agent service unavailable",
+      error: "Widget service unavailable",
     };
   }
 
@@ -38,24 +38,18 @@ async function getAgentInfo({ supId, supKey, agentId }) {
     return {
       ok: false,
       status: 502,
-      error: "Agent service unavailable",
+      error: "Widget service unavailable",
     };
   }
 
-  const agent = Array.isArray(payload) ? payload[0] : payload;
-  if (!agent) {
-    return { ok: false, status: 404, error: "Agent not found" };
+  const rows = Array.isArray(payload) ? payload : [];
+  if (rows.length === 0) {
+    return { ok: false, status: 403, error: "Widget is not enabled for this agent" };
   }
 
-  return {
-    ok: true,
-    name: agent.name ?? "",
-    role: agent.role ?? "",
-    policies: agent.policies ?? [],
-    workspace_id: agent.workspace_id ?? null,
-  };
+  return { ok: true };
 }
 
 module.exports = {
-  getAgentInfo,
+  checkWidgetEmbedEnabled,
 };

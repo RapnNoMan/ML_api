@@ -1,4 +1,4 @@
-async function getChatHistory({ supId, supKey, agentId, anonId, chatId }) {
+async function getChatHistory({ supId, supKey, agentId, anonId, chatId, maxRows = 3 }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
@@ -9,7 +9,10 @@ async function getChatHistory({ supId, supKey, agentId, anonId, chatId }) {
   url.searchParams.set("agent_id", `eq.${agentId}`);
   url.searchParams.set("annon", `eq.${anonId}`);
   url.searchParams.set("chat_id", `eq.${chatId}`);
-  url.searchParams.set("order", "created_at.asc");
+  url.searchParams.set("order", "created_at.desc");
+  if (Number.isFinite(Number(maxRows)) && Number(maxRows) > 0) {
+    url.searchParams.set("limit", String(Math.floor(Number(maxRows))));
+  }
 
   let response;
   try {
@@ -35,7 +38,8 @@ async function getChatHistory({ supId, supKey, agentId, anonId, chatId }) {
     return { ok: false, status: 502, error: "History service unavailable" };
   }
 
-  const rows = Array.isArray(payload) ? payload : [];
+  const rowsDesc = Array.isArray(payload) ? payload : [];
+  const rows = [...rowsDesc].reverse();
   const messages = [];
 
   for (const row of rows) {
