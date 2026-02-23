@@ -13,11 +13,20 @@ const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/
 const { randomBytes } = require("node:crypto");
 
 function toInputItems(messages) {
-  return (Array.isArray(messages) ? messages : []).map((message) => ({
-    type: "message",
-    role: message.role,
-    content: [{ type: "input_text", text: String(message.content ?? "") }],
-  }));
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    const role = message?.role === "assistant" ? "assistant" : "user";
+    const text = String(message?.content ?? "");
+    return {
+      type: "message",
+      role,
+      content: [
+        {
+          type: role === "assistant" ? "output_text" : "input_text",
+          text,
+        },
+      ],
+    };
+  });
 }
 
 function parseFixedOffsetMinutes(timeZone) {
