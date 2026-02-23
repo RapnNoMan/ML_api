@@ -6,6 +6,7 @@ const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearch
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
+const { getRecentUserPrompts } = require("../../scripts/internal/getRecentUserPrompts");
 const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
@@ -273,9 +274,27 @@ module.exports = async function handler(req, res) {
     .replace(/\s+/g, " ");
   let vectorResult = { ok: true, chunks: [] };
   if (normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)) {
+    let ragQueryText = String(body.message);
+    const recentPromptsResult = await getRecentUserPrompts({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId: body.agent_id,
+      anonId,
+      chatId,
+      limit: 2,
+    });
+    if (!recentPromptsResult.ok) {
+      res.status(recentPromptsResult.status).json({ error: recentPromptsResult.error });
+      return;
+    }
+    const promptParts = Array.isArray(recentPromptsResult.prompts)
+      ? [...recentPromptsResult.prompts, String(body.message)]
+      : [String(body.message)];
+    ragQueryText = promptParts.filter(Boolean).join("\n");
+
     const embeddingResult = await getMessageEmbedding({
       apiKey: process.env.OPENAI_API_KEY,
-      message: body.message,
+      message: ragQueryText,
     });
     if (!embeddingResult.ok) {
       res.status(embeddingResult.status).json({ error: embeddingResult.error });
