@@ -1,15 +1,15 @@
-const { checkMessageCap } = require("../../../scripts/internal/checkMessageCap");
-const { checkWidgetEmbedEnabled } = require("../../../scripts/internal/checkWidgetEmbedEnabled");
-const { SKIP_VECTOR_MESSAGES } = require("../../../scripts/internal/skipVectorMessages");
-const { getMessageEmbedding } = require("../../../scripts/internal/getMessageEmbedding");
-const { getVectorSearchTexts } = require("../../../scripts/internal/getVectorSearchTexts");
-const { getAgentInfo } = require("../../../scripts/internal/getAgentInfo");
-const { getAgentAllActions } = require("../../../scripts/internal/getAgentAllActions");
-const { getChatHistory } = require("../../../scripts/internal/getChatHistory");
-const { getChatCompletion } = require("../../../scripts/internal/getChatCompletion");
-const { saveMessage } = require("../../../scripts/internal/saveMessage");
-const { ensureAccessToken, buildRawEmail } = require("../../../scripts/internal/googleGmail");
-const { ensureAccessToken: ensureCalendarAccessToken } = require("../../../scripts/internal/googleCalendar");
+const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
+const { checkWidgetEmbedEnabled } = require("../../scripts/internal/checkWidgetEmbedEnabled");
+const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
+const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
+const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
+const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
+const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
+const { getChatHistory } = require("../../scripts/internal/getChatHistory");
+const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
+const { saveMessage } = require("../../scripts/internal/saveMessage");
+const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
+const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 
 function toInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => ({
