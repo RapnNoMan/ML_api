@@ -247,6 +247,138 @@ function isAllowedWidgetCaller(headers) {
   return originAllowed || refererAllowed;
 }
 
+function beginWidgetStream(res) {
+  res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  if (typeof res.flushHeaders === "function") res.flushHeaders();
+}
+
+function writeWidgetStreamEvent(res, event, payload) {
+  const data = JSON.stringify(payload ?? {});
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${data}\n\n`);
+}
+
+async function streamOpenAiText({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  inputItems,
+  onDelta,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+`.trim();
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+
+  const requestBody = {
+    model,
+    reasoning,
+    instructions: finalInstructions,
+    input: Array.isArray(inputItems) ? inputItems : toInputItems(messages),
+    text: { verbosity: "low" },
+    stream: true,
+  };
+
+  let response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (error) {
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "OpenAI request failed",
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, status: 502, error: "OpenAI stream unavailable" };
+  }
+
+  const decoder = new TextDecoder();
+  const reader = response.body.getReader();
+  let buffer = "";
+  let reply = "";
+  let completedOutputText = "";
+
+  const processChunk = (chunkText) => {
+    const lines = chunkText.split("\n");
+    const dataLines = [];
+    for (const line of lines) {
+      if (line.startsWith("data:")) {
+        dataLines.push(line.slice("data:".length).trimStart());
+      }
+    }
+    if (dataLines.length === 0) return;
+    const dataText = dataLines.join("\n").trim();
+    if (!dataText || dataText === "[DONE]") return;
+
+    let evt;
+    try {
+      evt = JSON.parse(dataText);
+    } catch (_) {
+      return;
+    }
+
+    if (evt?.type === "response.output_text.delta" && typeof evt?.delta === "string") {
+      reply += evt.delta;
+      if (typeof onDelta === "function") onDelta(evt.delta);
+      return;
+    }
+
+    if (evt?.type === "response.completed") {
+      const completed = evt?.response?.output_text;
+      if (typeof completed === "string" && completed.trim()) {
+        completedOutputText = completed;
+      }
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let splitIndex = buffer.indexOf("\n\n");
+    while (splitIndex !== -1) {
+      const rawEvent = buffer.slice(0, splitIndex);
+      buffer = buffer.slice(splitIndex + 2);
+      processChunk(rawEvent);
+      splitIndex = buffer.indexOf("\n\n");
+    }
+  }
+
+  if (buffer.trim()) processChunk(buffer);
+  const finalReply = reply || completedOutputText || "";
+  if (!finalReply) {
+    return { ok: false, status: 502, error: "Empty model output" };
+  }
+
+  return { ok: true, reply: finalReply };
+}
+
 module.exports = async function handler(req, res) {
   try {
     setWidgetCorsHeaders(req, res);
@@ -865,21 +997,28 @@ module.exports = async function handler(req, res) {
       ? [promptNoChunks, calendarNote].join("\n\n")
       : promptNoChunks;
 
-    const followup = await getChatCompletion({
+    beginWidgetStream(res);
+    writeWidgetStreamEvent(res, "start", {});
+    const followupStream = await streamOpenAiText({
       apiKey: process.env.OPENAI_API_KEY,
       model: "gpt-5-nano",
       reasoning: { effort: "minimal" },
       instructions: followupInstructions,
       messages,
       inputItems: [...inputItems],
+      onDelta: (delta) => {
+        writeWidgetStreamEvent(res, "delta", { text: delta });
+      },
     });
-
-    if (!followup.ok) {
-      res.status(followup.status).json({ error: followup.error });
+    if (!followupStream.ok) {
+      writeWidgetStreamEvent(res, "error", {
+        message: followupStream.error || "OpenAI streaming failed",
+      });
+      res.end();
       return;
     }
 
-    const followupReply = followup.data?.reply ?? "";
+    const followupReply = followupStream.reply;
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -894,17 +1033,36 @@ module.exports = async function handler(req, res) {
       action: true,
     });
     if (!saveResult.ok) {
-      res.status(saveResult.status).json({ error: saveResult.error });
+      writeWidgetStreamEvent(res, "error", {
+        message: saveResult.error || "Message save failed",
+      });
+      res.end();
       return;
     }
 
-    res.status(200).json({
-      reply: followupReply,
-    });
+    writeWidgetStreamEvent(res, "done", { reply: followupReply });
+    res.end();
     return;
   }
 
   const completionReply = completion.data?.reply ?? "";
+  beginWidgetStream(res);
+  writeWidgetStreamEvent(res, "start", {});
+  const miniStream = await streamOpenAiText({
+    apiKey: process.env.OPENAI_API_KEY,
+    model: "gpt-5-mini",
+    reasoning: { effort: "low" },
+    instructions: prompt,
+    messages,
+    onDelta: (delta) => {
+      writeWidgetStreamEvent(res, "delta", { text: delta });
+    },
+  });
+  const finalReply = miniStream.ok && miniStream.reply ? miniStream.reply : completionReply;
+  if (!(miniStream.ok && miniStream.reply)) {
+    writeWidgetStreamEvent(res, "delta", { text: finalReply });
+  }
+
   const saveResult = await saveMessage({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -914,19 +1072,30 @@ module.exports = async function handler(req, res) {
     chatId,
     country: requestCountry,
     prompt: String(body.message),
-    result: completionReply,
+    result: finalReply,
     source: "api",
     action: false,
   });
   if (!saveResult.ok) {
-    res.status(saveResult.status).json({ error: saveResult.error });
+    writeWidgetStreamEvent(res, "error", {
+      message: saveResult.error || "Message save failed",
+    });
+    res.end();
     return;
   }
 
-    res.status(200).json({
-      reply: completionReply,
-    });
+    writeWidgetStreamEvent(res, "done", { reply: finalReply });
+    res.end();
   } catch (error) {
+    if (res.headersSent) {
+      try {
+        writeWidgetStreamEvent(res, "error", {
+          message: String(error?.message || error || "Unknown error"),
+        });
+      } catch (_) {}
+      res.end();
+      return;
+    }
     res.status(500).json({
       error: "Server error",
       detail: String(error?.message || error || "Unknown error"),
