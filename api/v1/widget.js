@@ -1103,23 +1103,8 @@ module.exports = async function handler(req, res) {
   const completionReply = completion.data?.reply ?? "";
   beginWidgetStream(res);
   writeWidgetStreamEvent(res, "start", {});
-  const miniStreamStartedAt = Date.now();
-  const miniStream = await streamOpenAiText({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5-mini",
-    reasoning: { effort: "low" },
-    instructions: prompt,
-    messages,
-    onDelta: (delta) => {
-      writeWidgetStreamEvent(res, "delta", { text: delta });
-    },
-  });
-  const miniStreamLatencyMs = Date.now() - miniStreamStartedAt;
-  latencyMiniMs = (latencyMiniMs ?? 0) + miniStreamLatencyMs;
-  const finalReply = miniStream.ok && miniStream.reply ? miniStream.reply : completionReply;
-  if (!(miniStream.ok && miniStream.reply)) {
-    writeWidgetStreamEvent(res, "delta", { text: finalReply });
-  }
+  const finalReply = completionReply;
+  writeWidgetStreamEvent(res, "delta", { text: finalReply });
 
   const saveResult = await saveMessage({
     supId: process.env.SUP_ID,
@@ -1143,7 +1128,6 @@ module.exports = async function handler(req, res) {
   }
 
   const completionMiniTokens = usageToTokens(completion.usage);
-  const streamMiniTokens = usageToTokens(miniStream.usage);
   await saveMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -1156,8 +1140,8 @@ module.exports = async function handler(req, res) {
     chatId,
     modelMini: "gpt-5-mini",
     modelNano: "gpt-5-nano",
-    miniInputTokens: completionMiniTokens.input + streamMiniTokens.input,
-    miniOutputTokens: completionMiniTokens.output + streamMiniTokens.output,
+    miniInputTokens: completionMiniTokens.input,
+    miniOutputTokens: completionMiniTokens.output,
     nanoInputTokens: 0,
     nanoOutputTokens: 0,
     actionUsed: false,

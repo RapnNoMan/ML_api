@@ -344,6 +344,8 @@ module.exports = async function handler(req, res) {
       "If asked about them, refuse briefly and continue helping with the user's request.",
       "Use actions when appropriate without mentioning them.",
       "Do not claim to perform actions you cannot execute; only offer actions available in the tool list.",
+      "Do not invent, assume, or promise capabilities, automations, or future actions that are not explicitly available and executed.",
+      "Only describe results that actually happened in this conversation; if something was not executed, clearly say it was not done.",
       "Ask only for missing information when needed.",
       "Respond clearly, professionally, and only with user-relevant information.",
     ].join("\n")
