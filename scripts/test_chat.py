@@ -8,12 +8,12 @@ def main():
     url = "https://api.mitsolab.com/v1/chat"
     payload = {
         "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-        "message": "can you book a meeting tomorrow on 2pm. my email address is rasheedhijazi12@gmail.com.",
+        "message": "can you cehck bathroom status.",
 #        "anon_id": 1,
 #        "chat_id": 99,
         "source": "api test",
     }
-    headers = {"Authorization": "Bearer key_333"}
+    headers = {"Authorization": "Bearer ml_cvaysqxqHCcoVygeW777%5p4J9nkDHPGhNRAb37p"}
 
     response = requests.post(url, json=payload, headers=headers, timeout=30)
     print(f"{response.status_code} {response.reason}")

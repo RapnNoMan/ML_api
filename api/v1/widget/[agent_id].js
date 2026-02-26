@@ -8,6 +8,7 @@ const { getAgentAllActions } = require("../../../scripts/internal/getAgentAllAct
 const { getChatHistory } = require("../../../scripts/internal/getChatHistory");
 const { getChatCompletion } = require("../../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../../scripts/internal/saveMessage");
+const { saveMessageAnalytics } = require("../../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../../scripts/internal/googleCalendar");
 
@@ -212,12 +213,26 @@ function isAllowedWidgetCaller(headers) {
   return originAllowed || refererAllowed;
 }
 
+function usageToTokens(usage) {
+  const input = Number(usage?.input_tokens);
+  const output = Number(usage?.output_tokens);
+  return {
+    input: Number.isFinite(input) && input > 0 ? Math.floor(input) : 0,
+    output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
+  };
+}
+
 module.exports = async function handler(req, res) {
   try {
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
+
+  const requestStartedAt = Date.now();
+  let latencyMiniMs = null;
+  let latencyNanoMs = null;
+  let latencyToolsMs = null;
 
   const body = req.body ?? {};
   const requestCountry = getRequestCountry(req.headers);
@@ -369,6 +384,7 @@ module.exports = async function handler(req, res) {
     { role: "user", content: String(body.message) },
   ];
 
+  const completionStartedAt = Date.now();
   const completion = await getChatCompletion({
     apiKey: process.env.OPENAI_API_KEY,
     model: "gpt-5-mini",
@@ -377,6 +393,7 @@ module.exports = async function handler(req, res) {
     messages,
     tools: toolsResult.tools,
   });
+  latencyMiniMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
     res.status(completion.status).json({ error: completion.error });
     return;
@@ -392,6 +409,7 @@ module.exports = async function handler(req, res) {
 
     const toolResults = [];
     let calendarContext = null;
+    const toolsStartedAt = Date.now();
     for (const call of actionCalls) {
       const actionDef = toolsResult.actionMap.get(call.action_key);
       if (!actionDef || !actionDef.url) {
@@ -762,6 +780,7 @@ module.exports = async function handler(req, res) {
         response: actionResponse,
       });
     }
+    latencyToolsMs = Date.now() - toolsStartedAt;
 
     const inputItems = [
       ...toInputItems(messages),
@@ -799,6 +818,7 @@ module.exports = async function handler(req, res) {
       ? [promptNoChunks, calendarNote].join("\n\n")
       : promptNoChunks;
 
+    const followupStartedAt = Date.now();
     const followup = await getChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
       model: "gpt-5-nano",
@@ -807,6 +827,7 @@ module.exports = async function handler(req, res) {
       messages,
       inputItems: [...inputItems],
     });
+    latencyNanoMs = Date.now() - followupStartedAt;
 
     if (!followup.ok) {
       res.status(followup.status).json({ error: followup.error });
@@ -832,6 +853,36 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    const miniTokens = usageToTokens(completion.usage);
+    const nanoTokens = usageToTokens(followup.usage);
+    await saveMessageAnalytics({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId,
+      workspaceId: agentInfo.workspace_id,
+      endpoint: "widget",
+      source: "api",
+      country: requestCountry,
+      anonId,
+      chatId,
+      modelMini: "gpt-5-mini",
+      modelNano: "gpt-5-nano",
+      miniInputTokens: miniTokens.input,
+      miniOutputTokens: miniTokens.output,
+      nanoInputTokens: nanoTokens.input,
+      nanoOutputTokens: nanoTokens.output,
+      actionUsed: true,
+      actionCount: actionCalls.length,
+      ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
+      ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
+      statusCode: 200,
+      latencyTotalMs: Date.now() - requestStartedAt,
+      latencyMiniMs,
+      latencyNanoMs,
+      latencyToolsMs,
+      errorCode: null,
+    });
+
     res.status(200).json({
       reply: followupReply,
     });
@@ -856,6 +907,35 @@ module.exports = async function handler(req, res) {
     res.status(saveResult.status).json({ error: saveResult.error });
     return;
   }
+
+  const miniTokens = usageToTokens(completion.usage);
+  await saveMessageAnalytics({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    workspaceId: agentInfo.workspace_id,
+    endpoint: "widget",
+    source: "api",
+    country: requestCountry,
+    anonId,
+    chatId,
+    modelMini: "gpt-5-mini",
+    modelNano: "gpt-5-nano",
+    miniInputTokens: miniTokens.input,
+    miniOutputTokens: miniTokens.output,
+    nanoInputTokens: 0,
+    nanoOutputTokens: 0,
+    actionUsed: false,
+    actionCount: 0,
+    ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
+    ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
+    statusCode: 200,
+    latencyTotalMs: Date.now() - requestStartedAt,
+    latencyMiniMs,
+    latencyNanoMs: null,
+    latencyToolsMs: null,
+    errorCode: null,
+  });
 
     res.status(200).json({
       reply: completionReply,

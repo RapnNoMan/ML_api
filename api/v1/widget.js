@@ -9,6 +9,7 @@ const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRecentUserPrompts } = require("../../scripts/internal/getRecentUserPrompts");
 const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
+const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 
@@ -261,6 +262,15 @@ function writeWidgetStreamEvent(res, event, payload) {
   res.write(`data: ${data}\n\n`);
 }
 
+function usageToTokens(usage) {
+  const input = Number(usage?.input_tokens);
+  const output = Number(usage?.output_tokens);
+  return {
+    input: Number.isFinite(input) && input > 0 ? Math.floor(input) : 0,
+    output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
+  };
+}
+
 async function streamOpenAiText({
   apiKey,
   model,
@@ -323,6 +333,7 @@ TOOL RULES (MUST FOLLOW):
   let buffer = "";
   let reply = "";
   let completedOutputText = "";
+  let usage = null;
 
   const processChunk = (chunkText) => {
     const lines = chunkText.split("\n");
@@ -354,6 +365,9 @@ TOOL RULES (MUST FOLLOW):
       if (typeof completed === "string" && completed.trim()) {
         completedOutputText = completed;
       }
+      if (evt?.response?.usage && typeof evt.response.usage === "object") {
+        usage = evt.response.usage;
+      }
     }
   };
 
@@ -376,7 +390,7 @@ TOOL RULES (MUST FOLLOW):
     return { ok: false, status: 502, error: "Empty model output" };
   }
 
-  return { ok: true, reply: finalReply };
+  return { ok: true, reply: finalReply, usage };
 }
 
 module.exports = async function handler(req, res) {
@@ -396,6 +410,11 @@ module.exports = async function handler(req, res) {
       res.status(405).json({ error: "Method not allowed" });
       return;
     }
+
+  const requestStartedAt = Date.now();
+  let latencyMiniMs = null;
+  let latencyNanoMs = null;
+  let latencyToolsMs = null;
 
   const body = req.body ?? {};
   const requestCountry = getRequestCountry(req.headers);
@@ -567,6 +586,7 @@ module.exports = async function handler(req, res) {
     { role: "user", content: String(body.message) },
   ];
 
+  const completionStartedAt = Date.now();
   const completion = await getChatCompletion({
     apiKey: process.env.OPENAI_API_KEY,
     model: "gpt-5-mini",
@@ -575,6 +595,7 @@ module.exports = async function handler(req, res) {
     messages,
     tools: toolsResult.tools,
   });
+  latencyMiniMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
     res.status(completion.status).json({ error: completion.error });
     return;
@@ -590,6 +611,7 @@ module.exports = async function handler(req, res) {
 
     const toolResults = [];
     let calendarContext = null;
+    const toolsStartedAt = Date.now();
     for (const call of actionCalls) {
       const actionDef = toolsResult.actionMap.get(call.action_key);
       if (!actionDef || !actionDef.url) {
@@ -960,6 +982,7 @@ module.exports = async function handler(req, res) {
         response: actionResponse,
       });
     }
+    latencyToolsMs = Date.now() - toolsStartedAt;
 
     const inputItems = [
       ...toInputItems(messages),
@@ -999,6 +1022,7 @@ module.exports = async function handler(req, res) {
 
     beginWidgetStream(res);
     writeWidgetStreamEvent(res, "start", {});
+    const followupStartedAt = Date.now();
     const followupStream = await streamOpenAiText({
       apiKey: process.env.OPENAI_API_KEY,
       model: "gpt-5-nano",
@@ -1010,6 +1034,7 @@ module.exports = async function handler(req, res) {
         writeWidgetStreamEvent(res, "delta", { text: delta });
       },
     });
+    latencyNanoMs = Date.now() - followupStartedAt;
     if (!followupStream.ok) {
       writeWidgetStreamEvent(res, "error", {
         message: followupStream.error || "OpenAI streaming failed",
@@ -1040,6 +1065,36 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    const miniTokens = usageToTokens(completion.usage);
+    const nanoTokens = usageToTokens(followupStream.usage);
+    await saveMessageAnalytics({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId,
+      workspaceId: agentInfo.workspace_id,
+      endpoint: "widget",
+      source: "api",
+      country: requestCountry,
+      anonId,
+      chatId,
+      modelMini: "gpt-5-mini",
+      modelNano: "gpt-5-nano",
+      miniInputTokens: miniTokens.input,
+      miniOutputTokens: miniTokens.output,
+      nanoInputTokens: nanoTokens.input,
+      nanoOutputTokens: nanoTokens.output,
+      actionUsed: true,
+      actionCount: actionCalls.length,
+      ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
+      ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
+      statusCode: 200,
+      latencyTotalMs: Date.now() - requestStartedAt,
+      latencyMiniMs,
+      latencyNanoMs,
+      latencyToolsMs,
+      errorCode: null,
+    });
+
     writeWidgetStreamEvent(res, "done", { reply: followupReply });
     res.end();
     return;
@@ -1048,6 +1103,7 @@ module.exports = async function handler(req, res) {
   const completionReply = completion.data?.reply ?? "";
   beginWidgetStream(res);
   writeWidgetStreamEvent(res, "start", {});
+  const miniStreamStartedAt = Date.now();
   const miniStream = await streamOpenAiText({
     apiKey: process.env.OPENAI_API_KEY,
     model: "gpt-5-mini",
@@ -1058,6 +1114,8 @@ module.exports = async function handler(req, res) {
       writeWidgetStreamEvent(res, "delta", { text: delta });
     },
   });
+  const miniStreamLatencyMs = Date.now() - miniStreamStartedAt;
+  latencyMiniMs = (latencyMiniMs ?? 0) + miniStreamLatencyMs;
   const finalReply = miniStream.ok && miniStream.reply ? miniStream.reply : completionReply;
   if (!(miniStream.ok && miniStream.reply)) {
     writeWidgetStreamEvent(res, "delta", { text: finalReply });
@@ -1083,6 +1141,36 @@ module.exports = async function handler(req, res) {
     res.end();
     return;
   }
+
+  const completionMiniTokens = usageToTokens(completion.usage);
+  const streamMiniTokens = usageToTokens(miniStream.usage);
+  await saveMessageAnalytics({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    workspaceId: agentInfo.workspace_id,
+    endpoint: "widget",
+    source: "api",
+    country: requestCountry,
+    anonId,
+    chatId,
+    modelMini: "gpt-5-mini",
+    modelNano: "gpt-5-nano",
+    miniInputTokens: completionMiniTokens.input + streamMiniTokens.input,
+    miniOutputTokens: completionMiniTokens.output + streamMiniTokens.output,
+    nanoInputTokens: 0,
+    nanoOutputTokens: 0,
+    actionUsed: false,
+    actionCount: 0,
+    ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
+    ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
+    statusCode: 200,
+    latencyTotalMs: Date.now() - requestStartedAt,
+    latencyMiniMs,
+    latencyNanoMs: null,
+    latencyToolsMs: null,
+    errorCode: null,
+  });
 
     writeWidgetStreamEvent(res, "done", { reply: finalReply });
     res.end();
