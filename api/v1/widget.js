@@ -587,7 +587,7 @@ module.exports = async function handler(req, res) {
   ];
 
   const completionStartedAt = Date.now();
-  const completion = await getChatCompletion({
+  let completion = await getChatCompletion({
     apiKey: process.env.OPENAI_API_KEY,
     model: "gpt-5-mini",
     reasoning: { effort: "low" },
@@ -599,6 +599,30 @@ module.exports = async function handler(req, res) {
   if (!completion.ok) {
     res.status(completion.status).json({ error: completion.error });
     return;
+  }
+
+  const initialHasToolCalls =
+    completion.data?.mode === "action" || completion.data?.mode === "actions_needed";
+  if (!initialHasToolCalls && Array.isArray(toolsResult.tools) && toolsResult.tools.length > 0) {
+    const toolCheckInstructions = [
+      prompt,
+      "TOOL CHECK",
+      "If an available action can execute the user's request, call the action instead of replying with plain text.",
+      "If no action applies, return normal text.",
+    ].join("\n\n");
+    const retryStartedAt = Date.now();
+    const retryCompletion = await getChatCompletion({
+      apiKey: process.env.OPENAI_API_KEY,
+      model: "gpt-5-mini",
+      reasoning: { effort: "low" },
+      instructions: toolCheckInstructions,
+      messages,
+      tools: toolsResult.tools,
+    });
+    latencyMiniMs += Date.now() - retryStartedAt;
+    if (retryCompletion.ok) {
+      completion = retryCompletion;
+    }
   }
 
   const hasToolCalls =
