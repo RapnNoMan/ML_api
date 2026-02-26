@@ -589,7 +589,7 @@ module.exports = async function handler(req, res) {
   const completionStartedAt = Date.now();
   let completion = await getChatCompletion({
     apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5.2",
+    model: "gpt-5-mini",
     reasoning: { effort: "low" },
     instructions: prompt,
     messages,
