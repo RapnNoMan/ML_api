@@ -233,6 +233,141 @@ function createTimingRecorder() {
   };
 }
 
+function extractResponseTextLocal(payload) {
+  if (!payload) return "";
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text;
+  }
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      if (typeof part?.text === "string" && part.text.trim()) {
+        return part.text;
+      }
+    }
+  }
+  return "";
+}
+
+function extractFunctionCallsLocal(payload) {
+  const output = Array.isArray(payload?.output) ? payload.output : [];
+  const calls = [];
+  for (const item of output) {
+    if (item?.type !== "function_call") continue;
+    const name = typeof item?.name === "string" ? item.name : "";
+    let args = {};
+    if (typeof item?.arguments === "string" && item.arguments.trim()) {
+      try {
+        const parsed = JSON.parse(item.arguments);
+        if (parsed && typeof parsed === "object") args = parsed;
+      } catch (_) {}
+    }
+    calls.push({
+      action_key: name,
+      variables: args,
+      call_id: item?.call_id ?? null,
+    });
+  }
+  return calls;
+}
+
+async function getChatCompletionPrimary({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const verbosity = model === "gpt-4o" ? "medium" : "low";
+  const requestBody = {
+    model,
+    reasoning,
+    instructions: finalInstructions,
+    input: Array.isArray(inputItems) ? inputItems : toInputItems(messages),
+    text: { verbosity },
+  };
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = "auto";
+  }
+
+  let response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "OpenAI request failed",
+    };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Invalid JSON from OpenAI" };
+  }
+
+  const toolCalls = extractFunctionCallsLocal(payload);
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: Array.isArray(payload?.output) ? payload.output : [],
+    };
+  }
+
+  const rawText = extractResponseTextLocal(payload);
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: Array.isArray(payload?.output) ? payload.output : [],
+  };
+}
+
 module.exports = async function handler(req, res) {
   try {
     setChatCorsHeaders(res);
@@ -456,7 +591,7 @@ module.exports = async function handler(req, res) {
 
   const completionStartedAt = Date.now();
   const completion = await timing.timed("model_mini_ms", () =>
-    getChatCompletion({
+    getChatCompletionPrimary({
       apiKey: process.env.OPENAI_API_KEY,
       model: "gpt-4o",
       reasoning: undefined,
