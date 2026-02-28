@@ -330,62 +330,81 @@ module.exports = async function handler(req, res) {
     .toLowerCase()
     .replace(/^[\s"'`.,!?(){}\[\]<>-]+|[\s"'`.,!?(){}\[\]<>-]+$/g, "")
     .replace(/\s+/g, " ");
-  let vectorResult = { ok: true, chunks: [] };
-  if (normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)) {
-    let ragQueryText = String(body.message);
-    const recentPromptsResult = await getRecentUserPrompts({
-      supId: process.env.SUP_ID,
-      supKey: process.env.SUP_KEY,
-      agentId,
-      anonId,
-      chatId,
-      limit: 2,
-    });
-    if (!recentPromptsResult.ok) {
-      res.status(recentPromptsResult.status).json({ error: recentPromptsResult.error });
-      return;
-    }
-    const promptParts = Array.isArray(recentPromptsResult.prompts)
-      ? [...recentPromptsResult.prompts, String(body.message)]
-      : [String(body.message)];
-    ragQueryText = promptParts.filter(Boolean).join("\n");
+  const ragPromise =
+    normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
+      ? (async () => {
+          let ragQueryText = String(body.message);
+          const recentPromptsResult = await getRecentUserPrompts({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            agentId,
+            anonId,
+            chatId,
+            limit: 2,
+          });
+          if (!recentPromptsResult.ok) return recentPromptsResult;
 
-    const embeddingResult = await getMessageEmbedding({
-      apiKey: process.env.OPENAI_API_KEY,
-      message: ragQueryText,
-    });
-    if (!embeddingResult.ok) {
-      res.status(embeddingResult.status).json({ error: embeddingResult.error });
-      return;
-    }
+          const promptParts = Array.isArray(recentPromptsResult.prompts)
+            ? [...recentPromptsResult.prompts, String(body.message)]
+            : [String(body.message)];
+          ragQueryText = promptParts.filter(Boolean).join("\n");
 
-    vectorResult = await getVectorSearchTexts({
-      supId: process.env.SUP_ID,
-      supKey: process.env.SUP_KEY,
-      agentId,
-      embedding: embeddingResult.embedding,
-    });
-    if (!vectorResult.ok) {
-      res.status(vectorResult.status).json({ error: vectorResult.error });
-      return;
-    }
-  }
+          const embeddingResult = await getMessageEmbedding({
+            apiKey: process.env.OPENAI_API_KEY,
+            message: ragQueryText,
+          });
+          if (!embeddingResult.ok) return embeddingResult;
 
-  const agentInfo = await getAgentInfo({
+          return getVectorSearchTexts({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            agentId,
+            embedding: embeddingResult.embedding,
+          });
+        })()
+      : Promise.resolve({ ok: true, chunks: [] });
+
+  const historyPromise =
+    anonId && chatId
+      ? getChatHistory({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          anonId,
+          chatId,
+          maxRows: 3,
+        })
+      : Promise.resolve({ ok: true, messages: [] });
+
+  const agentInfoPromise = getAgentInfo({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
   });
+  const toolsResultPromise = getAgentAllActions({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+
+  const [vectorResult, historyResult, agentInfo, toolsResult] = await Promise.all([
+    ragPromise,
+    historyPromise,
+    agentInfoPromise,
+    toolsResultPromise,
+  ]);
+  if (!vectorResult.ok) {
+    res.status(vectorResult.status).json({ error: vectorResult.error });
+    return;
+  }
+  if (!historyResult.ok) {
+    res.status(historyResult.status).json({ error: historyResult.error });
+    return;
+  }
   if (!agentInfo.ok) {
     res.status(agentInfo.status).json({ error: agentInfo.error });
     return;
   }
-
-  const toolsResult = await getAgentAllActions({
-    supId: process.env.SUP_ID,
-    supKey: process.env.SUP_KEY,
-    agentId,
-  });
   if (!toolsResult.ok) {
     res.status(toolsResult.status).json({ error: toolsResult.error });
     return;
@@ -428,22 +447,7 @@ module.exports = async function handler(req, res) {
     .filter((section) => !section.startsWith("KNOWLEDGE CHUNKS"))
     .join("\n\n");
 
-  let historyMessages = [];
-  if (anonId && chatId) {
-    const historyResult = await getChatHistory({
-      supId: process.env.SUP_ID,
-      supKey: process.env.SUP_KEY,
-      agentId,
-      anonId,
-      chatId,
-      maxRows: 3,
-    });
-    if (!historyResult.ok) {
-      res.status(historyResult.status).json({ error: historyResult.error });
-      return;
-    }
-    historyMessages = historyResult.messages;
-  }
+  const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
 
   const messages = [
     ...historyMessages,
@@ -920,7 +924,7 @@ module.exports = async function handler(req, res) {
 
     const miniTokens = usageToTokens(completion.usage);
     const nanoTokens = usageToTokens(followup.usage);
-    await saveMessageAnalytics({
+    void saveMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
       agentId,
@@ -946,7 +950,7 @@ module.exports = async function handler(req, res) {
       latencyNanoMs,
       latencyToolsMs,
       errorCode: null,
-    });
+    }).catch(() => {});
 
     res.status(200).json({
       reply: followupReply,
@@ -976,7 +980,7 @@ module.exports = async function handler(req, res) {
   }
 
   const completionMiniTokens = usageToTokens(completion.usage);
-  await saveMessageAnalytics({
+  void saveMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
@@ -1002,7 +1006,7 @@ module.exports = async function handler(req, res) {
     latencyNanoMs: null,
     latencyToolsMs: null,
     errorCode: null,
-  });
+  }).catch(() => {});
 
     res.status(200).json({
       reply: finalReply,

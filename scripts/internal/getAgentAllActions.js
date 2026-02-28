@@ -71,84 +71,94 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
   let calendarConnectionsRows = [];
 
   try {
-    const custom = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "custom_api_actions",
-      fields: "id,title,description,url,method,headers,body_template",
-    });
-    if (!custom.ok) return custom;
+    const [
+      custom,
+      zapier,
+      make,
+      slack,
+      gmailActions,
+      gmailConnections,
+      calendarActions,
+      calendarConnections,
+    ] = await Promise.all([
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "custom_api_actions",
+        fields: "id,title,description,url,method,headers,body_template",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "zapier_actions",
+        fields: "id,title,description,url,headers,body_template",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "make_actions",
+        fields: "id,title,description,url,headers,body_template",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "slack_notifications",
+        fields: "id,title,description,webhook_url,username",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "google_gmail_actions",
+        fields: "id,agent_id,send_email",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "google_gmail_connections",
+        fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "google_calendar_actions",
+        fields: "id,agent_id,create_event,list_events,duration_mins,location,timezone,open_hour,close_hour,attendees_required,event_type",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "google_calendar_connections",
+        fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
+      }),
+    ]);
+
+    const results = [
+      custom,
+      zapier,
+      make,
+      slack,
+      gmailActions,
+      gmailConnections,
+      calendarActions,
+      calendarConnections,
+    ];
+    const firstFailed = results.find((result) => !result?.ok);
+    if (firstFailed) return firstFailed;
+
     customRows = custom.rows;
-
-    const zapier = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "zapier_actions",
-      fields: "id,title,description,url,headers,body_template",
-    });
-    if (!zapier.ok) return zapier;
     zapierRows = zapier.rows;
-
-    const make = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "make_actions",
-      fields: "id,title,description,url,headers,body_template",
-    });
-    if (!make.ok) return make;
     makeRows = make.rows;
-
-    const slack = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "slack_notifications",
-      fields: "id,title,description,webhook_url,username",
-    });
-    if (!slack.ok) return slack;
     slackRows = slack.rows;
-
-    const gmailActions = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "google_gmail_actions",
-      fields: "id,agent_id,send_email",
-    });
-    if (!gmailActions.ok) return gmailActions;
     gmailActionsRows = gmailActions.rows;
-
-    const gmailConnections = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "google_gmail_connections",
-      fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
-    });
-    if (!gmailConnections.ok) return gmailConnections;
     gmailConnectionsRows = gmailConnections.rows;
-
-    const calendarActions = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "google_calendar_actions",
-      fields: "id,agent_id,create_event,list_events,duration_mins,location,timezone,open_hour,close_hour,attendees_required,event_type",
-    });
-    if (!calendarActions.ok) return calendarActions;
     calendarActionsRows = calendarActions.rows;
-
-    const calendarConnections = await fetchTable({
-      supId,
-      supKey,
-      agentId,
-      table: "google_calendar_connections",
-      fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
-    });
-    if (!calendarConnections.ok) return calendarConnections;
     calendarConnectionsRows = calendarConnections.rows;
   } catch (error) {
     return { ok: false, status: 502, error: "Actions service unavailable" };

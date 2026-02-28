@@ -1,13 +1,13 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "can you check on on medical building if the bathroom is busy",
+    "message": "what is mitsolab? and what is the pricing?",
     "source": "api test"
   },
   "response_json": {
-    "reply": "Which bathroom number(s) in the Medical building should I check, and who is asking (name or badge ID)?"
+    "reply": "Mitsolab is a customer-support / personal AI agent service that creates and runs AI agents for individuals and businesses.\n\nPricing and key features\n\n- Free\n  - Price: $0\n  - 50 messages/month, 1 AI agent, 1 member, 400 KB per agent, Top LLM models\n\n- Hobby\n  - Price: $29/month (or $290/year)\n  - Everything in Free, 2,500 messages/month, 1 AI agent, 2 members, full integrations, API access, 4 behavior policies, 10 AI Actions/agent, Basic analytics, 25 MB per agent\n\n- Growth\n  - Price: $119/month (or $1,190/year)\n  - Everything in Hobby, 10,000 messages/month, 2 AI agents, 3 members, 10 behavior policies, 10 AI Actions/agent, CRM, Ticketing, 50 MB per agent\n\n- Pro\n  - Price: $299/month (or $2,990/year)\n  - Everything in Growth, 40,000 messages/month, 5 members, 15 AI Actions/agent, Advanced analytics, Ticketing, 80 MB per agent\n\nIf you want, I can recommend a plan based on your team size and usage."
   },
-  "response_text": "{\"reply\":\"Which bathroom number(s) in the Medical building should I check, and who is asking (name or badge ID)?\"}",
+  "response_text": "{\"reply\":\"Mitsolab is a customer-support / personal AI agent service that creates and runs AI agents for individuals and businesses.\\n\\nPricing and key features\\n\\n- Free\\n  - Price: $0\\n  - 50 messages/month, 1 AI agent, 1 member, 400 KB per agent, Top LLM models\\n\\n- Hobby\\n  - Price: $29/month (or $290/year)\\n  - Everything in Free, 2,500 messages/month, 1 AI agent, 2 members, full integrations, API access, 4 behavior policies, 10 AI Actions/agent, Basic analytics, 25 MB per agent\\n\\n- Growth\\n  - Price: $119/month (or $1,190/year)\\n  - Everything in Hobby, 10,000 messages/month, 2 AI agents, 3 members, 10 behavior policies, 10 AI Actions/agent, CRM, Ticketing, 50 MB per agent\\n\\n- Pro\\n  - Price: $299/month (or $2,990/year)\\n  - Everything in Growth, 40,000 messages/month, 5 members, 15 AI Actions/agent, Advanced analytics, Ticketing, 80 MB per agent\\n\\nIf you want, I can recommend a plan based on your team size and usage.\"}",
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/v1/chat"
