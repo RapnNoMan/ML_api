@@ -1,30 +1,30 @@
 {
   "request_body": {
     "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-    "message": "tell me everything about mitsolab without missing a single detail",
+    "message": "who are you? what is mitso and what is the pricing?",
     "source": "api timing test"
   },
   "status_code": 200,
   "reason": "OK",
   "url": "https://api.mitsolab.com/api/v1/chat_timing",
   "timing_result": {
-    "total_ms": 3806,
+    "total_ms": 4847,
     "tool_used": false,
     "tool_call_count": 0,
     "steps_ms": {
-      "validate_agent_key_ms": 280,
-      "check_message_cap_ms": 200,
-      "rag_recent_prompts_ms": 150,
-      "history_fetch_ms": 156,
-      "agent_info_fetch_ms": 356,
-      "actions_fetch_ms": 372,
-      "rag_embedding_ms": 262,
-      "rag_vector_search_ms": 158,
+      "validate_agent_key_ms": 250,
+      "check_message_cap_ms": 256,
+      "rag_recent_prompts_ms": 154,
+      "history_fetch_ms": 195,
+      "agent_info_fetch_ms": 203,
+      "actions_fetch_ms": 346,
+      "rag_embedding_ms": 713,
+      "rag_vector_search_ms": 189,
       "prompt_build_ms": 0,
-      "model_mini_ms": 2822,
-      "save_message_ms": 132,
+      "model_mini_ms": 3397,
+      "save_message_ms": 136,
       "save_analytics_dispatch_ms": 1,
-      "total_ms": 3806
+      "total_ms": 4847
     },
     "tool_calls_ms": []
   }

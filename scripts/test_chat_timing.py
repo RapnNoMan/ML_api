@@ -8,7 +8,7 @@ def main():
     url = "https://api.mitsolab.com/api/v1/chat_timing"
     payload = {
         "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-        "message": "tell me everything about mitsolab without missing a single detail",
+        "message": "who are you? what is mitso and what is the pricing?",
         "source": "api timing test",
     }
     headers = {"Authorization": "Bearer ml_cvaysqxqHCcoVygeW777%5p4J9nkDHPGhNRAb37p"}
@@ -32,6 +32,12 @@ def main():
         "total_ms": data.get("total_ms"),
         "tool_used": data.get("tool_used"),
         "tool_call_count": data.get("tool_call_count"),
+        "model_primary": data.get("model_primary"),
+        "model_followup": data.get("model_followup"),
+        "primary_input_tokens": data.get("primary_input_tokens"),
+        "primary_output_tokens": data.get("primary_output_tokens"),
+        "followup_input_tokens": data.get("followup_input_tokens"),
+        "followup_output_tokens": data.get("followup_output_tokens"),
         "steps_ms": steps,
         "tool_calls_ms": tool_calls,
     }
