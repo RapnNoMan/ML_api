@@ -458,7 +458,7 @@ module.exports = async function handler(req, res) {
   const completion = await timing.timed("model_mini_ms", () =>
     getChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
-      model: "gpt-5-nano",
+      model: "gpt-4o",
       reasoning: { effort: "minimal" },
       instructions: prompt,
       messages,

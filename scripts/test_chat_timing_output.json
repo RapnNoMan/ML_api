@@ -8,23 +8,23 @@
   "reason": "OK",
   "url": "https://api.mitsolab.com/api/v1/chat_timing",
   "timing_result": {
-    "total_ms": 6102,
+    "total_ms": 3806,
     "tool_used": false,
     "tool_call_count": 0,
     "steps_ms": {
-      "validate_agent_key_ms": 272,
-      "check_message_cap_ms": 274,
-      "history_fetch_ms": 161,
-      "rag_recent_prompts_ms": 167,
-      "agent_info_fetch_ms": 176,
-      "actions_fetch_ms": 390,
-      "rag_embedding_ms": 479,
-      "rag_vector_search_ms": 198,
+      "validate_agent_key_ms": 280,
+      "check_message_cap_ms": 200,
+      "rag_recent_prompts_ms": 150,
+      "history_fetch_ms": 156,
+      "agent_info_fetch_ms": 356,
+      "actions_fetch_ms": 372,
+      "rag_embedding_ms": 262,
+      "rag_vector_search_ms": 158,
       "prompt_build_ms": 0,
-      "model_mini_ms": 4849,
-      "save_message_ms": 134,
-      "save_analytics_dispatch_ms": 0,
-      "total_ms": 6102
+      "model_mini_ms": 2822,
+      "save_message_ms": 132,
+      "save_analytics_dispatch_ms": 1,
+      "total_ms": 3806
     },
     "tool_calls_ms": []
   }
