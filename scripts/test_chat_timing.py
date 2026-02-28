@@ -8,7 +8,7 @@ def main():
     url = "https://api.mitsolab.com/api/v1/chat_timing"
     payload = {
         "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-        "message": "what is mitsolab and what is your pricing?",
+        "message": "explain what your service and your pricing?",
         "source": "api timing test",
     }
     headers = {"Authorization": "Bearer ml_cvaysqxqHCcoVygeW777%5p4J9nkDHPGhNRAb37p"}
