@@ -8,7 +8,7 @@ def main():
     url = "https://api.mitsolab.com/v1/chat"
     payload = {
         "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
-        "message": "what is mitsolab? and what is the pricing?",
+        "message": "what is mitsolab? can you tell me the pricing and use cases? and then talk about how it works?",
 #        "anon_id": 1,
 #        "chat_id": 99,
         "source": "api test",

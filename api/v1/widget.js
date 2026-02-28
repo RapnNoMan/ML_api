@@ -257,6 +257,259 @@ function usageToTokens(usage) {
   };
 }
 
+function extractResponseText(payload) {
+  if (!payload) return "";
+  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text;
+  }
+  const output = Array.isArray(payload.output) ? payload.output : [];
+  for (const item of output) {
+    const content = Array.isArray(item?.content) ? item.content : [];
+    for (const part of content) {
+      if (typeof part?.text === "string" && part.text.trim()) {
+        return part.text;
+      }
+    }
+  }
+  return "";
+}
+
+function extractFunctionCalls(payload, fallbackOutputItems = []) {
+  const output = Array.isArray(payload?.output)
+    ? payload.output
+    : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
+  const calls = [];
+  for (const item of output) {
+    if (item?.type !== "function_call") continue;
+    const name = typeof item?.name === "string" ? item.name : "";
+    let args = {};
+    if (typeof item?.arguments === "string" && item.arguments.trim()) {
+      try {
+        const parsed = JSON.parse(item.arguments);
+        if (parsed && typeof parsed === "object") args = parsed;
+      } catch (_) {}
+    }
+    calls.push({
+      action_key: name,
+      variables: args,
+      call_id: item?.call_id ?? null,
+    });
+  }
+  return calls;
+}
+
+function createCompletionRequestBody({
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+}) {
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+- If a tool is needed, call it before any user-facing answer text.
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const requestBody = {
+    model,
+    reasoning,
+    instructions: finalInstructions,
+    input: Array.isArray(inputItems) ? inputItems : toInputItems(messages),
+    text: { verbosity: "low" },
+    stream: true,
+  };
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = "auto";
+  }
+
+  return requestBody;
+}
+
+function parseSseEventBlock(block) {
+  const lines = String(block || "").split("\n");
+  const dataLines = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  const dataText = dataLines.join("\n");
+  if (dataText === "[DONE]") return { done: true };
+  try {
+    return { done: false, payload: JSON.parse(dataText) };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getChatCompletionStream({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+  signal,
+  onTextDelta,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const requestBody = createCompletionRequestBody({
+    model,
+    reasoning,
+    instructions,
+    messages,
+    tools,
+    inputItems,
+  });
+
+  let response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "OpenAI request failed",
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, status: 502, error: "Missing stream body from OpenAI" };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let assembledText = "";
+  let finalResponse = null;
+  const outputItems = [];
+  let upstreamError = null;
+  let done = false;
+
+  while (!done) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (_) {
+      return { ok: false, status: 502, error: "Stream read error from OpenAI" };
+    }
+    done = Boolean(chunk?.done);
+    if (chunk?.value) {
+      buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+      let delimiterIdx = buffer.indexOf("\n\n");
+      while (delimiterIdx !== -1) {
+        const block = buffer.slice(0, delimiterIdx);
+        buffer = buffer.slice(delimiterIdx + 2);
+        const evt = parseSseEventBlock(block);
+        if (evt?.done) {
+          done = true;
+          break;
+        }
+        if (!evt?.payload) {
+          delimiterIdx = buffer.indexOf("\n\n");
+          continue;
+        }
+
+        const payload = evt.payload;
+        if (payload?.type === "response.output_text.delta" && typeof payload?.delta === "string") {
+          assembledText += payload.delta;
+          if (typeof onTextDelta === "function") {
+            await onTextDelta(payload.delta);
+          }
+        } else if (payload?.type === "response.output_item.done" && payload?.item) {
+          outputItems.push(payload.item);
+        } else if (payload?.type === "response.completed" && payload?.response) {
+          finalResponse = payload.response;
+        } else if (payload?.type === "response.failed") {
+          upstreamError =
+            payload?.response?.error?.message ||
+            payload?.error?.message ||
+            "OpenAI streaming failed";
+        }
+
+        delimiterIdx = buffer.indexOf("\n\n");
+      }
+    }
+  }
+
+  if (upstreamError) {
+    return { ok: false, status: 502, error: upstreamError };
+  }
+
+  const payload = finalResponse || {};
+  const finalOutputItems = Array.isArray(payload?.output) ? payload.output : outputItems;
+  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
+  const rawText = extractResponseText(payload) || assembledText;
+
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: finalOutputItems,
+    };
+  }
+
+  if (!rawText) {
+    return { ok: false, status: 502, error: "Empty model output" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: finalOutputItems,
+  };
+}
+
+function sendSseEvent(res, event, payload) {
+  if (res.writableEnded) return false;
+  try {
+    if (event) res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(payload)}\n\n`);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 module.exports = async function handler(req, res) {
   try {
     setWidgetCorsHeaders(req, res);
@@ -281,6 +534,8 @@ module.exports = async function handler(req, res) {
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
+  const acceptHeader = String(req?.headers?.accept || "").toLowerCase();
+  const wantsStream = body?.stream === true || acceptHeader.includes("text/event-stream");
   const requestCountry = getRequestCountry(req.headers);
   const agentId = parseAgentIdFromRequest(req);
   const missing = [];
@@ -454,17 +709,76 @@ module.exports = async function handler(req, res) {
     { role: "user", content: String(body.message) },
   ];
 
+  let streamReady = false;
+  let streamClosed = false;
+  let streamHeartbeat = null;
+  let streamAbortController = null;
+  const miniStreamChunks = [];
+  const nanoStreamChunks = [];
+  const closeStream = () => {
+    if (streamHeartbeat) {
+      clearInterval(streamHeartbeat);
+      streamHeartbeat = null;
+    }
+    if (!res.writableEnded) res.end();
+  };
+
+  if (wantsStream) {
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+    res.setHeader("Cache-Control", "no-cache, no-transform");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+    if (typeof res.flushHeaders === "function") res.flushHeaders();
+    streamReady = true;
+    streamAbortController = new AbortController();
+    req.on("close", () => {
+      streamClosed = true;
+      if (streamAbortController) {
+        try {
+          streamAbortController.abort();
+        } catch (_) {}
+      }
+    });
+    streamHeartbeat = setInterval(() => {
+      if (res.writableEnded) {
+        clearInterval(streamHeartbeat);
+        streamHeartbeat = null;
+        return;
+      }
+      res.write(": ping\n\n");
+    }, 15000);
+  }
+
   const completionStartedAt = Date.now();
-  const completion = await getChatCompletion({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5-mini",
-    reasoning: { effort: "low" },
-    instructions: prompt,
-    messages,
-    tools: toolsResult.tools,
-  });
+  const completion = wantsStream
+    ? await getChatCompletionStream({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: "gpt-5-mini",
+        reasoning: { effort: "low" },
+        instructions: prompt,
+        messages,
+        tools: toolsResult.tools,
+        signal: streamAbortController?.signal,
+        onTextDelta: async (delta) => {
+          miniStreamChunks.push(delta);
+        },
+      })
+    : await getChatCompletion({
+        apiKey: process.env.OPENAI_API_KEY,
+        model: "gpt-5-mini",
+        reasoning: { effort: "low" },
+        instructions: prompt,
+        messages,
+        tools: toolsResult.tools,
+      });
   latencyMiniMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
+    if (streamReady) {
+      sendSseEvent(res, "error", { error: completion.error });
+      closeStream();
+      return;
+    }
     res.status(completion.status).json({ error: completion.error });
     return;
   }
@@ -473,6 +787,11 @@ module.exports = async function handler(req, res) {
     completion.data?.mode === "action" || completion.data?.mode === "actions_needed";
 
   if (hasToolCalls) {
+    if (streamReady && streamClosed) {
+      closeStream();
+      return;
+    }
+
     const actionCalls = Array.isArray(completion.data?.action_calls)
       ? completion.data.action_calls
       : [];
@@ -888,22 +1207,51 @@ module.exports = async function handler(req, res) {
       ? [promptNoChunks, calendarNote].join("\n\n")
       : promptNoChunks;
 
+    if (streamReady && streamClosed) {
+      closeStream();
+      return;
+    }
+
     const followupStartedAt = Date.now();
-    const followup = await getChatCompletion({
-      apiKey: process.env.OPENAI_API_KEY,
-      model: "gpt-5-nano",
-      reasoning: { effort: "minimal" },
-      instructions: followupInstructions,
-      messages,
-      inputItems: [...inputItems],
-    });
+    const followup = wantsStream
+      ? await getChatCompletionStream({
+          apiKey: process.env.OPENAI_API_KEY,
+          model: "gpt-5-nano",
+          reasoning: { effort: "minimal" },
+          instructions: followupInstructions,
+          messages,
+          inputItems: [...inputItems],
+          signal: streamAbortController?.signal,
+          onTextDelta: async (delta) => {
+            nanoStreamChunks.push(delta);
+            if (streamReady && !streamClosed) {
+              sendSseEvent(res, "token", { text: delta });
+            }
+          },
+        })
+      : await getChatCompletion({
+          apiKey: process.env.OPENAI_API_KEY,
+          model: "gpt-5-nano",
+          reasoning: { effort: "minimal" },
+          instructions: followupInstructions,
+          messages,
+          inputItems: [...inputItems],
+        });
     latencyNanoMs = Date.now() - followupStartedAt;
     if (!followup.ok) {
+      if (streamReady) {
+        sendSseEvent(res, "error", { error: followup.error });
+        closeStream();
+        return;
+      }
       res.status(followup.status).json({ error: followup.error });
       return;
     }
 
-    const followupReply = followup.data?.reply ?? "";
+    const followupReply =
+      wantsStream && nanoStreamChunks.length > 0
+        ? nanoStreamChunks.join("")
+        : (followup.data?.reply ?? "");
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -952,6 +1300,12 @@ module.exports = async function handler(req, res) {
       errorCode: null,
     }).catch(() => {});
 
+    if (streamReady) {
+      sendSseEvent(res, "done", { done: true });
+      closeStream();
+      return;
+    }
+
     res.status(200).json({
       reply: followupReply,
     });
@@ -959,7 +1313,14 @@ module.exports = async function handler(req, res) {
   }
 
   const completionReply = completion.data?.reply ?? "";
-  const finalReply = completionReply;
+  const finalReply =
+    wantsStream && miniStreamChunks.length > 0 ? miniStreamChunks.join("") : completionReply;
+  if (streamReady) {
+    for (const delta of miniStreamChunks) {
+      if (streamClosed || res.writableEnded) break;
+      sendSseEvent(res, "token", { text: delta });
+    }
+  }
 
   const saveResult = await saveMessage({
     supId: process.env.SUP_ID,
@@ -1008,10 +1369,25 @@ module.exports = async function handler(req, res) {
     errorCode: null,
   }).catch(() => {});
 
+    if (streamReady) {
+      sendSseEvent(res, "done", { done: true });
+      closeStream();
+      return;
+    }
+
     res.status(200).json({
       reply: finalReply,
     });
   } catch (error) {
+    const contentType = String(res.getHeader("Content-Type") || "").toLowerCase();
+    if (contentType.includes("text/event-stream")) {
+      sendSseEvent(res, "error", {
+        error: "Server error",
+        detail: String(error?.message || error || "Unknown error"),
+      });
+      if (!res.writableEnded) res.end();
+      return;
+    }
     res.status(500).json({
       error: "Server error",
       detail: String(error?.message || error || "Unknown error"),
