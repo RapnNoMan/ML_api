@@ -1,0 +1,31 @@
+{
+  "request_body": {
+    "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
+    "message": "what is mitsolab? can you tell me the pricing and use cases? and then talk about how it works?",
+    "source": "api timing test"
+  },
+  "status_code": 200,
+  "reason": "OK",
+  "url": "https://api.mitsolab.com/api/v1/chat_timing",
+  "timing_result": {
+    "total_ms": 14328,
+    "tool_used": false,
+    "tool_call_count": 0,
+    "steps_ms": {
+      "validate_agent_key_ms": 681,
+      "check_message_cap_ms": 634,
+      "rag_recent_prompts_ms": 281,
+      "history_fetch_ms": 289,
+      "agent_info_fetch_ms": 628,
+      "rag_embedding_ms": 385,
+      "actions_fetch_ms": 659,
+      "rag_vector_search_ms": 281,
+      "prompt_build_ms": 0,
+      "model_mini_ms": 12474,
+      "save_message_ms": 190,
+      "save_analytics_dispatch_ms": 1,
+      "total_ms": 14328
+    },
+    "tool_calls_ms": []
+  }
+}
