@@ -459,7 +459,7 @@ module.exports = async function handler(req, res) {
     getChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
       model: "gpt-4o",
-      reasoning: { effort: "minimal" },
+      //reasoning: { effort: "minimal" },
       instructions: prompt,
       messages,
       tools: toolsResult.tools,
