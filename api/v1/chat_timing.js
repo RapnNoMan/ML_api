@@ -290,7 +290,8 @@ TOOL RULES (MUST FOLLOW):
 `.trim();
 
   const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
-  const verbosity = model === "gpt-4o" ? "medium" : "low";
+  const modelName = String(model || "").toLowerCase();
+  const verbosity = modelName.startsWith("gpt-4o") ? "medium" : "low";
   const requestBody = {
     model,
     reasoning,
