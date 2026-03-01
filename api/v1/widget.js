@@ -173,6 +173,55 @@ function normalizeIdValue(value) {
   return text;
 }
 
+function sanitizeToolName(rawName, id, usedNames) {
+  let name = String(rawName || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  if (!name) name = `action_${id}`;
+  if (/^[0-9]/.test(name)) name = `action_${name}`;
+
+  if (name.length > 64) name = name.slice(0, 64);
+
+  if (usedNames.has(name)) {
+    const suffix = `_${id}`;
+    const base = name.slice(0, Math.max(1, 64 - suffix.length));
+    name = `${base}${suffix}`;
+  }
+
+  usedNames.add(name);
+  return name;
+}
+
+async function fetchCustomButtonActionRows({ supId, supKey, agentId }) {
+  if (!supId || !supKey) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = `${baseUrl}/custom_button_actions?select=id,title,description,url,label,button_color,text_color&agent_id=eq.${agentId}`;
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        Accept: "application/json",
+      },
+    });
+
+    if (!response.ok) {
+      return { ok: false, status: 502, error: "Actions service unavailable" };
+    }
+
+    const payload = await response.json();
+    return { ok: true, rows: Array.isArray(payload) ? payload : [] };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Actions service unavailable" };
+  }
+}
+
 function normalizeCountry(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim().toUpperCase();
@@ -535,7 +584,12 @@ module.exports = async function handler(req, res) {
 
   const body = req.body ?? {};
   const acceptHeader = String(req?.headers?.accept || "").toLowerCase();
-  const wantsStream = body?.stream === true || acceptHeader.includes("text/event-stream");
+  const hasExplicitStreamFlag =
+    body && Object.prototype.hasOwnProperty.call(body, "stream");
+  const wantsStream =
+    body?.stream === true ||
+    body?.stream === "true" ||
+    (!hasExplicitStreamFlag && acceptHeader.includes("text/event-stream"));
   const requestCountry = getRequestCountry(req.headers);
   const agentId = parseAgentIdFromRequest(req);
   const missing = [];
@@ -641,12 +695,18 @@ module.exports = async function handler(req, res) {
     supKey: process.env.SUP_KEY,
     agentId,
   });
+  const customButtonRowsPromise = fetchCustomButtonActionRows({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
 
-  const [vectorResult, historyResult, agentInfo, toolsResult] = await Promise.all([
+  const [vectorResult, historyResult, agentInfo, toolsResult, customButtonRowsResult] = await Promise.all([
     ragPromise,
     historyPromise,
     agentInfoPromise,
     toolsResultPromise,
+    customButtonRowsPromise,
   ]);
   if (!vectorResult.ok) {
     res.status(vectorResult.status).json({ error: vectorResult.error });
@@ -663,6 +723,59 @@ module.exports = async function handler(req, res) {
   if (!toolsResult.ok) {
     res.status(toolsResult.status).json({ error: toolsResult.error });
     return;
+  }
+  if (!customButtonRowsResult.ok) {
+    res.status(customButtonRowsResult.status).json({ error: customButtonRowsResult.error });
+    return;
+  }
+
+  const effectiveTools = Array.isArray(toolsResult.tools) ? [...toolsResult.tools] : [];
+  const effectiveActionMap = new Map(toolsResult.actionMap || []);
+  const usedToolNames = new Set(
+    effectiveTools
+      .map((tool) => (typeof tool?.name === "string" ? tool.name : ""))
+      .filter(Boolean)
+  );
+  const customButtonRows = Array.isArray(customButtonRowsResult.rows)
+    ? customButtonRowsResult.rows
+    : [];
+  for (const row of customButtonRows) {
+    const toolName = sanitizeToolName(row?.title, row?.id, usedToolNames);
+    const rawTitle = typeof row?.title === "string" ? row.title.trim() : "";
+    const rawDescription = typeof row?.description === "string" ? row.description.trim() : "";
+    const description =
+      [rawTitle, rawDescription].filter(Boolean).join(" - ") ||
+      "Show a custom button to the user.";
+
+    effectiveTools.push({
+      type: "function",
+      name: toolName,
+      description,
+      parameters: {
+        type: "object",
+        properties: {},
+        additionalProperties: false,
+      },
+    });
+
+    effectiveActionMap.set(toolName, {
+      tool_name: toolName,
+      id: row?.id ?? null,
+      title: row?.title ?? "",
+      description,
+      url: row?.url ?? "",
+      method: "LOCAL",
+      headers: {},
+      body_template: null,
+      kind: "custom_button",
+      button_payload: {
+        url: row?.url ?? "",
+        label: row?.label ?? "",
+        title: row?.title ?? "",
+        button_color: row?.button_color ?? "#111827",
+        text_color: row?.text_color ?? "#ffffff",
+      },
+    });
   }
 
   const profileLines = [];
@@ -758,7 +871,7 @@ module.exports = async function handler(req, res) {
         reasoning: { effort: "minimal" },
         instructions: prompt,
         messages,
-        tools: toolsResult.tools,
+        tools: effectiveTools,
         signal: streamAbortController?.signal,
         onTextDelta: async (delta) => {
           miniStreamChunks.push(delta);
@@ -770,7 +883,7 @@ module.exports = async function handler(req, res) {
         reasoning: { effort: "low" },
         instructions: prompt,
         messages,
-        tools: toolsResult.tools,
+        tools: effectiveTools,
       });
   latencyMiniMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
@@ -798,10 +911,11 @@ module.exports = async function handler(req, res) {
 
     const toolResults = [];
     let calendarContext = null;
+    let customButtonPayload = null;
     const toolsStartedAt = Date.now();
     for (const call of actionCalls) {
-      const actionDef = toolsResult.actionMap.get(call.action_key);
-      if (!actionDef || !actionDef.url) {
+      const actionDef = effectiveActionMap.get(call.action_key);
+      if (!actionDef) {
         toolResults.push({
           call_id: call.call_id ?? null,
           ok: false,
@@ -836,6 +950,45 @@ module.exports = async function handler(req, res) {
       const variables = call?.variables ?? {};
       let url = actionDef.url;
       let requestBody;
+
+      if (actionDef.kind === "custom_button") {
+        customButtonPayload = actionDef.button_payload || null;
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          request: {
+            url: null,
+            method: "LOCAL",
+            headers: {},
+            body: null,
+          },
+          response: {
+            ok: true,
+            status: 200,
+            body: "Button sent to the user in the chat. You can reference it as button below.",
+          },
+        });
+        continue;
+      }
+
+      if (!url) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          request: {
+            url: null,
+            method,
+            headers,
+            body: variables,
+          },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Unknown action",
+          },
+        });
+        continue;
+      }
 
       if (actionDef.kind === "gmail_send") {
         const tokenResult = await ensureAccessToken({
@@ -1301,14 +1454,25 @@ module.exports = async function handler(req, res) {
     }).catch(() => {});
 
     if (streamReady) {
-      sendSseEvent(res, "done", { done: true });
+      sendSseEvent(
+        res,
+        "done",
+        customButtonPayload ? { done: true, custom_button: customButtonPayload } : { done: true }
+      );
       closeStream();
       return;
     }
 
-    res.status(200).json({
-      reply: followupReply,
-    });
+    res.status(200).json(
+      customButtonPayload
+        ? {
+            reply: followupReply,
+            custom_button: customButtonPayload,
+          }
+        : {
+            reply: followupReply,
+          }
+    );
     return;
   }
 
