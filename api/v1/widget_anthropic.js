@@ -7,6 +7,7 @@ const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRecentUserPrompts } = require("../../scripts/internal/getRecentUserPrompts");
+const { getChatCompletion: getOpenAiChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
@@ -15,9 +16,7 @@ const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const PRIMARY_MODEL = "claude-haiku-4-5-20251001";
-const FOLLOWUP_MODEL = "claude-3-5-haiku-20241022";
-const PRIMARY_MODEL_LABEL = "claude-haiku-4-5";
-const FOLLOWUP_MODEL_LABEL = "claude-3-5-haiku";
+const FOLLOWUP_MODEL = "gpt-5-nano";
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -44,6 +43,23 @@ function toAnthropicMessages(messages) {
     return {
       role,
       content: toTextBlocks(message?.content),
+    };
+  });
+}
+
+function toOpenAiInputItems(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    const role = message?.role === "assistant" ? "assistant" : "user";
+    const text = String(message?.content ?? "");
+    return {
+      type: "message",
+      role,
+      content: [
+        {
+          type: role === "assistant" ? "output_text" : "input_text",
+          text,
+        },
+      ],
     };
   });
 }
@@ -760,6 +776,195 @@ async function getChatCompletion({
     usage: payload?.usage ?? null,
     raw: rawText,
     output_items: outputItems,
+  };
+}
+
+function createOpenAiCompletionRequestBody({
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+}) {
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+- If a tool is needed, call it before any user-facing answer text.
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const requestBody = {
+    model,
+    reasoning,
+    instructions: finalInstructions,
+    input: Array.isArray(inputItems) ? inputItems : toOpenAiInputItems(messages),
+    text: { verbosity: "low" },
+    stream: true,
+  };
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = "auto";
+  }
+
+  return requestBody;
+}
+
+function parseOpenAiSseEventBlock(block) {
+  const lines = String(block || "").split("\n");
+  const dataLines = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  const dataText = dataLines.join("\n");
+  if (dataText === "[DONE]") return { done: true };
+  try {
+    return { done: false, payload: JSON.parse(dataText) };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getOpenAiChatCompletionStream({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+  signal,
+  onTextDelta,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const requestBody = createOpenAiCompletionRequestBody({
+    model,
+    reasoning,
+    instructions,
+    messages,
+    tools,
+    inputItems,
+  });
+
+  let response;
+  try {
+    response = await fetch("https://api.openai.com/v1/responses", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "OpenAI request failed",
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, status: 502, error: "Missing stream body from OpenAI" };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let assembledText = "";
+  let finalResponse = null;
+  const outputItems = [];
+  let upstreamError = null;
+  let done = false;
+
+  while (!done) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (_) {
+      return { ok: false, status: 502, error: "Stream read error from OpenAI" };
+    }
+    done = Boolean(chunk?.done);
+    if (chunk?.value) {
+      buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+      let delimiterIdx = buffer.indexOf("\n\n");
+      while (delimiterIdx !== -1) {
+        const block = buffer.slice(0, delimiterIdx);
+        buffer = buffer.slice(delimiterIdx + 2);
+        const evt = parseOpenAiSseEventBlock(block);
+        if (evt?.done) {
+          done = true;
+          break;
+        }
+        if (!evt?.payload) {
+          delimiterIdx = buffer.indexOf("\n\n");
+          continue;
+        }
+
+        const payload = evt.payload;
+        if (payload?.type === "response.output_text.delta" && typeof payload?.delta === "string") {
+          assembledText += payload.delta;
+          if (typeof onTextDelta === "function") {
+            await onTextDelta(payload.delta);
+          }
+        } else if (payload?.type === "response.output_item.done" && payload?.item) {
+          outputItems.push(payload.item);
+        } else if (payload?.type === "response.completed" && payload?.response) {
+          finalResponse = payload.response;
+        } else if (payload?.type === "response.failed") {
+          upstreamError =
+            payload?.response?.error?.message ||
+            payload?.error?.message ||
+            "OpenAI streaming failed";
+        }
+
+        delimiterIdx = buffer.indexOf("\n\n");
+      }
+    }
+  }
+
+  if (upstreamError) {
+    return { ok: false, status: 502, error: upstreamError };
+  }
+
+  const payload = finalResponse || {};
+  const finalOutputItems = Array.isArray(payload?.output) ? payload.output : outputItems;
+  const rawText =
+    typeof payload?.output_text === "string" && payload.output_text.trim()
+      ? payload.output_text
+      : assembledText;
+
+  if (!rawText) {
+    return { ok: false, status: 502, error: "Empty model output" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: finalOutputItems,
   };
 }
 
@@ -1541,6 +1746,34 @@ module.exports = async function handler(req, res) {
       completion.output_items && Array.isArray(completion.output_items)
         ? completion.output_items
         : [];
+    const followupInputItems = [
+      ...toOpenAiInputItems(messages),
+      ...assistantBlocks.map((item) => {
+        if (item?.type === "text") {
+          return {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: String(item.text ?? "") }],
+          };
+        }
+        if (item?.type === "tool_use") {
+          return {
+            type: "function_call",
+            call_id: item?.id ?? null,
+            name: String(item?.name ?? ""),
+            arguments: JSON.stringify(
+              item?.input && typeof item.input === "object" ? item.input : {}
+            ),
+          };
+        }
+        return null;
+      }).filter(Boolean),
+      ...toolResults.map((result) => ({
+        type: "function_call_output",
+        call_id: result.call_id,
+        output: JSON.stringify(result),
+      })),
+    ];
 
     const calendarNote = calendarContext
       ? [
@@ -1573,13 +1806,13 @@ module.exports = async function handler(req, res) {
 
     const followupStartedAt = Date.now();
     const followup = wantsStream
-      ? await getChatCompletionStream({
-          apiKey: process.env.ANTHROPIC_API_KEY,
+      ? await getOpenAiChatCompletionStream({
+          apiKey: process.env.OPENAI_API_KEY,
           model: FOLLOWUP_MODEL,
+          reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
-          assistantBlocks,
-          toolResults,
+          inputItems: followupInputItems,
           signal: streamAbortController?.signal,
           onTextDelta: async (delta) => {
             nanoStreamChunks.push(delta);
@@ -1588,13 +1821,13 @@ module.exports = async function handler(req, res) {
             }
           },
         })
-      : await getChatCompletion({
-          apiKey: process.env.ANTHROPIC_API_KEY,
+      : await getOpenAiChatCompletion({
+          apiKey: process.env.OPENAI_API_KEY,
           model: FOLLOWUP_MODEL,
+          reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
-          assistantBlocks,
-          toolResults,
+          inputItems: followupInputItems,
         });
     latencyNanoMs = Date.now() - followupStartedAt;
     if (!followup.ok) {
@@ -1641,8 +1874,8 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: PRIMARY_MODEL_LABEL,
-      modelNano: FOLLOWUP_MODEL_LABEL,
+      modelMini: PRIMARY_MODEL,
+      modelNano: FOLLOWUP_MODEL,
       miniInputTokens: miniTokens.input,
       miniOutputTokens: miniTokens.output,
       nanoInputTokens: nanoTokens.input,
@@ -1721,8 +1954,8 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: PRIMARY_MODEL_LABEL,
-    modelNano: FOLLOWUP_MODEL_LABEL,
+    modelMini: PRIMARY_MODEL,
+    modelNano: FOLLOWUP_MODEL,
     miniInputTokens: completionMiniTokens.input,
     miniOutputTokens: completionMiniTokens.output,
     nanoInputTokens: 0,

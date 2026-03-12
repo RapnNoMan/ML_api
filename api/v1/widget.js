@@ -863,11 +863,13 @@ module.exports = async function handler(req, res) {
     }, 15000);
   }
 
+  const primaryModel = wantsStream ? "gpt-5-nano" : "gpt-5-mini";
+  const followupModel = "gpt-5-nano";
   const completionStartedAt = Date.now();
   const completion = wantsStream
     ? await getChatCompletionStream({
         apiKey: process.env.OPENAI_API_KEY,
-        model: "gpt-5-nano",
+        model: primaryModel,
         reasoning: { effort: "minimal" },
         instructions: prompt,
         messages,
@@ -879,7 +881,7 @@ module.exports = async function handler(req, res) {
       })
     : await getChatCompletion({
         apiKey: process.env.OPENAI_API_KEY,
-        model: "gpt-5-mini",
+        model: primaryModel,
         reasoning: { effort: "low" },
         instructions: prompt,
         messages,
@@ -1369,7 +1371,7 @@ module.exports = async function handler(req, res) {
     const followup = wantsStream
       ? await getChatCompletionStream({
           apiKey: process.env.OPENAI_API_KEY,
-          model: "gpt-5-nano",
+          model: followupModel,
           reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
@@ -1384,7 +1386,7 @@ module.exports = async function handler(req, res) {
         })
       : await getChatCompletion({
           apiKey: process.env.OPENAI_API_KEY,
-          model: "gpt-5-nano",
+          model: followupModel,
           reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
@@ -1435,8 +1437,8 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: "gpt-5-mini",
-      modelNano: "gpt-5-nano",
+      modelMini: primaryModel,
+      modelNano: followupModel,
       miniInputTokens: miniTokens.input,
       miniOutputTokens: miniTokens.output,
       nanoInputTokens: nanoTokens.input,
@@ -1515,8 +1517,8 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: "gpt-5-mini",
-    modelNano: "gpt-5-nano",
+    modelMini: primaryModel,
+    modelNano: followupModel,
     miniInputTokens: completionMiniTokens.input,
     miniOutputTokens: completionMiniTokens.output,
     nanoInputTokens: 0,
