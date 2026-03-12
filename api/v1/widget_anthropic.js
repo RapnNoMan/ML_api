@@ -593,6 +593,7 @@ function normalizeAnthropicInputSchema(schema) {
   const isObjectLike = normalized.type === "object" || schema.properties;
   if (isObjectLike) {
     normalized.type = "object";
+    normalized.additionalProperties = false;
     const rawProperties =
       schema.properties && typeof schema.properties === "object" ? schema.properties : {};
     const properties = {};
