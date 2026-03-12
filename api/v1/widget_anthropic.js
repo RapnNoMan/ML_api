@@ -572,15 +572,64 @@ function extractAssistantBlocks(payload, fallbackOutputItems = []) {
     .filter(Boolean);
 }
 
+function normalizeAnthropicInputSchema(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { type: "object", properties: {} };
+  }
+
+  const normalized = {};
+  const rawType = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
+  if (typeof rawType === "string" && rawType) {
+    normalized.type = rawType;
+  }
+  if (typeof schema.description === "string" && schema.description.trim()) {
+    normalized.description = schema.description.trim();
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    normalized.enum = [...schema.enum];
+  }
+
+  const isObjectLike = normalized.type === "object" || schema.properties;
+  if (isObjectLike) {
+    normalized.type = "object";
+    const rawProperties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const properties = {};
+    for (const [key, value] of Object.entries(rawProperties)) {
+      properties[key] = normalizeAnthropicInputSchema(value);
+    }
+    normalized.properties = properties;
+    if (Array.isArray(schema.required) && schema.required.length > 0) {
+      normalized.required = schema.required.filter(
+        (item) => typeof item === "string" && item.trim()
+      );
+    }
+    return normalized;
+  }
+
+  const isArrayLike = normalized.type === "array" || schema.items;
+  if (isArrayLike) {
+    normalized.type = "array";
+    normalized.items = normalizeAnthropicInputSchema(
+      schema.items && typeof schema.items === "object" ? schema.items : { type: "string" }
+    );
+    return normalized;
+  }
+
+  if (!normalized.type) {
+    normalized.type = "string";
+  }
+
+  return normalized;
+}
+
 function toAnthropicTools(tools) {
   return (Array.isArray(tools) ? tools : []).map((tool) => ({
     name: tool?.name ?? "",
     description: tool?.description ?? "",
     strict: true,
-    input_schema:
-      tool?.parameters && typeof tool.parameters === "object"
-        ? tool.parameters
-        : { type: "object", properties: {}, additionalProperties: false },
+    input_schema: normalizeAnthropicInputSchema(tool?.parameters),
   }));
 }
 
@@ -759,6 +808,9 @@ async function getChatCompletionStream({
         }
 
         const payload = evt.payload;
+        if (evt?.event === "message_stop" || payload?.type === "message_stop") {
+          done = true;
+        }
         if (payload?.type === "message_start" && payload?.message?.usage) {
           usage = payload.message.usage;
         } else if (payload?.type === "content_block_start") {
