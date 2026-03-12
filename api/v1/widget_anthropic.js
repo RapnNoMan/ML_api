@@ -207,6 +207,169 @@ function normalizeIdValue(value) {
   return text;
 }
 
+function parseActionBodyTemplate(bodyTemplate) {
+  if (!bodyTemplate) return null;
+  if (typeof bodyTemplate === "object") return bodyTemplate;
+  if (typeof bodyTemplate !== "string") return null;
+  const trimmed = bodyTemplate.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : trimmed;
+  } catch (_) {
+    return trimmed;
+  }
+}
+
+function isJsonSchemaNode(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(node, "type") ||
+    Object.prototype.hasOwnProperty.call(node, "properties") ||
+    Object.prototype.hasOwnProperty.call(node, "items") ||
+    Object.prototype.hasOwnProperty.call(node, "required") ||
+    Object.prototype.hasOwnProperty.call(node, "additionalProperties") ||
+    Object.prototype.hasOwnProperty.call(node, "oneOf") ||
+    Object.prototype.hasOwnProperty.call(node, "anyOf") ||
+    Object.prototype.hasOwnProperty.call(node, "allOf")
+  );
+}
+
+function getValueAtPath(source, pathParts) {
+  let current = source;
+  for (const part of pathParts) {
+    if (!current || typeof current !== "object" || !(part in current)) {
+      return undefined;
+    }
+    current = current[part];
+  }
+  return current;
+}
+
+function lookupTemplateValue(variables, pathParts) {
+  if (!Array.isArray(pathParts) || pathParts.length === 0) return undefined;
+
+  const directValue = getValueAtPath(variables, pathParts);
+  if (directValue !== undefined) return directValue;
+
+  const dottedKey = pathParts.join(".");
+  if (variables && typeof variables === "object" && dottedKey in variables) {
+    return variables[dottedKey];
+  }
+
+  const underscoredKey = pathParts.join("_");
+  if (variables && typeof variables === "object" && underscoredKey in variables) {
+    return variables[underscoredKey];
+  }
+
+  if (pathParts.length === 1 && variables && typeof variables === "object") {
+    const leafKey = pathParts[0];
+    if (leafKey in variables) return variables[leafKey];
+  }
+
+  return undefined;
+}
+
+function renderTemplateValue(template, variables) {
+  if (typeof template === "string") {
+    const exactMatch = template.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
+    if (exactMatch) {
+      const value = lookupTemplateValue(
+        variables,
+        exactMatch[1]
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+      return value === undefined ? null : value;
+    }
+
+    return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath) => {
+      const value = lookupTemplateValue(
+        variables,
+        String(rawPath)
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+      if (value === undefined || value === null) return "";
+      return typeof value === "string" ? value : JSON.stringify(value);
+    });
+  }
+
+  if (Array.isArray(template)) {
+    return template.map((item) => renderTemplateValue(item, variables));
+  }
+
+  if (template && typeof template === "object") {
+    const result = {};
+    for (const [key, value] of Object.entries(template)) {
+      result[key] = renderTemplateValue(value, variables);
+    }
+    return result;
+  }
+
+  return template;
+}
+
+function materializeSchemaNode(schema, source, pathParts = []) {
+  if (!schema || typeof schema !== "object") {
+    return lookupTemplateValue(source, pathParts);
+  }
+
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
+  if (type === "object" || schema.properties) {
+    const properties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const result = {};
+
+    for (const [key, childSchema] of Object.entries(properties)) {
+      const value = materializeSchemaNode(childSchema, source, [...pathParts, key]);
+      if (value !== undefined) {
+        result[key] = value;
+      }
+    }
+
+    if (Object.keys(result).length > 0) return result;
+
+    const directObject = lookupTemplateValue(source, pathParts);
+    if (directObject && typeof directObject === "object") {
+      return directObject;
+    }
+
+    return pathParts.length === 0 ? {} : undefined;
+  }
+
+  if (type === "array" || schema.items) {
+    const arrayValue = lookupTemplateValue(source, pathParts);
+    if (!Array.isArray(arrayValue)) return undefined;
+    if (!schema.items || typeof schema.items !== "object") return arrayValue;
+    return arrayValue.map((item) => materializeSchemaNode(schema.items, item, []));
+  }
+
+  return lookupTemplateValue(source, pathParts);
+}
+
+function buildActionRequestPayload(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate) return variables;
+
+  if (typeof parsedTemplate === "string") {
+    return renderTemplateValue(parsedTemplate, variables);
+  }
+
+  if (isJsonSchemaNode(parsedTemplate)) {
+    const materialized = materializeSchemaNode(parsedTemplate, variables, []);
+    if (materialized && typeof materialized === "object" && !Array.isArray(materialized)) {
+      return materialized;
+    }
+    return variables;
+  }
+
+  return renderTemplateValue(parsedTemplate, variables);
+}
+
 function sanitizeToolName(rawName, id, usedNames) {
   let name = String(rawName || "")
     .toLowerCase()
@@ -1368,6 +1531,7 @@ module.exports = async function handler(req, res) {
       const variables = call?.variables ?? {};
       let url = actionDef.url;
       let requestBody;
+      let requestPayloadForLog = variables;
 
       if (actionDef.kind === "custom_button") {
         customButtonPayload = actionDef.button_payload || null;
@@ -1438,7 +1602,7 @@ module.exports = async function handler(req, res) {
         }
 
         headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
-        requestBody = JSON.stringify({
+        requestPayloadForLog = {
           raw: buildRawEmail({
             to: variables?.to,
             subject: variables?.subject,
@@ -1446,7 +1610,8 @@ module.exports = async function handler(req, res) {
             cc: variables?.cc,
             bcc: variables?.bcc,
           }),
-        });
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
         const tokenResult = await ensureCalendarAccessToken({
@@ -1631,7 +1796,7 @@ module.exports = async function handler(req, res) {
           const attendees = Array.isArray(variables?.attendees)
             ? variables.attendees.map((email) => ({ email }))
             : undefined;
-          requestBody = JSON.stringify({
+          requestPayloadForLog = {
             summary: actionDef.event_type || "Event",
             location: actionDef.location ?? undefined,
             start: {
@@ -1643,7 +1808,8 @@ module.exports = async function handler(req, res) {
               timeZone: calendarTimeZone,
             },
             attendees,
-          });
+          };
+          requestBody = JSON.stringify(requestPayloadForLog);
           if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
         } else if (actionDef.kind === "calendar_list") {
           const qs = new URLSearchParams();
@@ -1659,10 +1825,11 @@ module.exports = async function handler(req, res) {
           if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
         }
       } else if (actionDef.kind === "slack") {
-        requestBody = JSON.stringify({
+        requestPayloadForLog = {
           text: typeof variables?.message === "string" ? variables.message : "",
           username: actionDef.username || "MitsoLab",
-        });
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (method === "GET") {
         const qs = new URLSearchParams();
@@ -1672,8 +1839,10 @@ module.exports = async function handler(req, res) {
         }
         const qsText = qs.toString();
         if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+        requestPayloadForLog = null;
       } else {
-        requestBody = JSON.stringify(variables);
+        requestPayloadForLog = buildActionRequestPayload(actionDef, variables);
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       }
 
@@ -1735,7 +1904,7 @@ module.exports = async function handler(req, res) {
               ? { text: variables?.message ?? "", username: actionDef.username || "MitsoLab" }
               : method === "GET"
                 ? null
-                : variables,
+                : requestPayloadForLog,
         },
         response: actionResponse,
       });
