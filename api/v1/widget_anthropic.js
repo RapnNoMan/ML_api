@@ -370,6 +370,25 @@ function buildActionRequestPayload(actionDef, variables) {
   return renderTemplateValue(parsedTemplate, variables);
 }
 
+function getMissingRequiredFields(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate || !isJsonSchemaNode(parsedTemplate)) return [];
+
+  const required = Array.isArray(parsedTemplate.required) ? parsedTemplate.required : [];
+  const source = variables && typeof variables === "object" ? variables : {};
+  const missing = [];
+
+  for (const field of required) {
+    if (typeof field !== "string" || !field.trim()) continue;
+    const value = lookupTemplateValue(source, [field]);
+    if (value === undefined || value === null || value === "") {
+      missing.push(field);
+    }
+  }
+
+  return missing;
+}
+
 function sanitizeToolName(rawName, id, usedNames) {
   let name = String(rawName || "")
     .toLowerCase()
@@ -601,6 +620,7 @@ function createCompletionRequestBody({
 TOOL RULES (MUST FOLLOW):
 - Use the provided tools when needed.
 - Never make the tool call without having the full info from the user.
+- Never call a tool unless every required parameter is present in the tool input.
 - If a tool is needed, call it before any user-facing answer text.
 `.trim();
 
@@ -1150,9 +1170,10 @@ function buildRequestDebugSuffix(toolResults) {
 
   if (!lastResult) return "";
 
+  const toolArgsText = JSON.stringify(lastResult.tool_args ?? {}, null, 2);
   const headersText = JSON.stringify(lastResult.request.headers ?? {}, null, 2);
   const bodyText = JSON.stringify(lastResult.request.body ?? null, null, 2);
-  return `\n\n\nHeaders:\n${headersText}\n\nBody:\n${bodyText}`;
+  return `\n\n\nTool args:\n${toolArgsText}\n\nHeaders:\n${headersText}\n\nBody:\n${bodyText}`;
 }
 
 module.exports = async function handler(req, res) {
@@ -1570,6 +1591,7 @@ module.exports = async function handler(req, res) {
         toolResults.push({
           call_id: call.call_id ?? null,
           action_key: call.action_key,
+          tool_args: variables,
           request: {
             url: null,
             method,
@@ -1580,6 +1602,31 @@ module.exports = async function handler(req, res) {
             ok: false,
             status: 400,
             error: "Unknown action",
+          },
+        });
+        continue;
+      }
+
+      const missingRequiredFields =
+        actionDef.kind === "custom" || actionDef.kind === "zapier" || actionDef.kind === "make"
+          ? getMissingRequiredFields(actionDef, variables)
+          : [];
+      if (missingRequiredFields.length > 0) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: {
+            url,
+            method,
+            headers,
+            body: requestPayloadForLog,
+          },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Missing required tool arguments",
+            missing_required_fields: missingRequiredFields,
           },
         });
         continue;
@@ -1599,6 +1646,7 @@ module.exports = async function handler(req, res) {
           toolResults.push({
             call_id: call.call_id ?? null,
             action_key: call.action_key,
+            tool_args: variables,
             request: {
               url,
               method,
@@ -1640,6 +1688,7 @@ module.exports = async function handler(req, res) {
           toolResults.push({
             call_id: call.call_id ?? null,
             action_key: call.action_key,
+            tool_args: variables,
             request: {
               url,
               method,
@@ -1691,6 +1740,7 @@ module.exports = async function handler(req, res) {
               toolResults.push({
                 call_id: call.call_id ?? null,
                 action_key: call.action_key,
+                tool_args: variables,
                 request: {
                   url,
                   method,
@@ -1710,12 +1760,13 @@ module.exports = async function handler(req, res) {
             !isAllDayOpen &&
             (startHour === null || endHour === null || startMin === null || endMin === null)
           ) {
-            toolResults.push({
-              call_id: call.call_id ?? null,
-              action_key: call.action_key,
-              request: {
-                url,
-                method,
+              toolResults.push({
+                call_id: call.call_id ?? null,
+                action_key: call.action_key,
+                tool_args: variables,
+                request: {
+                  url,
+                  method,
                 headers,
                 body: variables,
               },
@@ -1746,6 +1797,7 @@ module.exports = async function handler(req, res) {
               toolResults.push({
                 call_id: call.call_id ?? null,
                 action_key: call.action_key,
+                tool_args: variables,
                 request: {
                   url: availabilityUrl,
                   method: "GET",
@@ -1768,6 +1820,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url: availabilityUrl,
                 method: "GET",
@@ -1791,6 +1844,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url: availabilityUrl,
                 method: "GET",
@@ -1895,6 +1949,7 @@ module.exports = async function handler(req, res) {
       toolResults.push({
         call_id: call.call_id ?? null,
         action_key: call.action_key,
+        tool_args: variables,
         request: {
           url,
           method,
