@@ -1213,20 +1213,6 @@ function sendSseEvent(res, event, payload) {
   }
 }
 
-function buildRequestDebugSuffix(toolResults) {
-  const results = Array.isArray(toolResults) ? toolResults : [];
-  const lastResult = [...results]
-    .reverse()
-    .find((result) => result?.request && result.request.method !== "LOCAL");
-
-  if (!lastResult) return "";
-
-  const toolArgsText = JSON.stringify(lastResult.tool_args ?? {}, null, 2);
-  const headersText = JSON.stringify(lastResult.request.headers ?? {}, null, 2);
-  const bodyText = JSON.stringify(lastResult.request.body ?? null, null, 2);
-  return `\n\n\nTool args:\n${toolArgsText}\n\nHeaders:\n${headersText}\n\nBody:\n${bodyText}`;
-}
-
 module.exports = async function handler(req, res) {
   try {
     setWidgetCorsHeaders(req, res);
@@ -2132,11 +2118,6 @@ module.exports = async function handler(req, res) {
       wantsStream && nanoStreamChunks.length > 0
         ? nanoStreamChunks.join("")
         : (followup.data?.reply ?? "");
-    const debugSuffix = buildRequestDebugSuffix(toolResults);
-    const followupReplyWithDebug = `${followupReply}${debugSuffix}`;
-    if (streamReady && !streamClosed && debugSuffix) {
-      sendSseEvent(res, "token", { text: debugSuffix });
-    }
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -2146,7 +2127,7 @@ module.exports = async function handler(req, res) {
       chatId,
       country: requestCountry,
       prompt: String(body.message),
-      result: followupReplyWithDebug,
+      result: followupReply,
       source: "api",
       action: true,
     });
@@ -2198,11 +2179,11 @@ module.exports = async function handler(req, res) {
     res.status(200).json(
       customButtonPayload
         ? {
-            reply: followupReplyWithDebug,
+            reply: followupReply,
             custom_button: customButtonPayload,
           }
         : {
-            reply: followupReplyWithDebug,
+            reply: followupReply,
           }
     );
     return;
