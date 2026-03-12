@@ -15,7 +15,7 @@ const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
 const PRIMARY_MODEL = "claude-haiku-4-5-20251001";
-const FOLLOWUP_MODEL = "claude-3-5-haiku-latest";
+const FOLLOWUP_MODEL = "claude-3-5-haiku-20241022";
 const PRIMARY_MODEL_LABEL = "claude-haiku-4-5";
 const FOLLOWUP_MODEL_LABEL = "claude-3-5-haiku";
 
