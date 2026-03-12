@@ -774,10 +774,7 @@ async function getChatCompletionStream({
                 type: "tool_use",
                 id: contentBlock?.id ?? null,
                 name: typeof contentBlock?.name === "string" ? contentBlock.name : "",
-                inputJson:
-                  contentBlock?.input && typeof contentBlock.input === "object"
-                    ? JSON.stringify(contentBlock.input)
-                    : "",
+                inputJson: "",
               });
             }
           }
