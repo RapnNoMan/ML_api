@@ -1,6 +1,7 @@
 {
   "rewrites": [
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
-    { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" }
+    { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
+    { "source": "/v1/widget-anthropic/:agent_id", "destination": "/api/v1/widget_anthropic?agent_id=:agent_id" }
   ]
 }
