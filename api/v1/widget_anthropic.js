@@ -2026,7 +2026,11 @@ module.exports = async function handler(req, res) {
       wantsStream && nanoStreamChunks.length > 0
         ? nanoStreamChunks.join("")
         : (followup.data?.reply ?? "");
-    const followupReplyWithDebug = `${followupReply}${buildRequestDebugSuffix(toolResults)}`;
+    const debugSuffix = buildRequestDebugSuffix(toolResults);
+    const followupReplyWithDebug = `${followupReply}${debugSuffix}`;
+    if (streamReady && !streamClosed && debugSuffix) {
+      sendSseEvent(res, "token", { text: debugSuffix });
+    }
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
