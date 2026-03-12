@@ -576,6 +576,7 @@ function toAnthropicTools(tools) {
   return (Array.isArray(tools) ? tools : []).map((tool) => ({
     name: tool?.name ?? "",
     description: tool?.description ?? "",
+    strict: true,
     input_schema:
       tool?.parameters && typeof tool.parameters === "object"
         ? tool.parameters
