@@ -1142,6 +1142,19 @@ function sendSseEvent(res, event, payload) {
   }
 }
 
+function buildRequestDebugSuffix(toolResults) {
+  const results = Array.isArray(toolResults) ? toolResults : [];
+  const lastResult = [...results]
+    .reverse()
+    .find((result) => result?.request && result.request.method !== "LOCAL");
+
+  if (!lastResult) return "";
+
+  const headersText = JSON.stringify(lastResult.request.headers ?? {}, null, 2);
+  const bodyText = JSON.stringify(lastResult.request.body ?? null, null, 2);
+  return `\n\n\nHeaders:\n${headersText}\n\nBody:\n${bodyText}`;
+}
+
 module.exports = async function handler(req, res) {
   try {
     setWidgetCorsHeaders(req, res);
@@ -2013,6 +2026,7 @@ module.exports = async function handler(req, res) {
       wantsStream && nanoStreamChunks.length > 0
         ? nanoStreamChunks.join("")
         : (followup.data?.reply ?? "");
+    const followupReplyWithDebug = `${followupReply}${buildRequestDebugSuffix(toolResults)}`;
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -2022,7 +2036,7 @@ module.exports = async function handler(req, res) {
       chatId,
       country: requestCountry,
       prompt: String(body.message),
-      result: followupReply,
+      result: followupReplyWithDebug,
       source: "api",
       action: true,
     });
@@ -2074,11 +2088,11 @@ module.exports = async function handler(req, res) {
     res.status(200).json(
       customButtonPayload
         ? {
-            reply: followupReply,
+            reply: followupReplyWithDebug,
             custom_button: customButtonPayload,
           }
         : {
-            reply: followupReply,
+            reply: followupReplyWithDebug,
           }
     );
     return;
