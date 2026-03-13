@@ -7,14 +7,47 @@ const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRecentUserPrompts } = require("../../scripts/internal/getRecentUserPrompts");
-const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
+const { getChatCompletion: getOpenAiChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 const { randomBytes } = require("node:crypto");
 
-function toInputItems(messages) {
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const PRIMARY_MODEL = "claude-haiku-4-5-20251001";
+const FOLLOWUP_MODEL = "gpt-5-nano";
+
+function toTextBlocks(content) {
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (item?.type === "text" && typeof item?.text === "string") {
+          return { type: "text", text: item.text };
+        }
+        if (typeof item === "string") {
+          return { type: "text", text: item };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  return [{ type: "text", text: String(content ?? "") }];
+}
+
+function toAnthropicMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    const role = message?.role === "assistant" ? "assistant" : "user";
+    return {
+      role,
+      content: toTextBlocks(message?.content),
+    };
+  });
+}
+
+function toOpenAiInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
     const role = message?.role === "assistant" ? "assistant" : "user";
     const text = String(message?.content ?? "");
@@ -172,6 +205,326 @@ function normalizeIdValue(value) {
   if (value === null || value === undefined) return "";
   const text = String(value).trim();
   return text;
+}
+
+function parseActionBodyTemplate(bodyTemplate) {
+  if (!bodyTemplate) return null;
+  if (typeof bodyTemplate === "object") return bodyTemplate;
+  if (typeof bodyTemplate !== "string") return null;
+  const trimmed = bodyTemplate.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : trimmed;
+  } catch (_) {
+    return trimmed;
+  }
+}
+
+function isJsonSchemaNode(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(node, "type") ||
+    Object.prototype.hasOwnProperty.call(node, "properties") ||
+    Object.prototype.hasOwnProperty.call(node, "items") ||
+    Object.prototype.hasOwnProperty.call(node, "required") ||
+    Object.prototype.hasOwnProperty.call(node, "additionalProperties") ||
+    Object.prototype.hasOwnProperty.call(node, "oneOf") ||
+    Object.prototype.hasOwnProperty.call(node, "anyOf") ||
+    Object.prototype.hasOwnProperty.call(node, "allOf")
+  );
+}
+
+function getValueAtPath(source, pathParts) {
+  let current = source;
+  for (const part of pathParts) {
+    if (!current || typeof current !== "object" || !(part in current)) {
+      return undefined;
+    }
+    current = current[part];
+  }
+  return current;
+}
+
+function lookupTemplateValue(variables, pathParts) {
+  if (!Array.isArray(pathParts) || pathParts.length === 0) return undefined;
+  const directValue = getValueAtPath(variables, pathParts);
+  if (directValue !== undefined) return directValue;
+  const dottedKey = pathParts.join(".");
+  if (variables && typeof variables === "object" && dottedKey in variables) {
+    return variables[dottedKey];
+  }
+  const underscoredKey = pathParts.join("_");
+  if (variables && typeof variables === "object" && underscoredKey in variables) {
+    return variables[underscoredKey];
+  }
+  if (pathParts.length === 1 && variables && typeof variables === "object") {
+    const leafKey = pathParts[0];
+    if (leafKey in variables) return variables[leafKey];
+  }
+  return undefined;
+}
+
+function renderTemplateValue(template, variables) {
+  if (typeof template === "string") {
+    const exactMatch = template.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
+    if (exactMatch) {
+      const value = lookupTemplateValue(
+        variables,
+        exactMatch[1].split(".").map((part) => part.trim()).filter(Boolean)
+      );
+      return value === undefined ? null : value;
+    }
+    return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath) => {
+      const value = lookupTemplateValue(
+        variables,
+        String(rawPath).split(".").map((part) => part.trim()).filter(Boolean)
+      );
+      if (value === undefined || value === null) return "";
+      return typeof value === "string" ? value : JSON.stringify(value);
+    });
+  }
+  if (Array.isArray(template)) return template.map((item) => renderTemplateValue(item, variables));
+  if (template && typeof template === "object") {
+    const result = {};
+    for (const [key, value] of Object.entries(template)) {
+      result[key] = renderTemplateValue(value, variables);
+    }
+    return result;
+  }
+  return template;
+}
+
+function materializeSchemaNode(schema, source, pathParts = []) {
+  if (!schema || typeof schema !== "object") {
+    return lookupTemplateValue(source, pathParts);
+  }
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  if (type === "object" || schema.properties) {
+    const properties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const result = {};
+    for (const [key, childSchema] of Object.entries(properties)) {
+      const value = materializeSchemaNode(childSchema, source, [...pathParts, key]);
+      if (value !== undefined) result[key] = value;
+    }
+    if (Object.keys(result).length > 0) return result;
+    const directObject = lookupTemplateValue(source, pathParts);
+    if (directObject && typeof directObject === "object") return directObject;
+    return pathParts.length === 0 ? {} : undefined;
+  }
+  if (type === "array" || schema.items) {
+    const arrayValue = lookupTemplateValue(source, pathParts);
+    if (!Array.isArray(arrayValue)) return undefined;
+    if (!schema.items || typeof schema.items !== "object") return arrayValue;
+    return arrayValue.map((item) => materializeSchemaNode(schema.items, item, []));
+  }
+  return lookupTemplateValue(source, pathParts);
+}
+
+function buildActionRequestPayload(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate) return variables;
+  if (typeof parsedTemplate === "string") return renderTemplateValue(parsedTemplate, variables);
+  if (isJsonSchemaNode(parsedTemplate)) {
+    const materialized = materializeSchemaNode(parsedTemplate, variables, []);
+    if (materialized && typeof materialized === "object" && !Array.isArray(materialized)) {
+      return materialized;
+    }
+    return variables;
+  }
+  return renderTemplateValue(parsedTemplate, variables);
+}
+
+function getMissingRequiredFields(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate || !isJsonSchemaNode(parsedTemplate)) return [];
+  const required = Array.isArray(parsedTemplate.required) ? parsedTemplate.required : [];
+  return required.filter((field) => {
+    if (typeof field !== "string" || !field.trim()) return false;
+    const value = lookupTemplateValue(variables && typeof variables === "object" ? variables : {}, [field]);
+    return value === undefined || value === null || value === "";
+  });
+}
+
+function extractAnthropicResponseText(payload) {
+  const content = Array.isArray(payload?.content) ? payload.content : [];
+  return content
+    .filter((item) => item?.type === "text" && typeof item?.text === "string" && item.text.trim())
+    .map((item) => item.text)
+    .join("");
+}
+
+function extractAnthropicFunctionCalls(payload) {
+  const output = Array.isArray(payload?.content) ? payload.content : [];
+  return output
+    .filter((item) => item?.type === "tool_use")
+    .map((item) => ({
+      action_key: typeof item?.name === "string" ? item.name : "",
+      variables: item?.input && typeof item.input === "object" ? item.input : {},
+      call_id: item?.id ?? null,
+    }));
+}
+
+function extractAnthropicAssistantBlocks(payload) {
+  const output = Array.isArray(payload?.content) ? payload.content : [];
+  return output
+    .map((item) => {
+      if (item?.type === "text" && typeof item?.text === "string") {
+        return { type: "text", text: item.text };
+      }
+      if (item?.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: item?.id ?? null,
+          name: typeof item?.name === "string" ? item.name : "",
+          input: item?.input && typeof item.input === "object" ? item.input : {},
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function normalizeAnthropicInputSchema(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { type: "object", properties: {}, additionalProperties: false };
+  }
+  const normalized = {};
+  const rawType = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+  if (typeof rawType === "string" && rawType) normalized.type = rawType;
+  if (typeof schema.description === "string" && schema.description.trim()) {
+    normalized.description = schema.description.trim();
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    normalized.enum = [...schema.enum];
+  }
+  const isObjectLike = normalized.type === "object" || schema.properties;
+  if (isObjectLike) {
+    normalized.type = "object";
+    normalized.additionalProperties = false;
+    const rawProperties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const properties = {};
+    for (const [key, value] of Object.entries(rawProperties)) {
+      properties[key] = normalizeAnthropicInputSchema(value);
+    }
+    normalized.properties = properties;
+    if (Array.isArray(schema.required) && schema.required.length > 0) {
+      normalized.required = schema.required.filter((item) => typeof item === "string" && item.trim());
+    }
+    return normalized;
+  }
+  const isArrayLike = normalized.type === "array" || schema.items;
+  if (isArrayLike) {
+    normalized.type = "array";
+    normalized.items = normalizeAnthropicInputSchema(
+      schema.items && typeof schema.items === "object" ? schema.items : { type: "string" }
+    );
+    return normalized;
+  }
+  if (!normalized.type) normalized.type = "string";
+  return normalized;
+}
+
+function toAnthropicTools(tools) {
+  return (Array.isArray(tools) ? tools : []).map((tool) => ({
+    name: tool?.name ?? "",
+    description: tool?.description ?? "",
+    strict: true,
+    input_schema: normalizeAnthropicInputSchema(tool?.parameters),
+  }));
+}
+
+function createAnthropicCompletionRequestBody({ model, instructions, messages, tools }) {
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+- Never call a tool unless every required parameter is present in the tool input.
+- If a tool is needed, call it before any user-facing answer text.
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const requestBody = {
+    model,
+    system: finalInstructions,
+    messages: toAnthropicMessages(messages),
+    max_tokens: 1024,
+    stream: false,
+  };
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = toAnthropicTools(tools);
+    requestBody.tool_choice = { type: "auto" };
+  }
+  return requestBody;
+}
+
+async function getAnthropicChatCompletion({ apiKey, model, instructions, messages, tools }) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+  const requestBody = createAnthropicCompletionRequestBody({
+    model,
+    instructions,
+    messages,
+    tools,
+  });
+
+  let response;
+  try {
+    response = await fetch(ANTHROPIC_API_URL, {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling Anthropic" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "Anthropic request failed",
+    };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Invalid JSON from Anthropic" };
+  }
+
+  const toolCalls = extractAnthropicFunctionCalls(payload);
+  const outputItems = extractAnthropicAssistantBlocks(payload);
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: { mode: "actions_needed", reply: "", action_calls: toolCalls },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: outputItems,
+    };
+  }
+
+  const rawText = extractAnthropicResponseText(payload);
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+
+  return {
+    ok: true,
+    data: { mode: "reply", reply: rawText, action_calls: [] },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: outputItems,
+  };
 }
 
 function makeGeneratedId() {
@@ -413,10 +766,9 @@ module.exports = async function handler(req, res) {
   ];
 
   const completionStartedAt = Date.now();
-  const completion = await getChatCompletion({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5-mini",
-    reasoning: { effort: "low" },
+  const completion = await getAnthropicChatCompletion({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    model: PRIMARY_MODEL,
     instructions: prompt,
     messages,
     tools: toolsResult.tools,
@@ -475,6 +827,31 @@ module.exports = async function handler(req, res) {
       const variables = call?.variables ?? {};
       let url = actionDef.url;
       let requestBody;
+      let requestPayloadForLog = variables;
+
+      const missingRequiredFields =
+        actionDef.kind === "custom" || actionDef.kind === "zapier" || actionDef.kind === "make"
+          ? getMissingRequiredFields(actionDef, variables)
+          : [];
+      if (missingRequiredFields.length > 0) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          request: {
+            url,
+            method,
+            headers,
+            body: requestPayloadForLog,
+          },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Missing required tool arguments",
+            missing_required_fields: missingRequiredFields,
+          },
+        });
+        continue;
+      }
 
       if (actionDef.kind === "gmail_send") {
         const tokenResult = await ensureAccessToken({
@@ -506,7 +883,7 @@ module.exports = async function handler(req, res) {
         }
 
         headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
-        requestBody = JSON.stringify({
+        requestPayloadForLog = {
           raw: buildRawEmail({
             to: variables?.to,
             subject: variables?.subject,
@@ -514,7 +891,8 @@ module.exports = async function handler(req, res) {
             cc: variables?.cc,
             bcc: variables?.bcc,
           }),
-        });
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
         const tokenResult = await ensureCalendarAccessToken({
@@ -699,7 +1077,7 @@ module.exports = async function handler(req, res) {
           const attendees = Array.isArray(variables?.attendees)
             ? variables.attendees.map((email) => ({ email }))
             : undefined;
-          requestBody = JSON.stringify({
+          requestPayloadForLog = {
             summary: actionDef.event_type || "Event",
             location: actionDef.location ?? undefined,
             start: {
@@ -711,7 +1089,8 @@ module.exports = async function handler(req, res) {
               timeZone: calendarTimeZone,
             },
             attendees,
-          });
+          };
+          requestBody = JSON.stringify(requestPayloadForLog);
           if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
         } else if (actionDef.kind === "calendar_list") {
           const qs = new URLSearchParams();
@@ -727,10 +1106,11 @@ module.exports = async function handler(req, res) {
           if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
         }
       } else if (actionDef.kind === "slack") {
-        requestBody = JSON.stringify({
+        requestPayloadForLog = {
           text: typeof variables?.message === "string" ? variables.message : "",
           username: actionDef.username || "MitsoLab",
-        });
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (method === "GET") {
         const qs = new URLSearchParams();
@@ -740,8 +1120,10 @@ module.exports = async function handler(req, res) {
         }
         const qsText = qs.toString();
         if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+        requestPayloadForLog = null;
       } else {
-        requestBody = JSON.stringify(variables);
+        requestPayloadForLog = buildActionRequestPayload(actionDef, variables);
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       }
 
@@ -803,7 +1185,7 @@ module.exports = async function handler(req, res) {
               ? { text: variables?.message ?? "", username: actionDef.username || "MitsoLab" }
               : method === "GET"
                 ? null
-                : variables,
+                : requestPayloadForLog,
         },
         response: actionResponse,
       });
@@ -811,9 +1193,28 @@ module.exports = async function handler(req, res) {
     latencyToolsMs = Date.now() - toolsStartedAt;
 
     const inputItems = [
-      ...toInputItems(messages),
+      ...toOpenAiInputItems(messages),
       ...((completion.output_items && Array.isArray(completion.output_items))
-        ? completion.output_items
+        ? completion.output_items.map((item) => {
+            if (item?.type === "text") {
+              return {
+                type: "message",
+                role: "assistant",
+                content: [{ type: "output_text", text: String(item.text ?? "") }],
+              };
+            }
+            if (item?.type === "tool_use") {
+              return {
+                type: "function_call",
+                call_id: item?.id ?? null,
+                name: String(item?.name ?? ""),
+                arguments: JSON.stringify(
+                  item?.input && typeof item.input === "object" ? item.input : {}
+                ),
+              };
+            }
+            return null;
+          }).filter(Boolean)
         : []),
       ...toolResults.map((result) => ({
         type: "function_call_output",
@@ -847,9 +1248,9 @@ module.exports = async function handler(req, res) {
       : promptNoChunks;
 
     const followupStartedAt = Date.now();
-    const followup = await getChatCompletion({
+    const followup = await getOpenAiChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
-      model: "gpt-5-nano",
+      model: FOLLOWUP_MODEL,
       reasoning: { effort: "minimal" },
       instructions: followupInstructions,
       messages,
@@ -893,8 +1294,8 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: "gpt-5-mini",
-      modelNano: "gpt-5-nano",
+      modelMini: PRIMARY_MODEL,
+      modelNano: FOLLOWUP_MODEL,
       miniInputTokens: miniTokens.input,
       miniOutputTokens: miniTokens.output,
       nanoInputTokens: nanoTokens.input,
@@ -947,8 +1348,8 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: "gpt-5-mini",
-    modelNano: "gpt-5-nano",
+    modelMini: PRIMARY_MODEL,
+    modelNano: FOLLOWUP_MODEL,
     miniInputTokens: miniTokens.input,
     miniOutputTokens: miniTokens.output,
     nanoInputTokens: 0,
