@@ -1,5 +1,5 @@
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
-const { checkWidgetEmbedEnabled } = require("../../scripts/internal/checkWidgetEmbedEnabled");
+const { checkChatPageAccess } = require("../../scripts/internal/checkChatPageAccess");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
 const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
@@ -487,30 +487,10 @@ function isAllowedWidgetOriginHost(host) {
   return host === "app.mitsolab.com" || host === "www.app.mitsolab.com";
 }
 
-function setWidgetCorsHeaders(req, res) {
-  const originRaw = typeof req?.headers?.origin === "string" ? req.headers.origin : "";
-  const originHost = getOriginHost(req?.headers);
-  if (originRaw && isAllowedWidgetOriginHost(originHost)) {
-    res.setHeader("Access-Control-Allow-Origin", originRaw);
-    res.setHeader("Vary", "Origin");
-  }
+function setChatPageCorsHeaders(res) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-}
-
-function isAllowedWidgetCaller(headers) {
-  const allowedHosts = new Set(["app.mitsolab.com", "www.app.mitsolab.com"]);
-  const originRaw = headers?.origin;
-  const refererRaw = headers?.referer;
-
-  const originInfo = parseHeaderUrlHostPath(originRaw);
-  const refererInfo = parseHeaderUrlHostPath(refererRaw);
-
-  const originAllowed = allowedHosts.has(originInfo.host);
-  const refererAllowed =
-    allowedHosts.has(refererInfo.host) && refererInfo.path.startsWith("/widget");
-
-  return originAllowed || refererAllowed;
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 }
 
 function usageToTokens(usage) {
@@ -1215,13 +1195,8 @@ function sendSseEvent(res, event, payload) {
 
 module.exports = async function handler(req, res) {
   try {
-    setWidgetCorsHeaders(req, res);
+    setChatPageCorsHeaders(res);
     if (req.method === "OPTIONS") {
-      const originHost = getOriginHost(req.headers);
-      if (!isAllowedWidgetOriginHost(originHost)) {
-        res.status(403).json({ error: "Forbidden origin" });
-        return;
-      }
       res.status(204).end();
       return;
     }
@@ -1260,18 +1235,14 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const widgetEnabled = await checkWidgetEmbedEnabled({
+  const pageAccess = await checkChatPageAccess({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
+    password: body?.password,
   });
-  if (!widgetEnabled.ok) {
-    res.status(widgetEnabled.status).json({ error: widgetEnabled.error });
-    return;
-  }
-
-  if (!isAllowedWidgetCaller(req.headers)) {
-    res.status(403).json({ error: "Forbidden origin" });
+  if (!pageAccess.ok) {
+    res.status(pageAccess.status).json({ error: pageAccess.error });
     return;
   }
 
@@ -2128,7 +2099,7 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       prompt: String(body.message),
       result: followupReply,
-      source: "api",
+      source: "chat_page",
       action: true,
     });
     if (!saveResult.ok) {
@@ -2143,7 +2114,7 @@ module.exports = async function handler(req, res) {
       supKey: process.env.SUP_KEY,
       agentId,
       workspaceId: agentInfo.workspace_id,
-      endpoint: "widget",
+      endpoint: "chat_page",
       source: "api",
       country: requestCountry,
       anonId,
@@ -2209,7 +2180,7 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     prompt: String(body.message),
     result: finalReply,
-    source: "api",
+    source: "chat_page",
     action: false,
   });
   if (!saveResult.ok) {
@@ -2223,7 +2194,7 @@ module.exports = async function handler(req, res) {
     supKey: process.env.SUP_KEY,
     agentId,
     workspaceId: agentInfo.workspace_id,
-    endpoint: "widget",
+      endpoint: "chat_page",
     source: "api",
     country: requestCountry,
     anonId,

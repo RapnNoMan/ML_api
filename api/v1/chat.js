@@ -248,20 +248,25 @@ function getValueAtPath(source, pathParts) {
 
 function lookupTemplateValue(variables, pathParts) {
   if (!Array.isArray(pathParts) || pathParts.length === 0) return undefined;
+
   const directValue = getValueAtPath(variables, pathParts);
   if (directValue !== undefined) return directValue;
+
   const dottedKey = pathParts.join(".");
   if (variables && typeof variables === "object" && dottedKey in variables) {
     return variables[dottedKey];
   }
+
   const underscoredKey = pathParts.join("_");
   if (variables && typeof variables === "object" && underscoredKey in variables) {
     return variables[underscoredKey];
   }
+
   if (pathParts.length === 1 && variables && typeof variables === "object") {
     const leafKey = pathParts[0];
     if (leafKey in variables) return variables[leafKey];
   }
+
   return undefined;
 }
 
@@ -271,20 +276,31 @@ function renderTemplateValue(template, variables) {
     if (exactMatch) {
       const value = lookupTemplateValue(
         variables,
-        exactMatch[1].split(".").map((part) => part.trim()).filter(Boolean)
+        exactMatch[1]
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
       );
       return value === undefined ? null : value;
     }
+
     return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath) => {
       const value = lookupTemplateValue(
         variables,
-        String(rawPath).split(".").map((part) => part.trim()).filter(Boolean)
+        String(rawPath)
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
       );
       if (value === undefined || value === null) return "";
       return typeof value === "string" ? value : JSON.stringify(value);
     });
   }
-  if (Array.isArray(template)) return template.map((item) => renderTemplateValue(item, variables));
+
+  if (Array.isArray(template)) {
+    return template.map((item) => renderTemplateValue(item, variables));
+  }
+
   if (template && typeof template === "object") {
     const result = {};
     for (const [key, value] of Object.entries(template)) {
@@ -292,6 +308,7 @@ function renderTemplateValue(template, variables) {
     }
     return result;
   }
+
   return template;
 }
 
@@ -299,33 +316,49 @@ function materializeSchemaNode(schema, source, pathParts = []) {
   if (!schema || typeof schema !== "object") {
     return lookupTemplateValue(source, pathParts);
   }
+
   const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
   if (type === "object" || schema.properties) {
     const properties =
       schema.properties && typeof schema.properties === "object" ? schema.properties : {};
     const result = {};
+
     for (const [key, childSchema] of Object.entries(properties)) {
       const value = materializeSchemaNode(childSchema, source, [...pathParts, key]);
-      if (value !== undefined) result[key] = value;
+      if (value !== undefined) {
+        result[key] = value;
+      }
     }
+
     if (Object.keys(result).length > 0) return result;
+
     const directObject = lookupTemplateValue(source, pathParts);
-    if (directObject && typeof directObject === "object") return directObject;
+    if (directObject && typeof directObject === "object") {
+      return directObject;
+    }
+
     return pathParts.length === 0 ? {} : undefined;
   }
+
   if (type === "array" || schema.items) {
     const arrayValue = lookupTemplateValue(source, pathParts);
     if (!Array.isArray(arrayValue)) return undefined;
     if (!schema.items || typeof schema.items !== "object") return arrayValue;
     return arrayValue.map((item) => materializeSchemaNode(schema.items, item, []));
   }
+
   return lookupTemplateValue(source, pathParts);
 }
 
 function buildActionRequestPayload(actionDef, variables) {
   const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
   if (!parsedTemplate) return variables;
-  if (typeof parsedTemplate === "string") return renderTemplateValue(parsedTemplate, variables);
+
+  if (typeof parsedTemplate === "string") {
+    return renderTemplateValue(parsedTemplate, variables);
+  }
+
   if (isJsonSchemaNode(parsedTemplate)) {
     const materialized = materializeSchemaNode(parsedTemplate, variables, []);
     if (materialized && typeof materialized === "object" && !Array.isArray(materialized)) {
@@ -333,41 +366,61 @@ function buildActionRequestPayload(actionDef, variables) {
     }
     return variables;
   }
+
   return renderTemplateValue(parsedTemplate, variables);
 }
 
 function getMissingRequiredFields(actionDef, variables) {
   const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
   if (!parsedTemplate || !isJsonSchemaNode(parsedTemplate)) return [];
+
   const required = Array.isArray(parsedTemplate.required) ? parsedTemplate.required : [];
-  return required.filter((field) => {
-    if (typeof field !== "string" || !field.trim()) return false;
-    const value = lookupTemplateValue(variables && typeof variables === "object" ? variables : {}, [field]);
-    return value === undefined || value === null || value === "";
-  });
+  const source = variables && typeof variables === "object" ? variables : {};
+  const missing = [];
+
+  for (const field of required) {
+    if (typeof field !== "string" || !field.trim()) continue;
+    const value = lookupTemplateValue(source, [field]);
+    if (value === undefined || value === null || value === "") {
+      missing.push(field);
+    }
+  }
+
+  return missing;
 }
 
-function extractAnthropicResponseText(payload) {
+function extractResponseText(payload) {
+  if (!payload) return "";
   const content = Array.isArray(payload?.content) ? payload.content : [];
-  return content
-    .filter((item) => item?.type === "text" && typeof item?.text === "string" && item.text.trim())
-    .map((item) => item.text)
-    .join("");
+  const textParts = [];
+  for (const item of content) {
+    if (item?.type === "text" && typeof item?.text === "string" && item.text.trim()) {
+      textParts.push(item.text);
+    }
+  }
+  return textParts.join("");
 }
 
-function extractAnthropicFunctionCalls(payload) {
-  const output = Array.isArray(payload?.content) ? payload.content : [];
-  return output
-    .filter((item) => item?.type === "tool_use")
-    .map((item) => ({
+function extractFunctionCalls(payload, fallbackOutputItems = []) {
+  const output = Array.isArray(payload?.content)
+    ? payload.content
+    : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
+  const calls = [];
+  for (const item of output) {
+    if (item?.type !== "tool_use") continue;
+    calls.push({
       action_key: typeof item?.name === "string" ? item.name : "",
       variables: item?.input && typeof item.input === "object" ? item.input : {},
       call_id: item?.id ?? null,
-    }));
+    });
+  }
+  return calls;
 }
 
-function extractAnthropicAssistantBlocks(payload) {
-  const output = Array.isArray(payload?.content) ? payload.content : [];
+function extractAssistantBlocks(payload, fallbackOutputItems = []) {
+  const output = Array.isArray(payload?.content)
+    ? payload.content
+    : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
   return output
     .map((item) => {
       if (item?.type === "text" && typeof item?.text === "string") {
@@ -388,17 +441,22 @@ function extractAnthropicAssistantBlocks(payload) {
 
 function normalizeAnthropicInputSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
-    return { type: "object", properties: {}, additionalProperties: false };
+    return { type: "object", properties: {} };
   }
+
   const normalized = {};
   const rawType = Array.isArray(schema.type) ? schema.type[0] : schema.type;
-  if (typeof rawType === "string" && rawType) normalized.type = rawType;
+
+  if (typeof rawType === "string" && rawType) {
+    normalized.type = rawType;
+  }
   if (typeof schema.description === "string" && schema.description.trim()) {
     normalized.description = schema.description.trim();
   }
   if (Array.isArray(schema.enum) && schema.enum.length > 0) {
     normalized.enum = [...schema.enum];
   }
+
   const isObjectLike = normalized.type === "object" || schema.properties;
   if (isObjectLike) {
     normalized.type = "object";
@@ -411,10 +469,13 @@ function normalizeAnthropicInputSchema(schema) {
     }
     normalized.properties = properties;
     if (Array.isArray(schema.required) && schema.required.length > 0) {
-      normalized.required = schema.required.filter((item) => typeof item === "string" && item.trim());
+      normalized.required = schema.required.filter(
+        (item) => typeof item === "string" && item.trim()
+      );
     }
     return normalized;
   }
+
   const isArrayLike = normalized.type === "array" || schema.items;
   if (isArrayLike) {
     normalized.type = "array";
@@ -423,7 +484,11 @@ function normalizeAnthropicInputSchema(schema) {
     );
     return normalized;
   }
-  if (!normalized.type) normalized.type = "string";
+
+  if (!normalized.type) {
+    normalized.type = "string";
+  }
+
   return normalized;
 }
 
@@ -436,7 +501,39 @@ function toAnthropicTools(tools) {
   }));
 }
 
-function createAnthropicCompletionRequestBody({ model, instructions, messages, tools }) {
+function buildAnthropicMessages({ messages, assistantBlocks, toolResults }) {
+  const finalMessages = [...toAnthropicMessages(messages)];
+
+  if (Array.isArray(assistantBlocks) && assistantBlocks.length > 0) {
+    finalMessages.push({
+      role: "assistant",
+      content: assistantBlocks,
+    });
+  }
+
+  if (Array.isArray(toolResults) && toolResults.length > 0) {
+    finalMessages.push({
+      role: "user",
+      content: toolResults.map((result) => ({
+        type: "tool_result",
+        tool_use_id: result.call_id,
+        content: JSON.stringify(result),
+      })),
+    });
+  }
+
+  return finalMessages;
+}
+
+function createCompletionRequestBody({
+  model,
+  instructions,
+  messages,
+  tools,
+  assistantBlocks,
+  toolResults,
+  maxTokens = 1024,
+}) {
   const systemRules = `
 TOOL RULES (MUST FOLLOW):
 - Use the provided tools when needed.
@@ -449,25 +546,44 @@ TOOL RULES (MUST FOLLOW):
   const requestBody = {
     model,
     system: finalInstructions,
-    messages: toAnthropicMessages(messages),
-    max_tokens: 1024,
-    stream: false,
+    messages: buildAnthropicMessages({
+      messages,
+      assistantBlocks,
+      toolResults,
+    }),
+    max_tokens: maxTokens,
+    stream: true,
   };
+
   if (Array.isArray(tools) && tools.length > 0) {
     requestBody.tools = toAnthropicTools(tools);
     requestBody.tool_choice = { type: "auto" };
   }
+
   return requestBody;
 }
 
-async function getAnthropicChatCompletion({ apiKey, model, instructions, messages, tools }) {
+async function getAnthropicChatCompletion({
+  apiKey,
+  model,
+  instructions,
+  messages,
+  tools,
+  assistantBlocks,
+  toolResults,
+}) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
-  const requestBody = createAnthropicCompletionRequestBody({
+
+  const requestBody = createCompletionRequestBody({
     model,
     instructions,
     messages,
     tools,
+    assistantBlocks,
+    toolResults,
+    maxTokens: 1024,
   });
+  requestBody.stream = false;
 
   let response;
   try {
@@ -503,8 +619,8 @@ async function getAnthropicChatCompletion({ apiKey, model, instructions, message
     return { ok: false, status: 502, error: "Invalid JSON from Anthropic" };
   }
 
-  const toolCalls = extractAnthropicFunctionCalls(payload);
-  const outputItems = extractAnthropicAssistantBlocks(payload);
+  const toolCalls = extractFunctionCalls(payload);
+  const outputItems = extractAssistantBlocks(payload);
   if (toolCalls.length > 0) {
     return {
       ok: true,
@@ -515,7 +631,7 @@ async function getAnthropicChatCompletion({ apiKey, model, instructions, message
     };
   }
 
-  const rawText = extractAnthropicResponseText(payload);
+  const rawText = extractResponseText(payload);
   if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
 
   return {
@@ -792,7 +908,7 @@ module.exports = async function handler(req, res) {
     const toolsStartedAt = Date.now();
     for (const call of actionCalls) {
       const actionDef = toolsResult.actionMap.get(call.action_key);
-      if (!actionDef || !actionDef.url) {
+      if (!actionDef) {
         toolResults.push({
           call_id: call.call_id ?? null,
           ok: false,
@@ -829,6 +945,26 @@ module.exports = async function handler(req, res) {
       let requestBody;
       let requestPayloadForLog = variables;
 
+      if (!url) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: {
+            url: null,
+            method,
+            headers,
+            body: variables,
+          },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Unknown action",
+          },
+        });
+        continue;
+      }
+
       const missingRequiredFields =
         actionDef.kind === "custom" || actionDef.kind === "zapier" || actionDef.kind === "make"
           ? getMissingRequiredFields(actionDef, variables)
@@ -837,6 +973,7 @@ module.exports = async function handler(req, res) {
         toolResults.push({
           call_id: call.call_id ?? null,
           action_key: call.action_key,
+          tool_args: variables,
           request: {
             url,
             method,
@@ -867,6 +1004,7 @@ module.exports = async function handler(req, res) {
           toolResults.push({
             call_id: call.call_id ?? null,
             action_key: call.action_key,
+            tool_args: variables,
             request: {
               url,
               method,
@@ -908,6 +1046,7 @@ module.exports = async function handler(req, res) {
           toolResults.push({
             call_id: call.call_id ?? null,
             action_key: call.action_key,
+            tool_args: variables,
             request: {
               url,
               method,
@@ -959,6 +1098,7 @@ module.exports = async function handler(req, res) {
               toolResults.push({
                 call_id: call.call_id ?? null,
                 action_key: call.action_key,
+                tool_args: variables,
                 request: {
                   url,
                   method,
@@ -981,6 +1121,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url,
                 method,
@@ -1014,6 +1155,7 @@ module.exports = async function handler(req, res) {
               toolResults.push({
                 call_id: call.call_id ?? null,
                 action_key: call.action_key,
+                tool_args: variables,
                 request: {
                   url: availabilityUrl,
                   method: "GET",
@@ -1036,6 +1178,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url: availabilityUrl,
                 method: "GET",
@@ -1059,6 +1202,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url: availabilityUrl,
                 method: "GET",
@@ -1163,6 +1307,7 @@ module.exports = async function handler(req, res) {
       toolResults.push({
         call_id: call.call_id ?? null,
         action_key: call.action_key,
+        tool_args: variables,
         request: {
           url,
           method,
@@ -1192,30 +1337,32 @@ module.exports = async function handler(req, res) {
     }
     latencyToolsMs = Date.now() - toolsStartedAt;
 
+    const assistantBlocks =
+      completion.output_items && Array.isArray(completion.output_items)
+        ? completion.output_items
+        : [];
     const inputItems = [
       ...toOpenAiInputItems(messages),
-      ...((completion.output_items && Array.isArray(completion.output_items))
-        ? completion.output_items.map((item) => {
-            if (item?.type === "text") {
-              return {
-                type: "message",
-                role: "assistant",
-                content: [{ type: "output_text", text: String(item.text ?? "") }],
-              };
-            }
-            if (item?.type === "tool_use") {
-              return {
-                type: "function_call",
-                call_id: item?.id ?? null,
-                name: String(item?.name ?? ""),
-                arguments: JSON.stringify(
-                  item?.input && typeof item.input === "object" ? item.input : {}
-                ),
-              };
-            }
-            return null;
-          }).filter(Boolean)
-        : []),
+      ...assistantBlocks.map((item) => {
+        if (item?.type === "text") {
+          return {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: String(item.text ?? "") }],
+          };
+        }
+        if (item?.type === "tool_use") {
+          return {
+            type: "function_call",
+            call_id: item?.id ?? null,
+            name: String(item?.name ?? ""),
+            arguments: JSON.stringify(
+              item?.input && typeof item.input === "object" ? item.input : {}
+            ),
+          };
+        }
+        return null;
+      }).filter(Boolean),
       ...toolResults.map((result) => ({
         type: "function_call_output",
         call_id: result.call_id,

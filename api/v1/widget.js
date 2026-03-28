@@ -7,13 +7,47 @@ const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRecentUserPrompts } = require("../../scripts/internal/getRecentUserPrompts");
-const { getChatCompletion } = require("../../scripts/internal/getChatCompletion");
+const { getChatCompletion: getOpenAiChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 
-function toInputItems(messages) {
+const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
+const ANTHROPIC_VERSION = "2023-06-01";
+const PRIMARY_MODEL = "claude-haiku-4-5-20251001";
+const FOLLOWUP_MODEL = "gpt-5-nano";
+
+function toTextBlocks(content) {
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (item?.type === "text" && typeof item?.text === "string") {
+          return { type: "text", text: item.text };
+        }
+        if (typeof item === "string") {
+          return { type: "text", text: item };
+        }
+        return null;
+      })
+      .filter(Boolean);
+  }
+
+  const text = String(content ?? "");
+  return [{ type: "text", text }];
+}
+
+function toAnthropicMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    const role = message?.role === "assistant" ? "assistant" : "user";
+    return {
+      role,
+      content: toTextBlocks(message?.content),
+    };
+  });
+}
+
+function toOpenAiInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
     const role = message?.role === "assistant" ? "assistant" : "user";
     const text = String(message?.content ?? "");
@@ -173,6 +207,188 @@ function normalizeIdValue(value) {
   return text;
 }
 
+function parseActionBodyTemplate(bodyTemplate) {
+  if (!bodyTemplate) return null;
+  if (typeof bodyTemplate === "object") return bodyTemplate;
+  if (typeof bodyTemplate !== "string") return null;
+  const trimmed = bodyTemplate.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : trimmed;
+  } catch (_) {
+    return trimmed;
+  }
+}
+
+function isJsonSchemaNode(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(node, "type") ||
+    Object.prototype.hasOwnProperty.call(node, "properties") ||
+    Object.prototype.hasOwnProperty.call(node, "items") ||
+    Object.prototype.hasOwnProperty.call(node, "required") ||
+    Object.prototype.hasOwnProperty.call(node, "additionalProperties") ||
+    Object.prototype.hasOwnProperty.call(node, "oneOf") ||
+    Object.prototype.hasOwnProperty.call(node, "anyOf") ||
+    Object.prototype.hasOwnProperty.call(node, "allOf")
+  );
+}
+
+function getValueAtPath(source, pathParts) {
+  let current = source;
+  for (const part of pathParts) {
+    if (!current || typeof current !== "object" || !(part in current)) {
+      return undefined;
+    }
+    current = current[part];
+  }
+  return current;
+}
+
+function lookupTemplateValue(variables, pathParts) {
+  if (!Array.isArray(pathParts) || pathParts.length === 0) return undefined;
+
+  const directValue = getValueAtPath(variables, pathParts);
+  if (directValue !== undefined) return directValue;
+
+  const dottedKey = pathParts.join(".");
+  if (variables && typeof variables === "object" && dottedKey in variables) {
+    return variables[dottedKey];
+  }
+
+  const underscoredKey = pathParts.join("_");
+  if (variables && typeof variables === "object" && underscoredKey in variables) {
+    return variables[underscoredKey];
+  }
+
+  if (pathParts.length === 1 && variables && typeof variables === "object") {
+    const leafKey = pathParts[0];
+    if (leafKey in variables) return variables[leafKey];
+  }
+
+  return undefined;
+}
+
+function renderTemplateValue(template, variables) {
+  if (typeof template === "string") {
+    const exactMatch = template.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
+    if (exactMatch) {
+      const value = lookupTemplateValue(
+        variables,
+        exactMatch[1]
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+      return value === undefined ? null : value;
+    }
+
+    return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath) => {
+      const value = lookupTemplateValue(
+        variables,
+        String(rawPath)
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+      if (value === undefined || value === null) return "";
+      return typeof value === "string" ? value : JSON.stringify(value);
+    });
+  }
+
+  if (Array.isArray(template)) {
+    return template.map((item) => renderTemplateValue(item, variables));
+  }
+
+  if (template && typeof template === "object") {
+    const result = {};
+    for (const [key, value] of Object.entries(template)) {
+      result[key] = renderTemplateValue(value, variables);
+    }
+    return result;
+  }
+
+  return template;
+}
+
+function materializeSchemaNode(schema, source, pathParts = []) {
+  if (!schema || typeof schema !== "object") {
+    return lookupTemplateValue(source, pathParts);
+  }
+
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
+  if (type === "object" || schema.properties) {
+    const properties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const result = {};
+
+    for (const [key, childSchema] of Object.entries(properties)) {
+      const value = materializeSchemaNode(childSchema, source, [...pathParts, key]);
+      if (value !== undefined) {
+        result[key] = value;
+      }
+    }
+
+    if (Object.keys(result).length > 0) return result;
+
+    const directObject = lookupTemplateValue(source, pathParts);
+    if (directObject && typeof directObject === "object") {
+      return directObject;
+    }
+
+    return pathParts.length === 0 ? {} : undefined;
+  }
+
+  if (type === "array" || schema.items) {
+    const arrayValue = lookupTemplateValue(source, pathParts);
+    if (!Array.isArray(arrayValue)) return undefined;
+    if (!schema.items || typeof schema.items !== "object") return arrayValue;
+    return arrayValue.map((item) => materializeSchemaNode(schema.items, item, []));
+  }
+
+  return lookupTemplateValue(source, pathParts);
+}
+
+function buildActionRequestPayload(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate) return variables;
+
+  if (typeof parsedTemplate === "string") {
+    return renderTemplateValue(parsedTemplate, variables);
+  }
+
+  if (isJsonSchemaNode(parsedTemplate)) {
+    const materialized = materializeSchemaNode(parsedTemplate, variables, []);
+    if (materialized && typeof materialized === "object" && !Array.isArray(materialized)) {
+      return materialized;
+    }
+    return variables;
+  }
+
+  return renderTemplateValue(parsedTemplate, variables);
+}
+
+function getMissingRequiredFields(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate || !isJsonSchemaNode(parsedTemplate)) return [];
+
+  const required = Array.isArray(parsedTemplate.required) ? parsedTemplate.required : [];
+  const source = variables && typeof variables === "object" ? variables : {};
+  const missing = [];
+
+  for (const field of required) {
+    if (typeof field !== "string" || !field.trim()) continue;
+    const value = lookupTemplateValue(source, [field]);
+    if (value === undefined || value === null || value === "") {
+      missing.push(field);
+    }
+  }
+
+  return missing;
+}
+
 function sanitizeToolName(rawName, id, usedNames) {
   let name = String(rawName || "")
     .toLowerCase()
@@ -308,46 +524,496 @@ function usageToTokens(usage) {
 
 function extractResponseText(payload) {
   if (!payload) return "";
-  if (typeof payload.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text;
-  }
-  const output = Array.isArray(payload.output) ? payload.output : [];
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const part of content) {
-      if (typeof part?.text === "string" && part.text.trim()) {
-        return part.text;
-      }
+  const content = Array.isArray(payload?.content) ? payload.content : [];
+  const textParts = [];
+  for (const item of content) {
+    if (item?.type === "text" && typeof item?.text === "string" && item.text.trim()) {
+      textParts.push(item.text);
     }
   }
-  return "";
+  return textParts.join("");
 }
 
 function extractFunctionCalls(payload, fallbackOutputItems = []) {
-  const output = Array.isArray(payload?.output)
-    ? payload.output
+  const output = Array.isArray(payload?.content)
+    ? payload.content
     : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
   const calls = [];
   for (const item of output) {
-    if (item?.type !== "function_call") continue;
-    const name = typeof item?.name === "string" ? item.name : "";
-    let args = {};
-    if (typeof item?.arguments === "string" && item.arguments.trim()) {
-      try {
-        const parsed = JSON.parse(item.arguments);
-        if (parsed && typeof parsed === "object") args = parsed;
-      } catch (_) {}
-    }
+    if (item?.type !== "tool_use") continue;
     calls.push({
-      action_key: name,
-      variables: args,
-      call_id: item?.call_id ?? null,
+      action_key: typeof item?.name === "string" ? item.name : "",
+      variables: item?.input && typeof item.input === "object" ? item.input : {},
+      call_id: item?.id ?? null,
     });
   }
   return calls;
 }
 
+function extractAssistantBlocks(payload, fallbackOutputItems = []) {
+  const output = Array.isArray(payload?.content)
+    ? payload.content
+    : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
+  return output
+    .map((item) => {
+      if (item?.type === "text" && typeof item?.text === "string") {
+        return { type: "text", text: item.text };
+      }
+      if (item?.type === "tool_use") {
+        return {
+          type: "tool_use",
+          id: item?.id ?? null,
+          name: typeof item?.name === "string" ? item.name : "",
+          input: item?.input && typeof item.input === "object" ? item.input : {},
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+}
+
+function normalizeAnthropicInputSchema(schema) {
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    return { type: "object", properties: {} };
+  }
+
+  const normalized = {};
+  const rawType = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
+  if (typeof rawType === "string" && rawType) {
+    normalized.type = rawType;
+  }
+  if (typeof schema.description === "string" && schema.description.trim()) {
+    normalized.description = schema.description.trim();
+  }
+  if (Array.isArray(schema.enum) && schema.enum.length > 0) {
+    normalized.enum = [...schema.enum];
+  }
+
+  const isObjectLike = normalized.type === "object" || schema.properties;
+  if (isObjectLike) {
+    normalized.type = "object";
+    normalized.additionalProperties = false;
+    const rawProperties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const properties = {};
+    for (const [key, value] of Object.entries(rawProperties)) {
+      properties[key] = normalizeAnthropicInputSchema(value);
+    }
+    normalized.properties = properties;
+    if (Array.isArray(schema.required) && schema.required.length > 0) {
+      normalized.required = schema.required.filter(
+        (item) => typeof item === "string" && item.trim()
+      );
+    }
+    return normalized;
+  }
+
+  const isArrayLike = normalized.type === "array" || schema.items;
+  if (isArrayLike) {
+    normalized.type = "array";
+    normalized.items = normalizeAnthropicInputSchema(
+      schema.items && typeof schema.items === "object" ? schema.items : { type: "string" }
+    );
+    return normalized;
+  }
+
+  if (!normalized.type) {
+    normalized.type = "string";
+  }
+
+  return normalized;
+}
+
+function toAnthropicTools(tools) {
+  return (Array.isArray(tools) ? tools : []).map((tool) => ({
+    name: tool?.name ?? "",
+    description: tool?.description ?? "",
+    strict: true,
+    input_schema: normalizeAnthropicInputSchema(tool?.parameters),
+  }));
+}
+
+function buildAnthropicMessages({ messages, assistantBlocks, toolResults }) {
+  const finalMessages = [...toAnthropicMessages(messages)];
+
+  if (Array.isArray(assistantBlocks) && assistantBlocks.length > 0) {
+    finalMessages.push({
+      role: "assistant",
+      content: assistantBlocks,
+    });
+  }
+
+  if (Array.isArray(toolResults) && toolResults.length > 0) {
+    finalMessages.push({
+      role: "user",
+      content: toolResults.map((result) => ({
+        type: "tool_result",
+        tool_use_id: result.call_id,
+        content: JSON.stringify(result),
+      })),
+    });
+  }
+
+  return finalMessages;
+}
+
 function createCompletionRequestBody({
+  model,
+  instructions,
+  messages,
+  tools,
+  assistantBlocks,
+  toolResults,
+  maxTokens = 1024,
+}) {
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+- Never call a tool unless every required parameter is present in the tool input.
+- If a tool is needed, call it before any user-facing answer text.
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const requestBody = {
+    model,
+    system: finalInstructions,
+    messages: buildAnthropicMessages({
+      messages,
+      assistantBlocks,
+      toolResults,
+    }),
+    max_tokens: maxTokens,
+    stream: true,
+  };
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = toAnthropicTools(tools);
+    requestBody.tool_choice = { type: "auto" };
+  }
+
+  return requestBody;
+}
+
+function parseSseEventBlock(block) {
+  const lines = String(block || "").split("\n");
+  let eventName = "";
+  const dataLines = [];
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("event:")) {
+      eventName = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith("data:")) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  if (dataLines.length === 0) return null;
+  const dataText = dataLines.join("\n");
+  if (dataText === "[DONE]") return { done: true };
+  try {
+    return { done: false, event: eventName, payload: JSON.parse(dataText) };
+  } catch (_) {
+    return null;
+  }
+}
+
+async function getChatCompletionStream({
+  apiKey,
+  model,
+  instructions,
+  messages,
+  tools,
+  assistantBlocks,
+  toolResults,
+  signal,
+  onTextDelta,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const requestBody = createCompletionRequestBody({
+    model,
+    instructions,
+    messages,
+    tools,
+    assistantBlocks,
+    toolResults,
+  });
+
+  let response;
+  try {
+    response = await fetch(ANTHROPIC_API_URL, {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling Anthropic" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "Anthropic request failed",
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, status: 502, error: "Missing stream body from Anthropic" };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let assembledText = "";
+  let usage = null;
+  const outputItemsByIndex = new Map();
+  let upstreamError = null;
+  let done = false;
+
+  while (!done) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (_) {
+      return { ok: false, status: 502, error: "Stream read error from Anthropic" };
+    }
+    done = Boolean(chunk?.done);
+    if (chunk?.value) {
+      buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+      let delimiterIdx = buffer.indexOf("\n\n");
+      while (delimiterIdx !== -1) {
+        const block = buffer.slice(0, delimiterIdx);
+        buffer = buffer.slice(delimiterIdx + 2);
+        const evt = parseSseEventBlock(block);
+        if (evt?.done) {
+          done = true;
+          break;
+        }
+        if (!evt?.payload) {
+          delimiterIdx = buffer.indexOf("\n\n");
+          continue;
+        }
+
+        const payload = evt.payload;
+        if (evt?.event === "message_stop" || payload?.type === "message_stop") {
+          done = true;
+        }
+        if (payload?.type === "message_start" && payload?.message?.usage) {
+          usage = payload.message.usage;
+        } else if (payload?.type === "content_block_start") {
+          const index = Number(payload?.index);
+          const contentBlock = payload?.content_block ?? {};
+          if (Number.isFinite(index)) {
+            if (contentBlock?.type === "text") {
+              outputItemsByIndex.set(index, {
+                type: "text",
+                text: typeof contentBlock?.text === "string" ? contentBlock.text : "",
+              });
+            } else if (contentBlock?.type === "tool_use") {
+              outputItemsByIndex.set(index, {
+                type: "tool_use",
+                id: contentBlock?.id ?? null,
+                name: typeof contentBlock?.name === "string" ? contentBlock.name : "",
+                inputJson: "",
+              });
+            }
+          }
+        } else if (
+          payload?.type === "content_block_delta" &&
+          payload?.delta?.type === "text_delta" &&
+          typeof payload?.delta?.text === "string"
+        ) {
+          const deltaText = payload.delta.text;
+          assembledText += deltaText;
+          const block = outputItemsByIndex.get(Number(payload?.index));
+          if (block?.type === "text") {
+            block.text += deltaText;
+          }
+          if (typeof onTextDelta === "function") {
+            await onTextDelta(deltaText);
+          }
+        } else if (
+          payload?.type === "content_block_delta" &&
+          payload?.delta?.type === "input_json_delta" &&
+          typeof payload?.delta?.partial_json === "string"
+        ) {
+          const block = outputItemsByIndex.get(Number(payload?.index));
+          if (block?.type === "tool_use") {
+            block.inputJson += payload.delta.partial_json;
+          }
+        } else if (payload?.type === "message_delta" && payload?.usage) {
+          usage = payload.usage;
+        } else if (payload?.type === "error") {
+          upstreamError = payload?.error?.message || "Anthropic streaming failed";
+        }
+
+        delimiterIdx = buffer.indexOf("\n\n");
+      }
+    }
+  }
+
+  if (upstreamError) {
+    return { ok: false, status: 502, error: upstreamError };
+  }
+
+  const finalOutputItems = Array.from(outputItemsByIndex.entries())
+    .sort((a, b) => a[0] - b[0])
+    .map(([, item]) => {
+      if (item?.type === "tool_use") {
+        let input = {};
+        try {
+          input = item.inputJson ? JSON.parse(item.inputJson) : {};
+        } catch (_) {}
+        return {
+          type: "tool_use",
+          id: item?.id ?? null,
+          name: item?.name ?? "",
+          input,
+        };
+      }
+      return {
+        type: "text",
+        text: item?.text ?? "",
+      };
+    });
+  const payload = { content: finalOutputItems, usage };
+  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
+  const rawText = extractResponseText(payload) || assembledText;
+
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: usage ?? null,
+      raw: "",
+      output_items: finalOutputItems,
+    };
+  }
+
+  if (!rawText) {
+    return { ok: false, status: 502, error: "Empty model output" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: usage ?? null,
+    raw: rawText,
+    output_items: finalOutputItems,
+  };
+}
+
+async function getChatCompletion({
+  apiKey,
+  model,
+  instructions,
+  messages,
+  tools,
+  assistantBlocks,
+  toolResults,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const requestBody = createCompletionRequestBody({
+    model,
+    instructions,
+    messages,
+    tools,
+    assistantBlocks,
+    toolResults,
+    maxTokens: 1024,
+  });
+  requestBody.stream = false;
+
+  let response;
+  try {
+    response = await fetch(ANTHROPIC_API_URL, {
+      method: "POST",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": ANTHROPIC_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling Anthropic" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "Anthropic request failed",
+    };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Invalid JSON from Anthropic" };
+  }
+
+  const toolCalls = extractFunctionCalls(payload);
+  const outputItems = extractAssistantBlocks(payload);
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: outputItems,
+    };
+  }
+
+  const rawText = extractResponseText(payload);
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: outputItems,
+  };
+}
+
+function createOpenAiCompletionRequestBody({
   model,
   reasoning,
   instructions,
@@ -367,7 +1033,7 @@ TOOL RULES (MUST FOLLOW):
     model,
     reasoning,
     instructions: finalInstructions,
-    input: Array.isArray(inputItems) ? inputItems : toInputItems(messages),
+    input: Array.isArray(inputItems) ? inputItems : toOpenAiInputItems(messages),
     text: { verbosity: "low" },
     stream: true,
   };
@@ -380,7 +1046,7 @@ TOOL RULES (MUST FOLLOW):
   return requestBody;
 }
 
-function parseSseEventBlock(block) {
+function parseOpenAiSseEventBlock(block) {
   const lines = String(block || "").split("\n");
   const dataLines = [];
   for (const rawLine of lines) {
@@ -400,7 +1066,7 @@ function parseSseEventBlock(block) {
   }
 }
 
-async function getChatCompletionStream({
+async function getOpenAiChatCompletionStream({
   apiKey,
   model,
   reasoning,
@@ -413,7 +1079,7 @@ async function getChatCompletionStream({
 }) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
 
-  const requestBody = createCompletionRequestBody({
+  const requestBody = createOpenAiCompletionRequestBody({
     model,
     reasoning,
     instructions,
@@ -476,7 +1142,7 @@ async function getChatCompletionStream({
       while (delimiterIdx !== -1) {
         const block = buffer.slice(0, delimiterIdx);
         buffer = buffer.slice(delimiterIdx + 2);
-        const evt = parseSseEventBlock(block);
+        const evt = parseOpenAiSseEventBlock(block);
         if (evt?.done) {
           done = true;
           break;
@@ -514,22 +1180,10 @@ async function getChatCompletionStream({
 
   const payload = finalResponse || {};
   const finalOutputItems = Array.isArray(payload?.output) ? payload.output : outputItems;
-  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
-  const rawText = extractResponseText(payload) || assembledText;
-
-  if (toolCalls.length > 0) {
-    return {
-      ok: true,
-      data: {
-        mode: "actions_needed",
-        reply: "",
-        action_calls: toolCalls,
-      },
-      usage: payload?.usage ?? null,
-      raw: "",
-      output_items: finalOutputItems,
-    };
-  }
+  const rawText =
+    typeof payload?.output_text === "string" && payload.output_text.trim()
+      ? payload.output_text
+      : assembledText;
 
   if (!rawText) {
     return { ok: false, status: 502, error: "Empty model output" };
@@ -863,14 +1517,11 @@ module.exports = async function handler(req, res) {
     }, 15000);
   }
 
-  const primaryModel = wantsStream ? "gpt-5-nano" : "gpt-5-mini";
-  const followupModel = "gpt-5-nano";
   const completionStartedAt = Date.now();
   const completion = wantsStream
     ? await getChatCompletionStream({
-        apiKey: process.env.OPENAI_API_KEY,
-        model: primaryModel,
-        reasoning: { effort: "minimal" },
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        model: PRIMARY_MODEL,
         instructions: prompt,
         messages,
         tools: effectiveTools,
@@ -880,9 +1531,8 @@ module.exports = async function handler(req, res) {
         },
       })
     : await getChatCompletion({
-        apiKey: process.env.OPENAI_API_KEY,
-        model: primaryModel,
-        reasoning: { effort: "low" },
+        apiKey: process.env.ANTHROPIC_API_KEY,
+        model: PRIMARY_MODEL,
         instructions: prompt,
         messages,
         tools: effectiveTools,
@@ -952,6 +1602,7 @@ module.exports = async function handler(req, res) {
       const variables = call?.variables ?? {};
       let url = actionDef.url;
       let requestBody;
+      let requestPayloadForLog = variables;
 
       if (actionDef.kind === "custom_button") {
         customButtonPayload = actionDef.button_payload || null;
@@ -977,6 +1628,7 @@ module.exports = async function handler(req, res) {
         toolResults.push({
           call_id: call.call_id ?? null,
           action_key: call.action_key,
+          tool_args: variables,
           request: {
             url: null,
             method,
@@ -987,6 +1639,31 @@ module.exports = async function handler(req, res) {
             ok: false,
             status: 400,
             error: "Unknown action",
+          },
+        });
+        continue;
+      }
+
+      const missingRequiredFields =
+        actionDef.kind === "custom" || actionDef.kind === "zapier" || actionDef.kind === "make"
+          ? getMissingRequiredFields(actionDef, variables)
+          : [];
+      if (missingRequiredFields.length > 0) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: {
+            url,
+            method,
+            headers,
+            body: requestPayloadForLog,
+          },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Missing required tool arguments",
+            missing_required_fields: missingRequiredFields,
           },
         });
         continue;
@@ -1006,6 +1683,7 @@ module.exports = async function handler(req, res) {
           toolResults.push({
             call_id: call.call_id ?? null,
             action_key: call.action_key,
+            tool_args: variables,
             request: {
               url,
               method,
@@ -1022,7 +1700,7 @@ module.exports = async function handler(req, res) {
         }
 
         headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
-        requestBody = JSON.stringify({
+        requestPayloadForLog = {
           raw: buildRawEmail({
             to: variables?.to,
             subject: variables?.subject,
@@ -1030,7 +1708,8 @@ module.exports = async function handler(req, res) {
             cc: variables?.cc,
             bcc: variables?.bcc,
           }),
-        });
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
         const tokenResult = await ensureCalendarAccessToken({
@@ -1046,6 +1725,7 @@ module.exports = async function handler(req, res) {
           toolResults.push({
             call_id: call.call_id ?? null,
             action_key: call.action_key,
+            tool_args: variables,
             request: {
               url,
               method,
@@ -1097,6 +1777,7 @@ module.exports = async function handler(req, res) {
               toolResults.push({
                 call_id: call.call_id ?? null,
                 action_key: call.action_key,
+                tool_args: variables,
                 request: {
                   url,
                   method,
@@ -1116,12 +1797,13 @@ module.exports = async function handler(req, res) {
             !isAllDayOpen &&
             (startHour === null || endHour === null || startMin === null || endMin === null)
           ) {
-            toolResults.push({
-              call_id: call.call_id ?? null,
-              action_key: call.action_key,
-              request: {
-                url,
-                method,
+              toolResults.push({
+                call_id: call.call_id ?? null,
+                action_key: call.action_key,
+                tool_args: variables,
+                request: {
+                  url,
+                  method,
                 headers,
                 body: variables,
               },
@@ -1152,6 +1834,7 @@ module.exports = async function handler(req, res) {
               toolResults.push({
                 call_id: call.call_id ?? null,
                 action_key: call.action_key,
+                tool_args: variables,
                 request: {
                   url: availabilityUrl,
                   method: "GET",
@@ -1174,6 +1857,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url: availabilityUrl,
                 method: "GET",
@@ -1197,6 +1881,7 @@ module.exports = async function handler(req, res) {
             toolResults.push({
               call_id: call.call_id ?? null,
               action_key: call.action_key,
+              tool_args: variables,
               request: {
                 url: availabilityUrl,
                 method: "GET",
@@ -1215,7 +1900,7 @@ module.exports = async function handler(req, res) {
           const attendees = Array.isArray(variables?.attendees)
             ? variables.attendees.map((email) => ({ email }))
             : undefined;
-          requestBody = JSON.stringify({
+          requestPayloadForLog = {
             summary: actionDef.event_type || "Event",
             location: actionDef.location ?? undefined,
             start: {
@@ -1227,7 +1912,8 @@ module.exports = async function handler(req, res) {
               timeZone: calendarTimeZone,
             },
             attendees,
-          });
+          };
+          requestBody = JSON.stringify(requestPayloadForLog);
           if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
         } else if (actionDef.kind === "calendar_list") {
           const qs = new URLSearchParams();
@@ -1243,10 +1929,11 @@ module.exports = async function handler(req, res) {
           if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
         }
       } else if (actionDef.kind === "slack") {
-        requestBody = JSON.stringify({
+        requestPayloadForLog = {
           text: typeof variables?.message === "string" ? variables.message : "",
           username: actionDef.username || "MitsoLab",
-        });
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       } else if (method === "GET") {
         const qs = new URLSearchParams();
@@ -1256,8 +1943,10 @@ module.exports = async function handler(req, res) {
         }
         const qsText = qs.toString();
         if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+        requestPayloadForLog = null;
       } else {
-        requestBody = JSON.stringify(variables);
+        requestPayloadForLog = buildActionRequestPayload(actionDef, variables);
+        requestBody = JSON.stringify(requestPayloadForLog);
         if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
       }
 
@@ -1297,6 +1986,7 @@ module.exports = async function handler(req, res) {
       toolResults.push({
         call_id: call.call_id ?? null,
         action_key: call.action_key,
+        tool_args: variables,
         request: {
           url,
           method,
@@ -1319,18 +2009,39 @@ module.exports = async function handler(req, res) {
               ? { text: variables?.message ?? "", username: actionDef.username || "MitsoLab" }
               : method === "GET"
                 ? null
-                : variables,
+                : requestPayloadForLog,
         },
         response: actionResponse,
       });
     }
     latencyToolsMs = Date.now() - toolsStartedAt;
 
-    const inputItems = [
-      ...toInputItems(messages),
-      ...((completion.output_items && Array.isArray(completion.output_items))
+    const assistantBlocks =
+      completion.output_items && Array.isArray(completion.output_items)
         ? completion.output_items
-        : []),
+        : [];
+    const followupInputItems = [
+      ...toOpenAiInputItems(messages),
+      ...assistantBlocks.map((item) => {
+        if (item?.type === "text") {
+          return {
+            type: "message",
+            role: "assistant",
+            content: [{ type: "output_text", text: String(item.text ?? "") }],
+          };
+        }
+        if (item?.type === "tool_use") {
+          return {
+            type: "function_call",
+            call_id: item?.id ?? null,
+            name: String(item?.name ?? ""),
+            arguments: JSON.stringify(
+              item?.input && typeof item.input === "object" ? item.input : {}
+            ),
+          };
+        }
+        return null;
+      }).filter(Boolean),
       ...toolResults.map((result) => ({
         type: "function_call_output",
         call_id: result.call_id,
@@ -1369,13 +2080,13 @@ module.exports = async function handler(req, res) {
 
     const followupStartedAt = Date.now();
     const followup = wantsStream
-      ? await getChatCompletionStream({
+      ? await getOpenAiChatCompletionStream({
           apiKey: process.env.OPENAI_API_KEY,
-          model: followupModel,
+          model: FOLLOWUP_MODEL,
           reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
-          inputItems: [...inputItems],
+          inputItems: followupInputItems,
           signal: streamAbortController?.signal,
           onTextDelta: async (delta) => {
             nanoStreamChunks.push(delta);
@@ -1384,13 +2095,13 @@ module.exports = async function handler(req, res) {
             }
           },
         })
-      : await getChatCompletion({
+      : await getOpenAiChatCompletion({
           apiKey: process.env.OPENAI_API_KEY,
-          model: followupModel,
+          model: FOLLOWUP_MODEL,
           reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
-          inputItems: [...inputItems],
+          inputItems: followupInputItems,
         });
     latencyNanoMs = Date.now() - followupStartedAt;
     if (!followup.ok) {
@@ -1417,7 +2128,7 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       prompt: String(body.message),
       result: followupReply,
-      source: "api",
+      source: "widget",
       action: true,
     });
     if (!saveResult.ok) {
@@ -1437,8 +2148,8 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: primaryModel,
-      modelNano: followupModel,
+      modelMini: PRIMARY_MODEL,
+      modelNano: FOLLOWUP_MODEL,
       miniInputTokens: miniTokens.input,
       miniOutputTokens: miniTokens.output,
       nanoInputTokens: nanoTokens.input,
@@ -1498,7 +2209,7 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     prompt: String(body.message),
     result: finalReply,
-    source: "api",
+    source: "widget",
     action: false,
   });
   if (!saveResult.ok) {
@@ -1517,8 +2228,8 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: primaryModel,
-    modelNano: followupModel,
+    modelMini: PRIMARY_MODEL,
+    modelNano: FOLLOWUP_MODEL,
     miniInputTokens: completionMiniTokens.input,
     miniOutputTokens: completionMiniTokens.output,
     nanoInputTokens: 0,
