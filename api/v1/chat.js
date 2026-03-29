@@ -1369,8 +1369,8 @@ module.exports = async function handler(req, res) {
       : null;
 
     const followupInstructions = calendarNote
-      ? [promptNoChunks, calendarNote].join("\n\n")
-      : promptNoChunks;
+      ? [prompt, calendarNote].join("\n\n")
+      : prompt;
 
     const followupStartedAt = Date.now();
     const followup = await getOpenAiChatCompletion({

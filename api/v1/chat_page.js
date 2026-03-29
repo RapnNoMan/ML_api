@@ -2019,8 +2019,8 @@ module.exports = async function handler(req, res) {
       : null;
 
     const followupInstructions = calendarNote
-      ? [promptNoChunks, calendarNote].join("\n\n")
-      : promptNoChunks;
+      ? [prompt, calendarNote].join("\n\n")
+      : prompt;
 
     if (streamReady && streamClosed) {
       closeStream();
