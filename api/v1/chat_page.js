@@ -1,12 +1,10 @@
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
 const { checkChatPageAccess } = require("../../scripts/internal/checkChatPageAccess");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
-const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
-const { getVectorSearchTexts } = require("../../scripts/internal/getVectorSearchTexts");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
-const { getRecentUserPrompts } = require("../../scripts/internal/getRecentUserPrompts");
+const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getRelevantKnowledgeChunks");
 const { getChatCompletion: getOpenAiChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
@@ -1266,36 +1264,16 @@ module.exports = async function handler(req, res) {
     .replace(/\s+/g, " ");
   const ragPromise =
     normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
-      ? (async () => {
-          let ragQueryText = String(body.message);
-          const recentPromptsResult = await getRecentUserPrompts({
-            supId: process.env.SUP_ID,
-            supKey: process.env.SUP_KEY,
-            agentId,
-            anonId,
-            chatId,
-            limit: 2,
-          });
-          if (!recentPromptsResult.ok) return recentPromptsResult;
-
-          const promptParts = Array.isArray(recentPromptsResult.prompts)
-            ? [...recentPromptsResult.prompts, String(body.message)]
-            : [String(body.message)];
-          ragQueryText = promptParts.filter(Boolean).join("\n");
-
-          const embeddingResult = await getMessageEmbedding({
-            apiKey: process.env.OPENAI_API_KEY,
-            message: ragQueryText,
-          });
-          if (!embeddingResult.ok) return embeddingResult;
-
-          return getVectorSearchTexts({
-            supId: process.env.SUP_ID,
-            supKey: process.env.SUP_KEY,
-            agentId,
-            embedding: embeddingResult.embedding,
-          });
-        })()
+      ? getRelevantKnowledgeChunks({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          voyageApiKey: process.env.VOYAGE_API_KEY,
+          outputDimension: process.env.VOYAGE_OUTPUT_DIMENSION,
+          agentId,
+          anonId,
+          chatId,
+          message: body.message,
+        })
       : Promise.resolve({ ok: true, chunks: [] });
 
   const historyPromise =
