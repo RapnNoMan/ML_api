@@ -1,6 +1,7 @@
 const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
+const { getMessageEmbedding } = require("../../scripts/internal/getMessageEmbedding");
 const { getVoyageMessageEmbedding } = require("../../scripts/internal/getVoyageMessageEmbedding");
 const { getVectorSearchTextsWithScores } = require("../../scripts/internal/getVectorSearchTextsWithScores");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
@@ -728,6 +729,75 @@ function usageToTokens(usage) {
   };
 }
 
+async function benchmarkEmbeddings({ body, anonId, chatId }) {
+  let ragQueryText = String(body.message ?? "");
+  const recentPromptsResult = await getRecentUserPrompts({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId: body.agent_id,
+    anonId,
+    chatId,
+    limit: VECTOR_HISTORY_LIMIT,
+  });
+  if (!recentPromptsResult.ok) return recentPromptsResult;
+
+  const promptParts = Array.isArray(recentPromptsResult.prompts)
+    ? [...recentPromptsResult.prompts, String(body.message)]
+    : [String(body.message)];
+  ragQueryText = promptParts.filter(Boolean).join("\n");
+
+  const openAiStartedAt = Date.now();
+  const openAiResult = await getMessageEmbedding({
+    apiKey: process.env.OPENAI_API_KEY,
+    message: ragQueryText,
+  });
+  const openAiLatencyMs = Date.now() - openAiStartedAt;
+
+  const voyageStartedAt = Date.now();
+  const voyageResult = await getVoyageMessageEmbedding({
+    apiKey: process.env.VOYAGE_API_KEY,
+    message: ragQueryText,
+    model: VOYAGE_EMBED_MODEL,
+    inputType: "query",
+    outputDimension: process.env.VOYAGE_OUTPUT_DIMENSION,
+  });
+  const voyageLatencyMs = Date.now() - voyageStartedAt;
+
+  return {
+    ok: openAiResult.ok && voyageResult.ok,
+    status: !openAiResult.ok
+      ? openAiResult.status
+      : !voyageResult.ok
+        ? voyageResult.status
+        : 200,
+    error: !openAiResult.ok
+      ? `OpenAI embedding failed: ${openAiResult.error}`
+      : !voyageResult.ok
+        ? `Voyage embedding failed: ${voyageResult.error}`
+        : null,
+    data: {
+      queryText: ragQueryText,
+      queryTextLength: ragQueryText.length,
+      historyLimit: VECTOR_HISTORY_LIMIT,
+      historyPromptCount: Array.isArray(recentPromptsResult.prompts)
+        ? recentPromptsResult.prompts.length
+        : 0,
+      openai: {
+        model: "text-embedding-3-large",
+        ok: openAiResult.ok,
+        latencyMs: openAiLatencyMs,
+        embeddingLength: Array.isArray(openAiResult.embedding) ? openAiResult.embedding.length : 0,
+      },
+      voyage: {
+        model: VOYAGE_EMBED_MODEL,
+        ok: voyageResult.ok,
+        latencyMs: voyageLatencyMs,
+        embeddingLength: Array.isArray(voyageResult.embedding) ? voyageResult.embedding.length : 0,
+      },
+    },
+  };
+}
+
 module.exports = async function handler(req, res) {
   try {
     setChatCorsHeaders(res);
@@ -771,6 +841,68 @@ module.exports = async function handler(req, res) {
     res.status(400).json({
       error: "Missing required fields",
       missing,
+    });
+    return;
+  }
+
+  if (body.embedding_benchmark_only === true) {
+    const incomingAnonId = normalizeIdValue(body.anon_id);
+    const incomingChatId = normalizeIdValue(body.chat_id);
+    let anonId = incomingAnonId;
+    let chatId = incomingChatId;
+    if (!anonId && !chatId) {
+      const sessionId = makeGeneratedId();
+      anonId = sessionId;
+      chatId = sessionId;
+    } else if (!anonId) {
+      anonId = makeGeneratedId();
+    } else if (!chatId) {
+      chatId = makeGeneratedId();
+    }
+
+    const validationStartedAt = Date.now();
+    const [validation, usageCheck] = await Promise.all([
+      validateAgentKey({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId: body.agent_id,
+        token,
+      }),
+      checkMessageCap({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId: body.agent_id,
+      }),
+    ]);
+    stepTimings.validationMs = Date.now() - validationStartedAt;
+    if (!validation.ok) {
+      res.status(validation.status).json({ error: validation.error });
+      return;
+    }
+    if (!usageCheck.ok) {
+      res.status(usageCheck.status).json({ error: usageCheck.error });
+      return;
+    }
+
+    const benchmarkStartedAt = Date.now();
+    const benchmark = await benchmarkEmbeddings({ body, anonId, chatId });
+    const benchmarkLatencyMs = Date.now() - benchmarkStartedAt;
+    if (!benchmark.ok) {
+      res.status(benchmark.status).json({ error: benchmark.error });
+      return;
+    }
+
+    res.status(200).json({
+      mode: "embedding_benchmark_only",
+      reply: "",
+      debug: {
+        embeddingBenchmark: benchmark.data,
+        timings: {
+          ...stepTimings,
+          embeddingBenchmarkMs: benchmarkLatencyMs,
+          totalMs: Date.now() - requestStartedAt,
+        },
+      },
     });
     return;
   }

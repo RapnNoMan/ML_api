@@ -7,9 +7,10 @@ import urllib.request
 URL = "https://api.mitsolab.com/api/v1/chat_voyage_test"
 BEARER_TOKEN = "ml_cvaysqxqHCcoVygeW777%5p4J9nkDHPGhNRAb37p"
 AGENT_ID = "befcd1a8-fe43-4df8-b197-eb6f007bd148"
-MESSAGE = "What are your pricing options?"
+MESSAGE = "How much is your pricing?"
 ANON_ID = "voyage-test-user"
 CHAT_ID = "voyage-test-chat"
+EMBEDDING_BENCHMARK_ONLY = True
 
 
 def main():
@@ -18,6 +19,7 @@ def main():
         "message": MESSAGE,
         "anon_id": ANON_ID,
         "chat_id": CHAT_ID,
+        "embedding_benchmark_only": EMBEDDING_BENCHMARK_ONLY,
     }
 
     request = urllib.request.Request(
@@ -62,6 +64,11 @@ def main():
 
     print("\nRAG debug:")
     print(json.dumps(rag, indent=2, ensure_ascii=False))
+
+    embedding_benchmark = debug.get("embeddingBenchmark") or {}
+    if embedding_benchmark:
+        print("\nEmbedding benchmark:")
+        print(json.dumps(embedding_benchmark, indent=2, ensure_ascii=False))
 
     print("\nReply:")
     print(data.get("reply", ""))
