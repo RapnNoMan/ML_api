@@ -62,7 +62,14 @@ async function getRelevantKnowledgeChunks({
   chatId,
   message,
 }) {
+  const timings = {
+    recentPromptsMs: null,
+    embeddingMs: null,
+    vectorSearchMs: null,
+    rerankMs: null,
+  };
   let ragQueryText = String(message ?? "");
+  const recentPromptsStartedAt = Date.now();
   const recentPromptsResult = await getRecentUserPrompts({
     supId,
     supKey,
@@ -71,6 +78,7 @@ async function getRelevantKnowledgeChunks({
     chatId,
     limit: VECTOR_HISTORY_LIMIT,
   });
+  timings.recentPromptsMs = Date.now() - recentPromptsStartedAt;
   if (!recentPromptsResult.ok) return recentPromptsResult;
 
   const promptParts = Array.isArray(recentPromptsResult.prompts)
@@ -78,6 +86,7 @@ async function getRelevantKnowledgeChunks({
     : [String(message)];
   ragQueryText = promptParts.filter(Boolean).join("\n");
 
+  const embeddingStartedAt = Date.now();
   const embeddingResult = await getVoyageMessageEmbedding({
     apiKey: voyageApiKey,
     message: ragQueryText,
@@ -85,29 +94,43 @@ async function getRelevantKnowledgeChunks({
     inputType: "query",
     outputDimension,
   });
+  timings.embeddingMs = Date.now() - embeddingStartedAt;
   if (!embeddingResult.ok) return embeddingResult;
 
+  const vectorSearchStartedAt = Date.now();
   const vectorResult = await getVectorSearchTextsWithScores({
     supId,
     supKey,
     agentId,
     embedding: embeddingResult.embedding,
   });
+  timings.vectorSearchMs = Date.now() - vectorSearchStartedAt;
   if (!vectorResult.ok) return vectorResult;
 
   const vectorCandidates = (Array.isArray(vectorResult.items) ? vectorResult.items : [])
     .map(normalizeChunkCandidate)
     .filter(Boolean);
+  const skippedByVectorThreshold = [];
   const filteredVectorCandidates = vectorCandidates.filter((item) => {
     const score = toFiniteNumber(item.score);
-    return score === null || score >= VECTOR_SCORE_MIN;
+    const keep = score === null || score >= VECTOR_SCORE_MIN;
+    if (!keep) {
+      skippedByVectorThreshold.push({
+        ...item,
+        skipped_reason: "vector_score_below_threshold",
+      });
+    }
+    return keep;
   });
 
   const skipRerank = hasHighVectorConfidence(filteredVectorCandidates);
   let rerankUsed = false;
   let rerankCandidates = filteredVectorCandidates;
+  let rerankReturnedCandidates = [];
+  const skippedByRerankThreshold = [];
 
   if (!skipRerank && filteredVectorCandidates.length > 1) {
+    const rerankStartedAt = Date.now();
     const rerankResult = await rerankVoyageDocuments({
       apiKey: voyageApiKey,
       query: String(message),
@@ -115,10 +138,11 @@ async function getRelevantKnowledgeChunks({
       model: VOYAGE_RERANK_MODEL,
       topK: VECTOR_DIRECT_TOP_K,
     });
+    timings.rerankMs = Date.now() - rerankStartedAt;
     if (!rerankResult.ok) return rerankResult;
 
     rerankUsed = true;
-    rerankCandidates = (Array.isArray(rerankResult.results) ? rerankResult.results : [])
+    rerankReturnedCandidates = (Array.isArray(rerankResult.results) ? rerankResult.results : [])
       .map((item) => {
         const index = Number(item?.index);
         if (!Number.isInteger(index) || index < 0 || index >= filteredVectorCandidates.length) {
@@ -129,20 +153,39 @@ async function getRelevantKnowledgeChunks({
           rerank_score: clampUnitScore(item?.relevance_score ?? item?.score),
         };
       })
-      .filter(Boolean)
-      .filter((item) => {
+      .filter(Boolean);
+
+    rerankCandidates = rerankReturnedCandidates.filter((item) => {
         const score = toFiniteNumber(item.rerank_score);
-        return score === null || score >= RERANK_SCORE_MIN;
+        const keep = score === null || score >= RERANK_SCORE_MIN;
+        if (!keep) {
+          skippedByRerankThreshold.push({
+            ...item,
+            skipped_reason: "rerank_score_below_threshold",
+          });
+        }
+        return keep;
       });
   }
 
   const finalCandidates = (rerankUsed ? rerankCandidates : filteredVectorCandidates)
     .slice(0, VECTOR_DIRECT_TOP_K);
 
+  const finalChunkTexts = finalCandidates.map((item) => item.chunk_text);
+
   return {
     ok: true,
-    chunks: finalCandidates.map((item) => item.chunk_text),
+    chunks: finalChunkTexts,
     debug: {
+      queryText: ragQueryText,
+      queryTextLength: ragQueryText.length,
+      thresholds: {
+        vectorMinScore: VECTOR_SCORE_MIN,
+        rerankMinScore: RERANK_SCORE_MIN,
+        skipRerankThresholds: DIRECT_SKIP_RERANK_THRESHOLDS,
+        maxFinalChunks: VECTOR_DIRECT_TOP_K,
+      },
+      timings,
       rerankUsed,
       skipRerank,
       vectorCandidateCount: vectorCandidates.length,
@@ -152,6 +195,12 @@ async function getRelevantKnowledgeChunks({
       topRerankScores: rerankUsed
         ? rerankCandidates.slice(0, 5).map((item) => item.rerank_score ?? null)
         : [],
+      vectorCandidates,
+      skippedByVectorThreshold,
+      rerankReturnedCandidates,
+      skippedByRerankThreshold,
+      finalCandidates,
+      finalChunkTexts,
     },
   };
 }
