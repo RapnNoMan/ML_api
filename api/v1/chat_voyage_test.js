@@ -746,6 +746,15 @@ module.exports = async function handler(req, res) {
   let latencyNanoMs = null;
   let latencyToolsMs = null;
   let ragDebug = null;
+  const stepTimings = {
+    validationMs: null,
+    contextFetchMs: null,
+    promptBuildMs: null,
+    primaryModelMs: null,
+    toolsMs: null,
+    followupModelMs: null,
+    saveMessageMs: null,
+  };
 
   const body = req.body ?? {};
   const requestCountry = getRequestCountry(req.headers);
@@ -780,6 +789,7 @@ module.exports = async function handler(req, res) {
     chatId = makeGeneratedId();
   }
 
+  const validationStartedAt = Date.now();
   const [validation, usageCheck] = await Promise.all([
     validateAgentKey({
       supId: process.env.SUP_ID,
@@ -793,6 +803,7 @@ module.exports = async function handler(req, res) {
       agentId: body.agent_id,
     }),
   ]);
+  stepTimings.validationMs = Date.now() - validationStartedAt;
   if (!validation.ok) {
     res.status(validation.status).json({ error: validation.error });
     return;
@@ -949,12 +960,14 @@ module.exports = async function handler(req, res) {
     agentId: body.agent_id,
   });
 
+  const contextFetchStartedAt = Date.now();
   const [vectorResult, historyResult, agentInfo, toolsResult] = await Promise.all([
     ragPromise,
     historyPromise,
     agentInfoPromise,
     toolsResultPromise,
   ]);
+  stepTimings.contextFetchMs = Date.now() - contextFetchStartedAt;
   if (!vectorResult.ok) {
     res.status(vectorResult.status).json({ error: vectorResult.error });
     return;
@@ -979,6 +992,7 @@ module.exports = async function handler(req, res) {
     profileLines.push(`policies: ${agentInfo.policies.join(" | ")}`);
   }
 
+  const promptBuildStartedAt = Date.now();
   const promptSections = [];
   promptSections.push(
     [
@@ -1015,6 +1029,7 @@ module.exports = async function handler(req, res) {
     ...historyMessages,
     { role: "user", content: String(body.message) },
   ];
+  stepTimings.promptBuildMs = Date.now() - promptBuildStartedAt;
 
   const completionStartedAt = Date.now();
   const completion = await getAnthropicChatCompletion({
@@ -1025,6 +1040,7 @@ module.exports = async function handler(req, res) {
     tools: toolsResult.tools,
   });
   latencyMiniMs = Date.now() - completionStartedAt;
+  stepTimings.primaryModelMs = latencyMiniMs;
   if (!completion.ok) {
     res.status(completion.status).json({ error: completion.error });
     return;
@@ -1471,6 +1487,7 @@ module.exports = async function handler(req, res) {
       });
     }
     latencyToolsMs = Date.now() - toolsStartedAt;
+    stepTimings.toolsMs = latencyToolsMs;
 
     const assistantBlocks =
       completion.output_items && Array.isArray(completion.output_items)
@@ -1539,6 +1556,7 @@ module.exports = async function handler(req, res) {
       inputItems: [...inputItems],
     });
     latencyNanoMs = Date.now() - followupStartedAt;
+    stepTimings.followupModelMs = latencyNanoMs;
 
     if (!followup.ok) {
       res.status(followup.status).json({ error: followup.error });
@@ -1546,6 +1564,7 @@ module.exports = async function handler(req, res) {
     }
 
     const followupReply = followup.data?.reply ?? "";
+    const saveStartedAt = Date.now();
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -1559,6 +1578,7 @@ module.exports = async function handler(req, res) {
       source: "api",
       action: true,
     });
+    stepTimings.saveMessageMs = Date.now() - saveStartedAt;
     if (!saveResult.ok) {
       res.status(saveResult.status).json({ error: saveResult.error });
       return;
@@ -1599,10 +1619,8 @@ module.exports = async function handler(req, res) {
       debug: {
         rag: ragDebug,
         timings: {
+          ...stepTimings,
           totalMs: Date.now() - requestStartedAt,
-          primaryModelMs: latencyMiniMs,
-          followupModelMs: latencyNanoMs,
-          toolsMs: latencyToolsMs,
         },
       },
     });
@@ -1610,6 +1628,7 @@ module.exports = async function handler(req, res) {
   }
 
   const completionReply = completion.data?.reply ?? "";
+  const saveStartedAt = Date.now();
   const saveResult = await saveMessage({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -1623,6 +1642,7 @@ module.exports = async function handler(req, res) {
     source: "api",
     action: false,
   });
+  stepTimings.saveMessageMs = Date.now() - saveStartedAt;
   if (!saveResult.ok) {
     res.status(saveResult.status).json({ error: saveResult.error });
     return;
@@ -1662,10 +1682,8 @@ module.exports = async function handler(req, res) {
       debug: {
         rag: ragDebug,
         timings: {
+          ...stepTimings,
           totalMs: Date.now() - requestStartedAt,
-          primaryModelMs: latencyMiniMs,
-          followupModelMs: null,
-          toolsMs: null,
         },
       },
     });
