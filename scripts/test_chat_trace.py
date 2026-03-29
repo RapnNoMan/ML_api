@@ -6,8 +6,8 @@ import requests
 
 
 URL = "https://api.mitsolab.com/api/v1/chat_trace"
-BEARER_TOKEN = "REPLACE_WITH_AGENT_KEY"
-AGENT_ID = "REPLACE_WITH_AGENT_ID"
+BEARER_TOKEN = "ml_cvaysqxqHCcoVygeW777%5p4J9nkDHPGhNRAb37p"
+AGENT_ID = "befcd1a8-fe43-4df8-b197-eb6f007bd148"
 MESSAGE = "what is your pricing"
 ANON_ID = "chat-trace-user"
 CHAT_ID = "chat-trace-chat"
