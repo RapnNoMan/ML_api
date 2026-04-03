@@ -510,8 +510,41 @@ function isAllowedWidgetCaller(headers) {
 }
 
 function usageToTokens(usage) {
-  const input = Number(usage?.input_tokens);
-  const output = Number(usage?.output_tokens);
+  const toFinite = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const pickMax = (values) => values.reduce((max, value) => Math.max(max, toFinite(value)), 0);
+
+  const directInput = pickMax([
+    usage?.input_tokens,
+    usage?.prompt_tokens,
+    usage?.input_text_tokens,
+    usage?.prompt_token_count,
+    usage?.input_token_count,
+  ]);
+  const directOutput = pickMax([
+    usage?.output_tokens,
+    usage?.completion_tokens,
+    usage?.output_text_tokens,
+    usage?.completion_token_count,
+    usage?.output_token_count,
+  ]);
+  const cachedInput = pickMax([
+    usage?.cache_read_input_tokens,
+    usage?.cached_input_tokens,
+    usage?.input_cached_tokens,
+    usage?.prompt_tokens_details?.cached_tokens,
+    usage?.input_tokens_details?.cached_tokens,
+  ]);
+  const reasoningOutput = pickMax([
+    usage?.reasoning_tokens,
+    usage?.completion_tokens_details?.reasoning_tokens,
+    usage?.output_tokens_details?.reasoning_tokens,
+  ]);
+
+  const input = directInput + cachedInput;
+  const output = directOutput + reasoningOutput;
   return {
     input: Number.isFinite(input) && input > 0 ? Math.floor(input) : 0,
     output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
