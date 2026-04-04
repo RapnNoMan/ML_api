@@ -479,14 +479,21 @@ function getOriginHost(headers) {
   }
 }
 
-function isAllowedWidgetOriginHost(host) {
-  return host === "app.mitsolab.com" || host === "www.app.mitsolab.com";
+function isAllowedDashboardOriginHost(host) {
+  return (
+    host === "app.mitsolab.com" ||
+    host === "www.app.mitsolab.com" ||
+    host === "dashboard.mitsolab.com" ||
+    host === "www.dashboard.mitsolab.com" ||
+    host === "localhost" ||
+    host === "127.0.0.1"
+  );
 }
 
-function setWidgetCorsHeaders(req, res) {
+function setDashboardCorsHeaders(req, res) {
   const originRaw = typeof req?.headers?.origin === "string" ? req.headers.origin : "";
   const originHost = getOriginHost(req?.headers);
-  if (originRaw && isAllowedWidgetOriginHost(originHost)) {
+  if (originRaw && isAllowedDashboardOriginHost(originHost)) {
     res.setHeader("Access-Control-Allow-Origin", originRaw);
     res.setHeader("Vary", "Origin");
   }
@@ -1156,10 +1163,10 @@ function sendSseEvent(res, event, payload) {
 
 module.exports = async function handler(req, res) {
   try {
-    setWidgetCorsHeaders(req, res);
+    setDashboardCorsHeaders(req, res);
     if (req.method === "OPTIONS") {
       const originHost = getOriginHost(req.headers);
-      if (!isAllowedWidgetOriginHost(originHost)) {
+      if (!isAllowedDashboardOriginHost(originHost)) {
         res.status(403).json({ error: "Forbidden origin" });
         return;
       }
@@ -1192,7 +1199,7 @@ module.exports = async function handler(req, res) {
       ? body.api
       : {};
   const missing = [];
-  if (!agentId) missing.push("agent_id (path)");
+  if (!agentId) missing.push("agent_id (query)");
   if (!body.message) missing.push("message");
   if (!normalizeIdValue(body.anon_id)) missing.push("anon_id");
   if (!normalizeIdValue(body.chat_id)) missing.push("chat_id");
