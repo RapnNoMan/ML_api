@@ -1,5 +1,5 @@
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
-const { checkWidgetEmbedEnabled } = require("../../scripts/internal/checkWidgetEmbedEnabled");
+const { validateDashboardAgentAccess } = require("../../scripts/internal/validateDashboardAgentAccess");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
@@ -494,7 +494,7 @@ function setWidgetCorsHeaders(req, res) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
 
-function isAllowedWidgetCaller(headers) {
+function isAllowedDashboardCaller(headers) {
   const allowedHosts = new Set(["app.mitsolab.com", "www.app.mitsolab.com"]);
   const originRaw = headers?.origin;
   const refererRaw = headers?.referer;
@@ -503,8 +503,7 @@ function isAllowedWidgetCaller(headers) {
   const refererInfo = parseHeaderUrlHostPath(refererRaw);
 
   const originAllowed = allowedHosts.has(originInfo.host);
-  const refererAllowed =
-    allowedHosts.has(refererInfo.host) && refererInfo.path.startsWith("/widget");
+  const refererAllowed = allowedHosts.has(refererInfo.host);
 
   return originAllowed || refererAllowed;
 }
@@ -1188,11 +1187,17 @@ module.exports = async function handler(req, res) {
     (!hasExplicitStreamFlag && acceptHeader.includes("text/event-stream"));
   const requestCountry = getRequestCountry(req.headers);
   const agentId = parseAgentIdFromRequest(req);
+  const apiIdentity =
+    body?.api && typeof body.api === "object" && !Array.isArray(body.api)
+      ? body.api
+      : {};
   const missing = [];
   if (!agentId) missing.push("agent_id (path)");
   if (!body.message) missing.push("message");
   if (!normalizeIdValue(body.anon_id)) missing.push("anon_id");
   if (!normalizeIdValue(body.chat_id)) missing.push("chat_id");
+  if (!normalizeIdValue(apiIdentity.user_id)) missing.push("api.user_id");
+  if (!normalizeIdValue(apiIdentity.email)) missing.push("api.email");
 
   if (missing.length > 0) {
     res.status(400).json({
@@ -1202,18 +1207,20 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const widgetEnabled = await checkWidgetEmbedEnabled({
-    supId: process.env.SUP_ID,
-    supKey: process.env.SUP_KEY,
-    agentId,
-  });
-  if (!widgetEnabled.ok) {
-    res.status(widgetEnabled.status).json({ error: widgetEnabled.error });
+  if (!isAllowedDashboardCaller(req.headers)) {
+    res.status(403).json({ error: "Forbidden origin" });
     return;
   }
 
-  if (!isAllowedWidgetCaller(req.headers)) {
-    res.status(403).json({ error: "Forbidden origin" });
+  const identityValidation = await validateDashboardAgentAccess({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    userId: normalizeIdValue(apiIdentity.user_id),
+    email: String(apiIdentity.email || "").trim().toLowerCase(),
+  });
+  if (!identityValidation.ok) {
+    res.status(identityValidation.status).json({ error: identityValidation.error });
     return;
   }
 

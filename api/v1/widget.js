@@ -5,16 +5,14 @@ const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getRelevantKnowledgeChunks");
-const { getChatCompletion: getOpenAiChatCompletion } = require("../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 
-const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
-const ANTHROPIC_VERSION = "2023-06-01";
-const PRIMARY_MODEL = "claude-haiku-4-5-20251001";
-const FOLLOWUP_MODEL = "gpt-5-nano";
+const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
+const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-fast-non-reasoning";
+const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -512,8 +510,41 @@ function isAllowedWidgetCaller(headers) {
 }
 
 function usageToTokens(usage) {
-  const input = Number(usage?.input_tokens);
-  const output = Number(usage?.output_tokens);
+  const toFinite = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const pickMax = (values) => values.reduce((max, value) => Math.max(max, toFinite(value)), 0);
+
+  const directInput = pickMax([
+    usage?.input_tokens,
+    usage?.prompt_tokens,
+    usage?.input_text_tokens,
+    usage?.prompt_token_count,
+    usage?.input_token_count,
+  ]);
+  const directOutput = pickMax([
+    usage?.output_tokens,
+    usage?.completion_tokens,
+    usage?.output_text_tokens,
+    usage?.completion_token_count,
+    usage?.output_token_count,
+  ]);
+  const cachedInput = pickMax([
+    usage?.cache_read_input_tokens,
+    usage?.cached_input_tokens,
+    usage?.input_cached_tokens,
+    usage?.prompt_tokens_details?.cached_tokens,
+    usage?.input_tokens_details?.cached_tokens,
+  ]);
+  const reasoningOutput = pickMax([
+    usage?.reasoning_tokens,
+    usage?.completion_tokens_details?.reasoning_tokens,
+    usage?.output_tokens_details?.reasoning_tokens,
+  ]);
+
+  const input = directInput + cachedInput;
+  const output = directOutput + reasoningOutput;
   return {
     input: Number.isFinite(input) && input > 0 ? Math.floor(input) : 0,
     output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
@@ -522,10 +553,23 @@ function usageToTokens(usage) {
 
 function extractResponseText(payload) {
   if (!payload) return "";
-  const content = Array.isArray(payload?.content) ? payload.content : [];
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text;
+  }
+  const content = Array.isArray(payload?.content)
+    ? payload.content
+    : Array.isArray(payload?.output)
+      ? payload.output.flatMap((item) =>
+          Array.isArray(item?.content) ? item.content : []
+        )
+      : [];
   const textParts = [];
   for (const item of content) {
-    if (item?.type === "text" && typeof item?.text === "string" && item.text.trim()) {
+    if (
+      (item?.type === "text" || item?.type === "output_text") &&
+      typeof item?.text === "string" &&
+      item.text.trim()
+    ) {
       textParts.push(item.text);
     }
   }
@@ -535,14 +579,23 @@ function extractResponseText(payload) {
 function extractFunctionCalls(payload, fallbackOutputItems = []) {
   const output = Array.isArray(payload?.content)
     ? payload.content
+    : Array.isArray(payload?.output)
+      ? payload.output
     : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
   const calls = [];
   for (const item of output) {
-    if (item?.type !== "tool_use") continue;
+    if (item?.type !== "tool_use" && item?.type !== "function_call") continue;
+    let variables = item?.input && typeof item.input === "object" ? item.input : {};
+    if (item?.type === "function_call" && typeof item?.arguments === "string") {
+      try {
+        const parsed = JSON.parse(item.arguments);
+        if (parsed && typeof parsed === "object") variables = parsed;
+      } catch (_) {}
+    }
     calls.push({
       action_key: typeof item?.name === "string" ? item.name : "",
-      variables: item?.input && typeof item.input === "object" ? item.input : {},
-      call_id: item?.id ?? null,
+      variables,
+      call_id: item?.id ?? item?.call_id ?? null,
     });
   }
   return calls;
@@ -551,23 +604,54 @@ function extractFunctionCalls(payload, fallbackOutputItems = []) {
 function extractAssistantBlocks(payload, fallbackOutputItems = []) {
   const output = Array.isArray(payload?.content)
     ? payload.content
-    : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
-  return output
-    .map((item) => {
-      if (item?.type === "text" && typeof item?.text === "string") {
-        return { type: "text", text: item.text };
+    : Array.isArray(payload?.output)
+      ? payload.output
+      : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
+
+  const blocks = [];
+  for (const item of output) {
+    if (item?.type === "text" && typeof item?.text === "string") {
+      blocks.push({ type: "text", text: item.text });
+      continue;
+    }
+    if (item?.type === "tool_use") {
+      blocks.push({
+        type: "tool_use",
+        id: item?.id ?? null,
+        name: typeof item?.name === "string" ? item.name : "",
+        input: item?.input && typeof item.input === "object" ? item.input : {},
+      });
+      continue;
+    }
+    if (item?.type === "message") {
+      const content = Array.isArray(item?.content) ? item.content : [];
+      for (const part of content) {
+        if (
+          (part?.type === "output_text" || part?.type === "text") &&
+          typeof part?.text === "string"
+        ) {
+          blocks.push({ type: "text", text: part.text });
+        }
       }
-      if (item?.type === "tool_use") {
-        return {
-          type: "tool_use",
-          id: item?.id ?? null,
-          name: typeof item?.name === "string" ? item.name : "",
-          input: item?.input && typeof item.input === "object" ? item.input : {},
-        };
+      continue;
+    }
+    if (item?.type === "function_call") {
+      let input = {};
+      if (typeof item?.arguments === "string") {
+        try {
+          const parsed = JSON.parse(item.arguments);
+          if (parsed && typeof parsed === "object") input = parsed;
+        } catch (_) {}
       }
-      return null;
-    })
-    .filter(Boolean);
+      blocks.push({
+        type: "tool_use",
+        id: item?.call_id ?? null,
+        name: typeof item?.name === "string" ? item.name : "",
+        input,
+      });
+    }
+  }
+  return blocks;
 }
 
 function normalizeAnthropicInputSchema(schema) {
@@ -694,29 +778,39 @@ TOOL RULES (MUST FOLLOW):
   return requestBody;
 }
 
-function parseSseEventBlock(block) {
-  const lines = String(block || "").split("\n");
-  let eventName = "";
-  const dataLines = [];
-  for (const rawLine of lines) {
-    const line = rawLine.trimEnd();
-    if (!line || line.startsWith(":")) continue;
-    if (line.startsWith("event:")) {
-      eventName = line.slice(6).trim();
+function toXAiInputItems(messages, assistantBlocks, toolResults) {
+  const input = [...toOpenAiInputItems(messages)];
+
+  for (const item of Array.isArray(assistantBlocks) ? assistantBlocks : []) {
+    if (item?.type === "text") {
+      input.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: String(item.text ?? "") }],
+      });
       continue;
     }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
+    if (item?.type === "tool_use") {
+      input.push({
+        type: "function_call",
+        call_id: item?.id ?? null,
+        name: String(item?.name ?? ""),
+        arguments: JSON.stringify(
+          item?.input && typeof item.input === "object" ? item.input : {}
+        ),
+      });
     }
   }
-  if (dataLines.length === 0) return null;
-  const dataText = dataLines.join("\n");
-  if (dataText === "[DONE]") return { done: true };
-  try {
-    return { done: false, event: eventName, payload: JSON.parse(dataText) };
-  } catch (_) {
-    return null;
+
+  for (const result of Array.isArray(toolResults) ? toolResults : []) {
+    input.push({
+      type: "function_call_output",
+      call_id: result?.call_id ?? null,
+      output: JSON.stringify(result),
+    });
   }
+
+  return input;
 }
 
 async function getChatCompletionStream({
@@ -730,197 +824,15 @@ async function getChatCompletionStream({
   signal,
   onTextDelta,
 }) {
-  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
-
-  const requestBody = createCompletionRequestBody({
+  return getXAiChatCompletionStream({
+    apiKey,
     model,
     instructions,
-    messages,
     tools,
-    assistantBlocks,
-    toolResults,
+    inputItems: toXAiInputItems(messages, assistantBlocks, toolResults),
+    signal,
+    onTextDelta,
   });
-
-  let response;
-  try {
-    response = await fetch(ANTHROPIC_API_URL, {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-      signal,
-    });
-  } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling Anthropic" };
-  }
-
-  if (!response.ok) {
-    let errText = "";
-    try {
-      errText = await response.text();
-    } catch (_) {}
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: errText || "Anthropic request failed",
-    };
-  }
-
-  if (!response.body) {
-    return { ok: false, status: 502, error: "Missing stream body from Anthropic" };
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let assembledText = "";
-  let usage = null;
-  const outputItemsByIndex = new Map();
-  let upstreamError = null;
-  let done = false;
-
-  while (!done) {
-    let chunk;
-    try {
-      chunk = await reader.read();
-    } catch (_) {
-      return { ok: false, status: 502, error: "Stream read error from Anthropic" };
-    }
-    done = Boolean(chunk?.done);
-    if (chunk?.value) {
-      buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
-      let delimiterIdx = buffer.indexOf("\n\n");
-      while (delimiterIdx !== -1) {
-        const block = buffer.slice(0, delimiterIdx);
-        buffer = buffer.slice(delimiterIdx + 2);
-        const evt = parseSseEventBlock(block);
-        if (evt?.done) {
-          done = true;
-          break;
-        }
-        if (!evt?.payload) {
-          delimiterIdx = buffer.indexOf("\n\n");
-          continue;
-        }
-
-        const payload = evt.payload;
-        if (evt?.event === "message_stop" || payload?.type === "message_stop") {
-          done = true;
-        }
-        if (payload?.type === "message_start" && payload?.message?.usage) {
-          usage = payload.message.usage;
-        } else if (payload?.type === "content_block_start") {
-          const index = Number(payload?.index);
-          const contentBlock = payload?.content_block ?? {};
-          if (Number.isFinite(index)) {
-            if (contentBlock?.type === "text") {
-              outputItemsByIndex.set(index, {
-                type: "text",
-                text: typeof contentBlock?.text === "string" ? contentBlock.text : "",
-              });
-            } else if (contentBlock?.type === "tool_use") {
-              outputItemsByIndex.set(index, {
-                type: "tool_use",
-                id: contentBlock?.id ?? null,
-                name: typeof contentBlock?.name === "string" ? contentBlock.name : "",
-                inputJson: "",
-              });
-            }
-          }
-        } else if (
-          payload?.type === "content_block_delta" &&
-          payload?.delta?.type === "text_delta" &&
-          typeof payload?.delta?.text === "string"
-        ) {
-          const deltaText = payload.delta.text;
-          assembledText += deltaText;
-          const block = outputItemsByIndex.get(Number(payload?.index));
-          if (block?.type === "text") {
-            block.text += deltaText;
-          }
-          if (typeof onTextDelta === "function") {
-            await onTextDelta(deltaText);
-          }
-        } else if (
-          payload?.type === "content_block_delta" &&
-          payload?.delta?.type === "input_json_delta" &&
-          typeof payload?.delta?.partial_json === "string"
-        ) {
-          const block = outputItemsByIndex.get(Number(payload?.index));
-          if (block?.type === "tool_use") {
-            block.inputJson += payload.delta.partial_json;
-          }
-        } else if (payload?.type === "message_delta" && payload?.usage) {
-          usage = payload.usage;
-        } else if (payload?.type === "error") {
-          upstreamError = payload?.error?.message || "Anthropic streaming failed";
-        }
-
-        delimiterIdx = buffer.indexOf("\n\n");
-      }
-    }
-  }
-
-  if (upstreamError) {
-    return { ok: false, status: 502, error: upstreamError };
-  }
-
-  const finalOutputItems = Array.from(outputItemsByIndex.entries())
-    .sort((a, b) => a[0] - b[0])
-    .map(([, item]) => {
-      if (item?.type === "tool_use") {
-        let input = {};
-        try {
-          input = item.inputJson ? JSON.parse(item.inputJson) : {};
-        } catch (_) {}
-        return {
-          type: "tool_use",
-          id: item?.id ?? null,
-          name: item?.name ?? "",
-          input,
-        };
-      }
-      return {
-        type: "text",
-        text: item?.text ?? "",
-      };
-    });
-  const payload = { content: finalOutputItems, usage };
-  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
-  const rawText = extractResponseText(payload) || assembledText;
-
-  if (toolCalls.length > 0) {
-    return {
-      ok: true,
-      data: {
-        mode: "actions_needed",
-        reply: "",
-        action_calls: toolCalls,
-      },
-      usage: usage ?? null,
-      raw: "",
-      output_items: finalOutputItems,
-    };
-  }
-
-  if (!rawText) {
-    return { ok: false, status: 502, error: "Empty model output" };
-  }
-
-  return {
-    ok: true,
-    data: {
-      mode: "reply",
-      reply: rawText,
-      action_calls: [],
-    },
-    usage: usage ?? null,
-    raw: rawText,
-    output_items: finalOutputItems,
-  };
 }
 
 async function getChatCompletion({
@@ -932,83 +844,13 @@ async function getChatCompletion({
   assistantBlocks,
   toolResults,
 }) {
-  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
-
-  const requestBody = createCompletionRequestBody({
+  return getXAiChatCompletion({
+    apiKey,
     model,
     instructions,
-    messages,
     tools,
-    assistantBlocks,
-    toolResults,
-    maxTokens: 1024,
+    inputItems: toXAiInputItems(messages, assistantBlocks, toolResults),
   });
-  requestBody.stream = false;
-
-  let response;
-  try {
-    response = await fetch(ANTHROPIC_API_URL, {
-      method: "POST",
-      headers: {
-        "x-api-key": apiKey,
-        "anthropic-version": ANTHROPIC_VERSION,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-  } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling Anthropic" };
-  }
-
-  if (!response.ok) {
-    let errText = "";
-    try {
-      errText = await response.text();
-    } catch (_) {}
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: errText || "Anthropic request failed",
-    };
-  }
-
-  let payload;
-  try {
-    payload = await response.json();
-  } catch (_) {
-    return { ok: false, status: 502, error: "Invalid JSON from Anthropic" };
-  }
-
-  const toolCalls = extractFunctionCalls(payload);
-  const outputItems = extractAssistantBlocks(payload);
-  if (toolCalls.length > 0) {
-    return {
-      ok: true,
-      data: {
-        mode: "actions_needed",
-        reply: "",
-        action_calls: toolCalls,
-      },
-      usage: payload?.usage ?? null,
-      raw: "",
-      output_items: outputItems,
-    };
-  }
-
-  const rawText = extractResponseText(payload);
-  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
-
-  return {
-    ok: true,
-    data: {
-      mode: "reply",
-      reply: rawText,
-      action_calls: [],
-    },
-    usage: payload?.usage ?? null,
-    raw: rawText,
-    output_items: outputItems,
-  };
 }
 
 function createOpenAiCompletionRequestBody({
@@ -1064,7 +906,7 @@ function parseOpenAiSseEventBlock(block) {
   }
 }
 
-async function getOpenAiChatCompletionStream({
+async function getXAiChatCompletionStream({
   apiKey,
   model,
   reasoning,
@@ -1088,7 +930,7 @@ async function getOpenAiChatCompletionStream({
 
   let response;
   try {
-    response = await fetch("https://api.openai.com/v1/responses", {
+    response = await fetch(XAI_RESPONSES_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -1098,7 +940,7 @@ async function getOpenAiChatCompletionStream({
       signal,
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+    return { ok: false, status: 502, error: "Network error calling xAI" };
   }
 
   if (!response.ok) {
@@ -1109,12 +951,12 @@ async function getOpenAiChatCompletionStream({
     return {
       ok: false,
       status: response.status || 502,
-      error: errText || "OpenAI request failed",
+      error: errText || "xAI request failed",
     };
   }
 
   if (!response.body) {
-    return { ok: false, status: 502, error: "Missing stream body from OpenAI" };
+    return { ok: false, status: 502, error: "Missing stream body from xAI" };
   }
 
   const reader = response.body.getReader();
@@ -1131,7 +973,7 @@ async function getOpenAiChatCompletionStream({
     try {
       chunk = await reader.read();
     } catch (_) {
-      return { ok: false, status: 502, error: "Stream read error from OpenAI" };
+      return { ok: false, status: 502, error: "Stream read error from xAI" };
     }
     done = Boolean(chunk?.done);
     if (chunk?.value) {
@@ -1164,7 +1006,7 @@ async function getOpenAiChatCompletionStream({
           upstreamError =
             payload?.response?.error?.message ||
             payload?.error?.message ||
-            "OpenAI streaming failed";
+            "xAI streaming failed";
         }
 
         delimiterIdx = buffer.indexOf("\n\n");
@@ -1176,12 +1018,28 @@ async function getOpenAiChatCompletionStream({
     return { ok: false, status: 502, error: upstreamError };
   }
 
-  const payload = finalResponse || {};
+  const payload = finalResponse || { output: outputItems };
   const finalOutputItems = Array.isArray(payload?.output) ? payload.output : outputItems;
+  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
+  const assistantBlocks = extractAssistantBlocks(payload, finalOutputItems);
   const rawText =
     typeof payload?.output_text === "string" && payload.output_text.trim()
       ? payload.output_text
-      : assembledText;
+      : (extractResponseText(payload) || assembledText);
+
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: assistantBlocks,
+    };
+  }
 
   if (!rawText) {
     return { ok: false, status: 502, error: "Empty model output" };
@@ -1196,7 +1054,93 @@ async function getOpenAiChatCompletionStream({
     },
     usage: payload?.usage ?? null,
     raw: rawText,
-    output_items: finalOutputItems,
+    output_items: assistantBlocks,
+  };
+}
+
+async function getXAiChatCompletion({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+}) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const requestBody = createOpenAiCompletionRequestBody({
+    model,
+    reasoning,
+    instructions,
+    messages,
+    tools,
+    inputItems,
+  });
+  requestBody.stream = false;
+
+  let response;
+  try {
+    response = await fetch(XAI_RESPONSES_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling xAI" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "xAI request failed",
+    };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Invalid JSON from xAI" };
+  }
+
+  const toolCalls = extractFunctionCalls(payload);
+  const assistantBlocks = extractAssistantBlocks(payload);
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: assistantBlocks,
+    };
+  }
+
+  const rawText = extractResponseText(payload);
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: assistantBlocks,
   };
 }
 
@@ -1498,7 +1442,7 @@ module.exports = async function handler(req, res) {
   const completionStartedAt = Date.now();
   const completion = wantsStream
     ? await getChatCompletionStream({
-        apiKey: process.env.ANTHROPIC_API_KEY,
+        apiKey: process.env.XAI_API_KEY,
         model: PRIMARY_MODEL,
         instructions: prompt,
         messages,
@@ -1509,7 +1453,7 @@ module.exports = async function handler(req, res) {
         },
       })
     : await getChatCompletion({
-        apiKey: process.env.ANTHROPIC_API_KEY,
+        apiKey: process.env.XAI_API_KEY,
         model: PRIMARY_MODEL,
         instructions: prompt,
         messages,
@@ -2058,10 +2002,9 @@ module.exports = async function handler(req, res) {
 
     const followupStartedAt = Date.now();
     const followup = wantsStream
-      ? await getOpenAiChatCompletionStream({
-          apiKey: process.env.OPENAI_API_KEY,
+      ? await getXAiChatCompletionStream({
+          apiKey: process.env.XAI_API_KEY,
           model: FOLLOWUP_MODEL,
-          reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
           inputItems: followupInputItems,
@@ -2073,10 +2016,9 @@ module.exports = async function handler(req, res) {
             }
           },
         })
-      : await getOpenAiChatCompletion({
-          apiKey: process.env.OPENAI_API_KEY,
+      : await getXAiChatCompletion({
+          apiKey: process.env.XAI_API_KEY,
           model: FOLLOWUP_MODEL,
-          reasoning: { effort: "minimal" },
           instructions: followupInstructions,
           messages,
           inputItems: followupInputItems,
