@@ -10,7 +10,7 @@ const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
-const { randomBytes } = require("node:crypto");//
+const { randomBytes } = require("node:crypto");
 
 const ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION = "2023-06-01";
