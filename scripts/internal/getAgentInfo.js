@@ -4,7 +4,7 @@ async function getAgentInfo({ supId, supKey, agentId }) {
   }
 
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-  const url = `${baseUrl}/agents?select=name,role,policies,workspace_id&id=eq.${agentId}&limit=1`;
+  const url = `${baseUrl}/agents?select=role,workspace_id&id=eq.${agentId}&limit=1`;
 
   let response;
   try {
@@ -49,9 +49,7 @@ async function getAgentInfo({ supId, supKey, agentId }) {
 
   return {
     ok: true,
-    name: agent.name ?? "",
     role: agent.role ?? "",
-    policies: agent.policies ?? [],
     workspace_id: agent.workspace_id ?? null,
   };
 }
