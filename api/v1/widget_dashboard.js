@@ -502,15 +502,14 @@ function setDashboardCorsHeaders(req, res) {
 }
 
 function isAllowedDashboardCaller(headers) {
-  const allowedHosts = new Set(["app.mitsolab.com", "www.app.mitsolab.com"]);
   const originRaw = headers?.origin;
   const refererRaw = headers?.referer;
 
   const originInfo = parseHeaderUrlHostPath(originRaw);
   const refererInfo = parseHeaderUrlHostPath(refererRaw);
 
-  const originAllowed = allowedHosts.has(originInfo.host);
-  const refererAllowed = allowedHosts.has(refererInfo.host);
+  const originAllowed = isAllowedDashboardOriginHost(originInfo.host);
+  const refererAllowed = isAllowedDashboardOriginHost(refererInfo.host);
 
   return originAllowed || refererAllowed;
 }
