@@ -6,8 +6,13 @@ const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getReleva
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
-const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4.1-fast-non-reasoning";
+const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-fast-non-reasoning";
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
+const XAI_MODEL_FALLBACKS = [
+  PRIMARY_MODEL,
+  "grok-4-fast-non-reasoning",
+  "grok-4.1-fast-non-reasoning",
+];
 
 function toOpenAiInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
@@ -52,53 +57,79 @@ function extractResponseText(payload) {
 async function getXAiChatCompletion({ apiKey, model, instructions, messages }) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
 
-  const requestBody = {
-    model,
-    instructions: String(instructions || ""),
-    input: toOpenAiInputItems(messages),
-    text: { verbosity: "low" },
-  };
+  const uniqueModels = Array.from(
+    new Set(
+      [model, ...XAI_MODEL_FALLBACKS]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
 
-  let response;
-  try {
-    response = await fetch(XAI_RESPONSES_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(requestBody),
-    });
-  } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling xAI" };
-  }
+  let lastError = null;
+  for (const modelName of uniqueModels) {
+    const requestBody = {
+      model: modelName,
+      instructions: String(instructions || ""),
+      input: toOpenAiInputItems(messages),
+      text: { verbosity: "low" },
+    };
 
-  if (!response.ok) {
-    let errText = "";
+    let response;
     try {
-      errText = await response.text();
-    } catch (_) {}
+      response = await fetch(XAI_RESPONSES_API_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestBody),
+      });
+    } catch (_) {
+      return { ok: false, status: 502, error: "Network error calling xAI" };
+    }
+
+    if (!response.ok) {
+      let errText = "";
+      try {
+        errText = await response.text();
+      } catch (_) {}
+
+      lastError = {
+        status: response.status || 502,
+        error: errText || "xAI request failed",
+      };
+      const isModelNotFound =
+        response.status === 400 && /model not found/i.test(String(errText || ""));
+      if (isModelNotFound) continue;
+
+      return {
+        ok: false,
+        status: response.status || 502,
+        error: errText || "xAI request failed",
+      };
+    }
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (_) {
+      return { ok: false, status: 502, error: "Invalid JSON from xAI" };
+    }
+
+    const rawText = extractResponseText(payload);
+    if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+
     return {
-      ok: false,
-      status: response.status || 502,
-      error: errText || "xAI request failed",
+      ok: true,
+      data: { reply: rawText },
+      usage: payload?.usage ?? null,
     };
   }
 
-  let payload;
-  try {
-    payload = await response.json();
-  } catch (_) {
-    return { ok: false, status: 502, error: "Invalid JSON from xAI" };
-  }
-
-  const rawText = extractResponseText(payload);
-  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
-
   return {
-    ok: true,
-    data: { reply: rawText },
-    usage: payload?.usage ?? null,
+    ok: false,
+    status: lastError?.status || 502,
+    error: lastError?.error || "xAI request failed",
   };
 }
 
