@@ -12,7 +12,7 @@ const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/
 const { randomBytes } = require("node:crypto");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
-const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4.1-fast-non-reasoning";
+const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
 const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
 
 function toTextBlocks(content) {

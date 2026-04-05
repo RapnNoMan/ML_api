@@ -6,7 +6,7 @@ const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getReleva
 const { saveMessage } = require("../../scripts/internal/saveMessage");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
-const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-fast-non-reasoning";
+const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 const XAI_MODEL_FALLBACKS = [
   PRIMARY_MODEL,
