@@ -10,6 +10,7 @@ const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-fast-non-reasonin
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 const XAI_MODEL_FALLBACKS = [
   PRIMARY_MODEL,
+  "grok-4-1-fast-non-reasoning",
   "grok-4-fast-non-reasoning",
   "grok-4.1-fast-non-reasoning",
 ];
