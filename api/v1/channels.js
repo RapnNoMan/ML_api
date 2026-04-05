@@ -1065,10 +1065,10 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
       ok: true,
       connection: {
         kind: "whatsapp",
-        agent_id: numberRow.agent_id,
+        agent_id: String(numberRow.agent_id || "").trim(),
         thread_id: String(numberRow.phone_number_id || ""),
-        phone_number_id: String(numberRow.phone_number_id || ""),
-        access_token: String(connectionRow.business_access_token || ""),
+        phone_number_id: String(numberRow.phone_number_id || "").trim(),
+        access_token: String(connectionRow.business_access_token || "").trim(),
       },
     };
   }
@@ -1126,10 +1126,10 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
     ok: true,
     connection: {
       kind: "meta",
-      agent_id: row.agent_id,
-      thread_id: String(row.page_id || ""),
-      page_id: String(row.page_id || ""),
-      access_token: String(row.page_access_token || ""),
+      agent_id: String(row.agent_id || "").trim(),
+      thread_id: String(row.page_id || "").trim(),
+      page_id: String(row.page_id || "").trim(),
+      access_token: String(row.page_access_token || "").trim(),
     },
   };
 }
