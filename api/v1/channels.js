@@ -93,6 +93,21 @@ function formatReplyForWhatsAppText(text) {
   return output;
 }
 
+function formatReplyForTelegramText(text) {
+  let output = String(text || "");
+  if (!output.trim()) return "";
+  output = output
+    .replace(/\r\n/g, "\n")
+    .replace(/\*\*([^*]+)\*\*/g, "*$1*")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  const maxLen = 3500;
+  if (output.length > maxLen) {
+    output = `${output.slice(0, maxLen - 3).trimEnd()}...`;
+  }
+  return output;
+}
+
 function sanitizeIncomingUserText(value) {
   const raw = String(value || "").replace(/\0/g, "");
   const trimmed = raw.trim();
@@ -107,6 +122,17 @@ function normalizeIncomingMessage(value) {
     .toLowerCase()
     .replace(/^[\s"'`.,!?(){}\[\]<>-]+|[\s"'`.,!?(){}\[\]<>-]+$/g, "")
     .replace(/\s+/g, " ");
+}
+
+function extractTelegramStartIdentifier(text) {
+  const value = String(text || "").trim();
+  const match = value.match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i);
+  if (!match) return "";
+  return String(match[1] || "").trim();
+}
+
+function normalizeJsonArray(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function toOpenAiInputItems(messages) {
@@ -913,6 +939,47 @@ function toWebhookEvents(payload) {
   const entries = Array.isArray(payload?.entry) ? payload.entry : [];
   const events = [];
 
+  const hasTelegramShape =
+    Number.isFinite(Number(payload?.update_id)) ||
+    payload?.message ||
+    payload?.edited_message ||
+    payload?.callback_query;
+  if (hasTelegramShape) {
+    const message = payload?.message || payload?.edited_message || payload?.callback_query?.message;
+    const from = payload?.message?.from || payload?.edited_message?.from || payload?.callback_query?.from;
+    const chat = message?.chat;
+    const text =
+      typeof payload?.message?.text === "string"
+        ? payload.message.text.trim()
+        : typeof payload?.edited_message?.text === "string"
+          ? payload.edited_message.text.trim()
+          : typeof payload?.callback_query?.data === "string"
+            ? payload.callback_query.data.trim()
+            : "";
+    const hasAttachment =
+      Array.isArray(payload?.message?.photo) ||
+      Array.isArray(payload?.message?.document) ||
+      Array.isArray(payload?.message?.video) ||
+      Array.isArray(payload?.message?.audio) ||
+      Array.isArray(payload?.message?.voice);
+
+    if (chat?.id) {
+      events.push({
+        eventId: String(payload?.update_id || message?.message_id || "").trim(),
+        object: "telegram",
+        field: "message",
+        channel: "telegram",
+        lookupId: "", // resolved from query param in handler
+        senderId: String(from?.id || "").trim(),
+        recipientId: String(chat?.id || "").trim(),
+        messageId: String(message?.message_id || payload?.update_id || "").trim(),
+        text: text || (hasAttachment ? "[User sent an attachment]" : ""),
+        rawItem: payload,
+      });
+    }
+    return events.filter((event) => event.text);
+  }
+
   if (objectType === "whatsapp_business_account") {
     for (const entry of entries) {
       const entryId = String(entry?.id || "").trim();
@@ -1013,9 +1080,91 @@ async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
   } catch (_) {}
 }
 
+async function updateTelegramPendingRequests({ supId, supKey, agentId, pendingAccessRequests }) {
+  if (!supId || !supKey || !agentId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/telegram_channel_connections`);
+  url.searchParams.set("agent_id", `eq.${agentId}`);
+
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "PATCH",
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify({
+        pending_access_requests: normalizeJsonArray(pendingAccessRequests),
+        updated_at: new Date().toISOString(),
+      }),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Telegram channel update unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Telegram channel update unavailable" };
+  }
+  return { ok: true };
+}
+
 async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
   if (!supId || !supKey) return { ok: false, status: 500, error: "Server configuration error" };
   if (!lookupId) return { ok: false, status: 404, error: "Channel not found" };
+
+  if (channel === "telegram") {
+    const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+    const url = new URL(`${baseUrl}/telegram_channel_connections`);
+    url.searchParams.set(
+      "select",
+      "agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
+    );
+    url.searchParams.set("agent_id", `eq.${lookupId}`);
+    url.searchParams.set("limit", "1");
+
+    let response;
+    try {
+      response = await fetch(url.toString(), {
+        headers: {
+          apikey: supKey,
+          Authorization: `Bearer ${supKey}`,
+          Accept: "application/json",
+        },
+      });
+    } catch (_) {
+      return { ok: false, status: 502, error: "Telegram channel service unavailable" };
+    }
+    if (!response.ok) return { ok: false, status: 502, error: "Telegram channel service unavailable" };
+
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (_) {
+      return { ok: false, status: 502, error: "Telegram channel service unavailable" };
+    }
+    const rows = Array.isArray(payload) ? payload : [];
+    const row = rows.find((item) => Boolean(item?.connected) && Boolean(item?.webhook_enabled));
+    if (!row) return { ok: false, status: 404, error: "Telegram connection not found" };
+    if (!row?.bot_token) return { ok: false, status: 400, error: "Missing Telegram bot token" };
+
+    return {
+      ok: true,
+      connection: {
+        kind: "telegram",
+        agent_id: String(row.agent_id || "").trim(),
+        thread_id: String(row.bot_id || row.bot_username || row.agent_id || "").trim(),
+        bot_token: String(row.bot_token || "").trim(),
+        security_enabled: Boolean(row.security_enabled),
+        pending_access_requests: normalizeJsonArray(row.pending_access_requests),
+        allowed_chat_users: normalizeJsonArray(row.allowed_chat_users),
+      },
+    };
+  }
 
   if (channel === "whatsapp") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
@@ -1249,6 +1398,67 @@ async function sendWhatsAppReadStatus({ accessToken, phoneNumberId, messageId })
   return { ok: true };
 }
 
+async function sendTelegramChatAction({ botToken, chatId, action = "typing" }) {
+  if (!botToken || !chatId) return { ok: false, status: 400, error: "missing telegram action inputs" };
+  const endpoint = `https://api.telegram.org/bot${botToken}/sendChatAction`;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        action,
+      }),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Telegram sendChatAction unavailable" };
+  }
+  if (!response.ok) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: body || "Telegram sendChatAction error",
+    };
+  }
+  return { ok: true };
+}
+
+async function sendTelegramTextReply({ botToken, chatId, text }) {
+  if (!botToken || !chatId) return { ok: false, status: 400, error: "missing telegram send inputs" };
+  const endpoint = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: String(text || ""),
+        parse_mode: "Markdown",
+      }),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Telegram sendMessage unavailable" };
+  }
+  if (!response.ok) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: body || "Telegram sendMessage error",
+    };
+  }
+  return { ok: true };
+}
+
 async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/messages`);
   endpoint.searchParams.set("access_token", pageAccessToken);
@@ -1298,14 +1508,17 @@ function buildChannelPrompt({ systemRole, chunks, nowIso, channel }) {
     sections.push(systemRole.trim());
   }
   const isWhatsApp = channel === "whatsapp";
+  const isTelegram = channel === "telegram";
   sections.push(
     [
       "SYSTEM RULES",
       isWhatsApp
         ? "You are replying inside WhatsApp chat."
+        : isTelegram
+          ? "You are replying inside Telegram chat."
         : "You are replying inside Instagram/Messenger chat.",
-      isWhatsApp ? "Use concise chat style." : "Use plain text only.",
-      ...(isWhatsApp
+      isWhatsApp || isTelegram ? "Use concise chat style." : "Use plain text only.",
+      ...(isWhatsApp || isTelegram
         ? []
         : [
             "Do not use Markdown symbols like **, *, _, #, or code fences.",
@@ -1495,6 +1708,8 @@ async function processIncomingMessage({ event, connection, headers }) {
     const finalReply =
       event.channel === "whatsapp"
         ? formatReplyForWhatsAppText(replyRaw)
+        : event.channel === "telegram"
+          ? formatReplyForTelegramText(replyRaw)
         : formatReplyForMetaText(replyRaw);
     if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
 
@@ -1549,6 +1764,8 @@ async function processIncomingMessage({ event, connection, headers }) {
   const reply =
     event.channel === "whatsapp"
       ? formatReplyForWhatsAppText(replyRaw)
+      : event.channel === "telegram"
+        ? formatReplyForTelegramText(replyRaw)
       : formatReplyForMetaText(replyRaw);
   if (!reply) return { ok: false, status: 502, error: "Empty model output" };
 
@@ -1618,27 +1835,63 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const signature = await verifyMetaWebhookSignature(req);
-    if (!signature.ok) {
-      await insertMetaWebhookDebugMessage({
-        supId: process.env.SUP_ID,
-        supKey: process.env.SUP_KEY,
-        event: {
-          object: String(req?.body?.object || ""),
-          field: "",
-          lookupId: "",
-          senderId: "",
-          recipientId: "",
-          messageId: "",
-          text: "",
-        },
-        raw: { stage: "signature_failed", reason: signature.reason },
-      });
-      res.status(403).json({ error: "Invalid webhook signature" });
-      return;
+    const payload = req.body ?? {};
+    const objectType = String(payload?.object || "").toLowerCase();
+    const isTelegramPayload =
+      Number.isFinite(Number(payload?.update_id)) ||
+      payload?.message ||
+      payload?.edited_message ||
+      payload?.callback_query;
+    if (isTelegramPayload) {
+      const expectedTelegramSecret = String(process.env.TELEGRAM_WEBHOOK_SECRET || "").trim();
+      if (expectedTelegramSecret) {
+        const actualTelegramSecret = String(
+          req?.headers?.["x-telegram-bot-api-secret-token"] || ""
+        ).trim();
+        if (!actualTelegramSecret || actualTelegramSecret !== expectedTelegramSecret) {
+          await insertMetaWebhookDebugMessage({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            event: {
+              object: "telegram",
+              field: "",
+              lookupId: "",
+              senderId: "",
+              recipientId: "",
+              messageId: "",
+              text: "",
+            },
+            raw: { stage: "telegram_secret_failed" },
+          });
+          res.status(403).json({ error: "Invalid telegram secret" });
+          return;
+        }
+      }
+    }
+    const shouldVerifyMetaSignature =
+      objectType === "page" || objectType === "instagram" || objectType === "whatsapp_business_account";
+    if (shouldVerifyMetaSignature) {
+      const signature = await verifyMetaWebhookSignature(req);
+      if (!signature.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event: {
+            object: String(req?.body?.object || ""),
+            field: "",
+            lookupId: "",
+            senderId: "",
+            recipientId: "",
+            messageId: "",
+            text: "",
+          },
+          raw: { stage: "signature_failed", reason: signature.reason },
+        });
+        res.status(403).json({ error: "Invalid webhook signature" });
+        return;
+      }
     }
 
-    const payload = req.body ?? {};
     const events = toWebhookEvents(payload);
     if (events.length === 0) {
       res.status(200).json({ ok: true, processed: 0 });
@@ -1652,6 +1905,15 @@ module.exports = async function handler(req, res) {
     for (const event of events) {
       if (event.eventId && processedEventIds.has(event.eventId)) continue;
       if (event.eventId) processedEventIds.add(event.eventId);
+
+      if (isTelegramPayload) {
+        const queryAgentIdRaw =
+          req?.query?.telegram_agent_id ?? req?.query?.agent_id ?? req?.query?.telegramAgentId;
+        const queryAgentId = Array.isArray(queryAgentIdRaw)
+          ? String(queryAgentIdRaw[0] || "").trim()
+          : String(queryAgentIdRaw || "").trim();
+        event.lookupId = queryAgentId;
+      }
 
       await insertMetaWebhookDebugMessage({
         supId: process.env.SUP_ID,
@@ -1706,7 +1968,113 @@ module.exports = async function handler(req, res) {
         },
       });
 
+      if (connectionResult.connection?.kind === "telegram") {
+        const securityEnabled = Boolean(connectionResult.connection.security_enabled);
+        if (securityEnabled) {
+          const chatIdStr = String(event.recipientId || "").trim();
+          const allowedUsers = normalizeJsonArray(connectionResult.connection.allowed_chat_users);
+          const pendingRequests = normalizeJsonArray(connectionResult.connection.pending_access_requests);
+          const isAllowed = allowedUsers.some(
+            (item) => String(item?.chat_id || "").trim() === chatIdStr
+          );
+          const startIdentifier = extractTelegramStartIdentifier(event.text);
+          const isStartCommand = /^\/start(?:@\w+)?(?:\s+.+)?$/i.test(String(event.text || "").trim());
+
+          if (isStartCommand && !isAllowed) {
+            const telegramFrom =
+              event?.rawItem?.message?.from ||
+              event?.rawItem?.edited_message?.from ||
+              event?.rawItem?.callback_query?.from ||
+              {};
+            const requestItem = {
+              chat_id: chatIdStr,
+              identifier: startIdentifier,
+              username: String(telegramFrom?.username || ""),
+              first_name: String(telegramFrom?.first_name || ""),
+              last_name: String(telegramFrom?.last_name || ""),
+              requested_at: new Date().toISOString(),
+            };
+            const nextPending = [
+              ...pendingRequests.filter(
+                (item) => String(item?.chat_id || "").trim() !== chatIdStr
+              ),
+              requestItem,
+            ];
+            await updateTelegramPendingRequests({
+              supId: process.env.SUP_ID,
+              supKey: process.env.SUP_KEY,
+              agentId: connectionResult.connection.agent_id,
+              pendingAccessRequests: nextPending,
+            });
+            connectionResult.connection.pending_access_requests = nextPending;
+          }
+
+          let securityReply = "";
+          if (isStartCommand) {
+            securityReply = isAllowed
+              ? "You are already approved. Your Telegram connection is active."
+              : "Access request submitted. Please wait for approval in Live Channels.";
+          } else if (!isAllowed) {
+            securityReply = "You are not approved yet. Send /start YourName to request access.";
+          }
+
+          if (securityReply) {
+            const tgSecuritySend = await sendTelegramTextReply({
+              botToken: connectionResult.connection.bot_token,
+              chatId: chatIdStr,
+              text: securityReply,
+            });
+            await insertMetaWebhookDebugMessage({
+              supId: process.env.SUP_ID,
+              supKey: process.env.SUP_KEY,
+              event,
+              raw: tgSecuritySend.ok
+                ? {
+                    stage: "telegram_security_reply_sent",
+                    channel: event.channel,
+                    recipient_id: chatIdStr,
+                    security_enabled: true,
+                    allowed: isAllowed,
+                  }
+                : {
+                    stage: "telegram_security_reply_failed",
+                    channel: event.channel,
+                    recipient_id: chatIdStr,
+                    security_enabled: true,
+                    allowed: isAllowed,
+                    status: tgSecuritySend?.status ?? null,
+                    error: tgSecuritySend?.error ?? "Unknown telegram security send error",
+                  },
+            });
+            if (tgSecuritySend.ok) processedCount += 1;
+            continue;
+          }
+        }
+      }
+
       const typingStartedAt = Date.now();
+      const shouldUseTelegramTyping = connectionResult.connection?.kind === "telegram";
+      if (shouldUseTelegramTyping) {
+        const tgTypingResult = await sendTelegramChatAction({
+          botToken: connectionResult.connection.bot_token,
+          chatId: event.recipientId,
+          action: "typing",
+        });
+        if (!tgTypingResult.ok) {
+          await insertMetaWebhookDebugMessage({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            event,
+            raw: {
+              stage: "telegram_typing_failed",
+              channel: event.channel,
+              recipient_id: event.recipientId,
+              status: tgTypingResult?.status ?? null,
+              error: tgTypingResult?.error ?? "Unknown telegram typing error",
+            },
+          });
+        }
+      }
       if (connectionResult.connection?.kind === "whatsapp") {
         const readStatusResult = await sendWhatsAppReadStatus({
           accessToken: connectionResult.connection.access_token,
@@ -1838,6 +2206,12 @@ module.exports = async function handler(req, res) {
               recipientId: event.senderId,
               text: handled.reply,
             })
+          : connectionResult.connection?.kind === "telegram"
+            ? await sendTelegramTextReply({
+                botToken: connectionResult.connection.bot_token,
+                chatId: event.recipientId,
+                text: handled.reply,
+              })
           : await sendMetaTextReply({
               pageAccessToken: connectionResult.connection.access_token,
               recipientId: event.senderId,
