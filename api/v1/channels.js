@@ -8,12 +8,49 @@ const { saveMessage } = require("../../scripts/internal/saveMessage");
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
+const META_MIN_TYPING_MS = Math.max(
+  0,
+  Number.isFinite(Number(process.env.META_MIN_TYPING_MS))
+    ? Math.floor(Number(process.env.META_MIN_TYPING_MS))
+    : 1200
+);
 const XAI_MODEL_FALLBACKS = [
   PRIMARY_MODEL,
   "grok-4-1-fast-non-reasoning",
   "grok-4-fast-non-reasoning",
   "grok-4.1-fast-non-reasoning",
 ];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function formatReplyForMetaText(text) {
+  let output = String(text || "");
+  if (!output.trim()) return "";
+
+  output = output
+    .replace(/\r\n/g, "\n")
+    .replace(/```[\s\S]*?```/g, (block) => block.replace(/```/g, ""))
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/_([^_]+)_/g, "$1")
+    .replace(/~~([^~]+)~~/g, "$1")
+    .replace(/^\s*[-*]\s+/gm, "• ")
+    .replace(/^\s*\d+\.\s+/gm, "• ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  // Messenger/Instagram text rendering is plain, keep responses compact.
+  const maxLen = 1800;
+  if (output.length > maxLen) {
+    output = `${output.slice(0, maxLen - 1).trimEnd()}…`;
+  }
+
+  return output;
+}
 
 function toOpenAiInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
@@ -314,6 +351,38 @@ async function sendMetaTextReply({ pageAccessToken, recipientId, text }) {
   return { ok: true };
 }
 
+async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
+  const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/messages`);
+  endpoint.searchParams.set("access_token", pageAccessToken);
+
+  try {
+    const response = await fetch(endpoint.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        recipient: { id: recipientId },
+        sender_action: action,
+      }),
+    });
+
+    if (!response.ok) {
+      let body = "";
+      try {
+        body = await response.text();
+      } catch (_) {}
+      return {
+        ok: false,
+        status: response.status || 502,
+        error: body || "Meta sender action API error",
+      };
+    }
+  } catch (_) {
+    return { ok: false, status: 502, error: "Meta sender action API unavailable" };
+  }
+
+  return { ok: true };
+}
+
 async function handleIncomingMessage({ supId, supKey, event, page }) {
   const agentId = page.agent_id;
   const anonId = `${event.channel}:${event.senderId}`;
@@ -376,6 +445,8 @@ async function handleIncomingMessage({ supId, supKey, event, page }) {
     [
       "SYSTEM RULES",
       "Reply in plain text suitable for messaging apps.",
+      "Do not use Markdown symbols like **, *, _, #, or code fences.",
+      "Use simple plain lines and short bullet lines only.",
       "Do not claim capabilities you cannot execute.",
     ].join("\n")
   );
@@ -397,7 +468,7 @@ async function handleIncomingMessage({ supId, supKey, event, page }) {
   });
   if (!completion.ok) return { ok: false, status: completion.status, error: completion.error };
 
-  const reply = completion.data?.reply ?? "";
+  const reply = formatReplyForMetaText(completion.data?.reply ?? "");
   if (!reply) return { ok: false, status: 502, error: "Empty model output" };
 
   const saveResult = await saveMessage({
@@ -508,6 +579,40 @@ module.exports = async function handler(req, res) {
         },
       });
 
+      const typingStartedAt = Date.now();
+      const typingOnResult = await sendMetaSenderAction({
+        pageAccessToken: pageResult.page.page_access_token,
+        recipientId: event.senderId,
+        action: "typing_on",
+      });
+      const typingOnOk = Boolean(typingOnResult.ok);
+      if (!typingOnResult.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "typing_on_failed",
+            channel: event.channel,
+            recipient_id: event.senderId,
+            status: typingOnResult?.status ?? null,
+            error: typingOnResult?.error ?? "Unknown typing_on error",
+          },
+        });
+      } else {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "typing_on_ok",
+            channel: event.channel,
+            recipient_id: event.senderId,
+            min_typing_ms: META_MIN_TYPING_MS,
+          },
+        });
+      }
+
       const handled = await handleIncomingMessage({
         supId: process.env.SUP_ID,
         supKey: process.env.SUP_KEY,
@@ -515,6 +620,13 @@ module.exports = async function handler(req, res) {
         page: pageResult.page,
       });
       if (!handled.ok) {
+        if (typingOnOk && META_MIN_TYPING_MS > 0) {
+          const elapsed = Date.now() - typingStartedAt;
+          const waitMs = META_MIN_TYPING_MS - elapsed;
+          if (waitMs > 0) {
+            await sleep(waitMs);
+          }
+        }
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -525,6 +637,11 @@ module.exports = async function handler(req, res) {
             status: handled?.status ?? null,
             error: handled?.error ?? "Unknown processing error",
           },
+        });
+        await sendMetaSenderAction({
+          pageAccessToken: pageResult.page.page_access_token,
+          recipientId: event.senderId,
+          action: "typing_off",
         });
         continue;
       }
@@ -539,6 +656,25 @@ module.exports = async function handler(req, res) {
           reply: handled.reply ?? "",
         },
       });
+
+      if (typingOnOk && META_MIN_TYPING_MS > 0) {
+        const elapsed = Date.now() - typingStartedAt;
+        const waitMs = META_MIN_TYPING_MS - elapsed;
+        if (waitMs > 0) {
+          await sleep(waitMs);
+          await insertMetaWebhookDebugMessage({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            event,
+            raw: {
+              stage: "typing_delay_applied",
+              channel: event.channel,
+              waited_ms: waitMs,
+              min_typing_ms: META_MIN_TYPING_MS,
+            },
+          });
+        }
+      }
 
       const sendResult = await sendMetaTextReply({
         pageAccessToken: pageResult.page.page_access_token,
@@ -568,6 +704,26 @@ module.exports = async function handler(req, res) {
             recipient_id: event.senderId,
             status: sendResult?.status ?? null,
             error: sendResult?.error ?? "Unknown send error",
+          },
+        });
+      }
+
+      const typingOffResult = await sendMetaSenderAction({
+        pageAccessToken: pageResult.page.page_access_token,
+        recipientId: event.senderId,
+        action: "typing_off",
+      });
+      if (!typingOffResult.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "typing_off_failed",
+            channel: event.channel,
+            recipient_id: event.senderId,
+            status: typingOffResult?.status ?? null,
+            error: typingOffResult?.error ?? "Unknown typing_off error",
           },
         });
       }
