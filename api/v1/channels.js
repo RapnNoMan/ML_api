@@ -118,6 +118,7 @@ function toWebhookEvents(payload) {
   for (const entry of entries) {
     const messaging = Array.isArray(entry?.messaging) ? entry.messaging : [];
     const entryId = String(entry?.id || "").trim();
+    const field = String(entry?.changes?.[0]?.field || "messaging").trim();
 
     for (const item of messaging) {
       const isEcho = Boolean(item?.message?.is_echo);
@@ -131,15 +132,50 @@ function toWebhookEvents(payload) {
 
       events.push({
         eventId: String(item?.message?.mid || item?.timestamp || "").trim(),
+        object: objectType,
+        field,
         channel: objectType === "instagram" ? "instagram" : "messenger",
         lookupId: entryId || String(item?.recipient?.id || "").trim(),
         senderId,
+        recipientId: String(item?.recipient?.id || "").trim(),
+        messageId: String(item?.message?.mid || "").trim(),
         text: text || "[User sent an attachment]",
+        rawItem: item,
       });
     }
   }
 
   return events;
+}
+
+async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
+  if (!supId || !supKey) return;
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = `${baseUrl}/meta_webhook_debug_messages`;
+  const payload = {
+    object: String(event?.object || ""),
+    field: String(event?.field || ""),
+    entry_id: String(event?.lookupId || ""),
+    sender_id: String(event?.senderId || ""),
+    recipient_id: String(event?.recipientId || ""),
+    message_id: String(event?.messageId || event?.eventId || ""),
+    message_text: String(event?.text || ""),
+    raw: raw && typeof raw === "object" ? raw : { note: String(raw || "") },
+  };
+
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {}
 }
 
 async function fetchChannelPage({ supId, supKey, channel, lookupId }) {
@@ -387,6 +423,19 @@ module.exports = async function handler(req, res) {
       if (event.eventId && processedEventIds.has(event.eventId)) continue;
       if (event.eventId) processedEventIds.add(event.eventId);
 
+      await insertMetaWebhookDebugMessage({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        event,
+        raw: {
+          stage: "received",
+          channel: event.channel,
+          lookup_id: event.lookupId,
+          webhook_object: payload?.object ?? null,
+          raw_item: event.rawItem ?? null,
+        },
+      });
+
       const cacheKey = `${event.channel}:${event.lookupId}`;
       let pageResult = pageCache.get(cacheKey);
       if (!pageResult) {
@@ -398,7 +447,34 @@ module.exports = async function handler(req, res) {
         });
         pageCache.set(cacheKey, pageResult);
       }
-      if (!pageResult?.ok) continue;
+      if (!pageResult?.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "page_lookup_failed",
+            channel: event.channel,
+            lookup_id: event.lookupId,
+            status: pageResult?.status ?? null,
+            error: pageResult?.error ?? "Unknown page lookup error",
+          },
+        });
+        continue;
+      }
+
+      await insertMetaWebhookDebugMessage({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        event,
+        raw: {
+          stage: "page_lookup_ok",
+          channel: event.channel,
+          lookup_id: event.lookupId,
+          agent_id: pageResult.page?.agent_id ?? null,
+          page_id: pageResult.page?.page_id ?? null,
+        },
+      });
 
       const handled = await handleIncomingMessage({
         supId: process.env.SUP_ID,
@@ -406,7 +482,31 @@ module.exports = async function handler(req, res) {
         event,
         page: pageResult.page,
       });
-      if (!handled.ok) continue;
+      if (!handled.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "handle_failed",
+            channel: event.channel,
+            status: handled?.status ?? null,
+            error: handled?.error ?? "Unknown processing error",
+          },
+        });
+        continue;
+      }
+
+      await insertMetaWebhookDebugMessage({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        event,
+        raw: {
+          stage: "reply_generated",
+          channel: event.channel,
+          reply: handled.reply ?? "",
+        },
+      });
 
       const sendResult = await sendMetaTextReply({
         pageAccessToken: pageResult.page.page_access_token,
@@ -414,12 +514,53 @@ module.exports = async function handler(req, res) {
         text: handled.reply,
       });
       if (sendResult.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "send_ok",
+            channel: event.channel,
+            recipient_id: event.senderId,
+          },
+        });
         processedCount += 1;
+      } else {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "send_failed",
+            channel: event.channel,
+            recipient_id: event.senderId,
+            status: sendResult?.status ?? null,
+            error: sendResult?.error ?? "Unknown send error",
+          },
+        });
       }
     }
 
     res.status(200).json({ ok: true, processed: processedCount });
   } catch (error) {
+    await insertMetaWebhookDebugMessage({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      event: {
+        object: String(req?.body?.object || ""),
+        field: "",
+        lookupId: "",
+        senderId: "",
+        recipientId: "",
+        messageId: "",
+        text: "",
+      },
+      raw: {
+        stage: "handler_exception",
+        error: String(error?.message || error || "Unknown error"),
+        request_body: req?.body ?? null,
+      },
+    });
     res.status(200).json({
       ok: true,
       processed: 0,
