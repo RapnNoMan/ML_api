@@ -72,6 +72,27 @@ function formatReplyForMetaText(text) {
   return output;
 }
 
+function formatReplyForWhatsAppText(text) {
+  let output = String(text || "");
+  if (!output.trim()) return "";
+
+  output = output
+    .replace(/\r\n/g, "\n")
+    // Convert Markdown bold to WhatsApp bold.
+    .replace(/\*\*([^*]+)\*\*/g, "*$1*")
+    // Normalize markdown list markers to plain hyphen bullets.
+    .replace(/^\s*[-*]\s+/gm, "- ")
+    .replace(/^\s*\d+\.\s+/gm, "- ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const maxLen = 3500;
+  if (output.length > maxLen) {
+    output = `${output.slice(0, maxLen - 3).trimEnd()}...`;
+  }
+  return output;
+}
+
 function sanitizeIncomingUserText(value) {
   const raw = String(value || "").replace(/\0/g, "");
   const trimmed = raw.trim();
@@ -1193,6 +1214,41 @@ async function sendWhatsAppTextReply({ accessToken, phoneNumberId, recipientId, 
   return { ok: true };
 }
 
+async function sendWhatsAppReadStatus({ accessToken, phoneNumberId, messageId }) {
+  if (!messageId) return { ok: false, status: 400, error: "missing_message_id_for_read_status" };
+  const endpoint = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        status: "read",
+        message_id: messageId,
+      }),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "WhatsApp read status API unavailable" };
+  }
+
+  if (!response.ok) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: body || "WhatsApp read status API error",
+    };
+  }
+  return { ok: true };
+}
+
 async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/messages`);
   endpoint.searchParams.set("access_token", pageAccessToken);
@@ -1438,7 +1494,7 @@ async function processIncomingMessage({ event, connection, headers }) {
 
     const finalReply =
       event.channel === "whatsapp"
-        ? String(replyRaw || "").trim()
+        ? formatReplyForWhatsAppText(replyRaw)
         : formatReplyForMetaText(replyRaw);
     if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
 
@@ -1492,7 +1548,7 @@ async function processIncomingMessage({ event, connection, headers }) {
 
   const reply =
     event.channel === "whatsapp"
-      ? String(replyRaw || "").trim()
+      ? formatReplyForWhatsAppText(replyRaw)
       : formatReplyForMetaText(replyRaw);
   if (!reply) return { ok: false, status: 502, error: "Empty model output" };
 
@@ -1651,6 +1707,32 @@ module.exports = async function handler(req, res) {
       });
 
       const typingStartedAt = Date.now();
+      if (connectionResult.connection?.kind === "whatsapp") {
+        const readStatusResult = await sendWhatsAppReadStatus({
+          accessToken: connectionResult.connection.access_token,
+          phoneNumberId: connectionResult.connection.phone_number_id,
+          messageId: event.messageId,
+        });
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: readStatusResult.ok
+            ? {
+                stage: "whatsapp_read_ok",
+                channel: event.channel,
+                message_id: event.messageId,
+              }
+            : {
+                stage: "whatsapp_read_failed",
+                channel: event.channel,
+                message_id: event.messageId,
+                status: readStatusResult?.status ?? null,
+                error: readStatusResult?.error ?? "Unknown WhatsApp read status error",
+              },
+        });
+      }
+
       const shouldUseMetaTyping = connectionResult.connection?.kind === "meta";
       const typingOnResult = shouldUseMetaTyping
         ? await sendMetaSenderAction({
