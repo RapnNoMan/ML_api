@@ -1,12 +1,18 @@
+const { createHmac, timingSafeEqual } = require("node:crypto");
 const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
+const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getRelevantKnowledgeChunks");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
+const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
+const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
+const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
+const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 const META_MIN_TYPING_MS = Math.max(
   0,
@@ -25,6 +31,22 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function normalizeCountry(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim().toUpperCase();
+  return text || null;
+}
+
+function getRequestCountry(headers) {
+  if (!headers || typeof headers !== "object") return null;
+  return (
+    normalizeCountry(headers["x-vercel-ip-country"]) ||
+    normalizeCountry(headers["cf-ipcountry"]) ||
+    normalizeCountry(headers["x-country-code"]) ||
+    null
+  );
+}
+
 function formatReplyForMetaText(text) {
   let output = String(text || "");
   if (!output.trim()) return "";
@@ -38,137 +60,24 @@ function formatReplyForMetaText(text) {
     .replace(/__([^_]+)__/g, "$1")
     .replace(/_([^_]+)_/g, "$1")
     .replace(/~~([^~]+)~~/g, "$1")
-    .replace(/^\s*[-*]\s+/gm, "• ")
-    .replace(/^\s*\d+\.\s+/gm, "• ")
+    .replace(/^\s*[-*]\s+/gm, "- ")
+    .replace(/^\s*\d+\.\s+/gm, "- ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  // Messenger/Instagram text rendering is plain, keep responses compact.
   const maxLen = 1800;
   if (output.length > maxLen) {
-    output = `${output.slice(0, maxLen - 1).trimEnd()}…`;
+    output = `${output.slice(0, maxLen - 3).trimEnd()}...`;
   }
-
   return output;
 }
 
-function toOpenAiInputItems(messages) {
-  return (Array.isArray(messages) ? messages : []).map((message) => {
-    const role = message?.role === "assistant" ? "assistant" : "user";
-    const text = String(message?.content ?? "");
-    return {
-      type: "message",
-      role,
-      content: [
-        {
-          type: role === "assistant" ? "output_text" : "input_text",
-          text,
-        },
-      ],
-    };
-  });
-}
-
-function extractResponseText(payload) {
-  if (!payload) return "";
-  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
-    return payload.output_text;
-  }
-
-  const output = Array.isArray(payload?.output) ? payload.output : [];
-  for (const item of output) {
-    const content = Array.isArray(item?.content) ? item.content : [];
-    for (const part of content) {
-      if (
-        (part?.type === "output_text" || part?.type === "text") &&
-        typeof part?.text === "string" &&
-        part.text.trim()
-      ) {
-        return part.text;
-      }
-    }
-  }
-
-  return "";
-}
-
-async function getXAiChatCompletion({ apiKey, model, instructions, messages }) {
-  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
-
-  const uniqueModels = Array.from(
-    new Set(
-      [model, ...XAI_MODEL_FALLBACKS]
-        .map((item) => String(item || "").trim())
-        .filter(Boolean)
-    )
-  );
-
-  let lastError = null;
-  for (const modelName of uniqueModels) {
-    const requestBody = {
-      model: modelName,
-      instructions: String(instructions || ""),
-      input: toOpenAiInputItems(messages),
-      text: { verbosity: "low" },
-    };
-
-    let response;
-    try {
-      response = await fetch(XAI_RESPONSES_API_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(requestBody),
-      });
-    } catch (_) {
-      return { ok: false, status: 502, error: "Network error calling xAI" };
-    }
-
-    if (!response.ok) {
-      let errText = "";
-      try {
-        errText = await response.text();
-      } catch (_) {}
-
-      lastError = {
-        status: response.status || 502,
-        error: errText || "xAI request failed",
-      };
-      const isModelNotFound =
-        response.status === 400 && /model not found/i.test(String(errText || ""));
-      if (isModelNotFound) continue;
-
-      return {
-        ok: false,
-        status: response.status || 502,
-        error: errText || "xAI request failed",
-      };
-    }
-
-    let payload;
-    try {
-      payload = await response.json();
-    } catch (_) {
-      return { ok: false, status: 502, error: "Invalid JSON from xAI" };
-    }
-
-    const rawText = extractResponseText(payload);
-    if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
-
-    return {
-      ok: true,
-      data: { reply: rawText },
-      usage: payload?.usage ?? null,
-    };
-  }
-
-  return {
-    ok: false,
-    status: lastError?.status || 502,
-    error: lastError?.error || "xAI request failed",
-  };
+function sanitizeIncomingUserText(value) {
+  const raw = String(value || "").replace(/\0/g, "");
+  const trimmed = raw.trim();
+  const maxLen = 4000;
+  if (trimmed.length <= maxLen) return trimmed;
+  return trimmed.slice(0, maxLen);
 }
 
 function normalizeIncomingMessage(value) {
@@ -179,6 +88,805 @@ function normalizeIncomingMessage(value) {
     .replace(/\s+/g, " ");
 }
 
+function toOpenAiInputItems(messages) {
+  return (Array.isArray(messages) ? messages : []).map((message) => {
+    const role = message?.role === "assistant" ? "assistant" : "user";
+    const text = String(message?.content ?? "");
+    return {
+      type: "message",
+      role,
+      content: [{ type: role === "assistant" ? "output_text" : "input_text", text }],
+    };
+  });
+}
+
+function extractResponseText(payload) {
+  if (!payload) return "";
+  if (typeof payload?.output_text === "string" && payload.output_text.trim()) {
+    return payload.output_text;
+  }
+  const content = Array.isArray(payload?.content)
+    ? payload.content
+    : Array.isArray(payload?.output)
+      ? payload.output.flatMap((item) =>
+          Array.isArray(item?.content) ? item.content : []
+        )
+      : [];
+  const textParts = [];
+  for (const item of content) {
+    if (
+      (item?.type === "text" || item?.type === "output_text") &&
+      typeof item?.text === "string" &&
+      item.text.trim()
+    ) {
+      textParts.push(item.text);
+    }
+  }
+  return textParts.join("");
+}
+
+function extractFunctionCalls(payload, fallbackOutputItems = []) {
+  const output = Array.isArray(payload?.content)
+    ? payload.content
+    : Array.isArray(payload?.output)
+      ? payload.output
+      : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
+  const calls = [];
+  for (const item of output) {
+    if (item?.type !== "tool_use" && item?.type !== "function_call") continue;
+    let variables = item?.input && typeof item.input === "object" ? item.input : {};
+    if (item?.type === "function_call" && typeof item?.arguments === "string") {
+      try {
+        const parsed = JSON.parse(item.arguments);
+        if (parsed && typeof parsed === "object") variables = parsed;
+      } catch (_) {}
+    }
+    calls.push({
+      action_key: typeof item?.name === "string" ? item.name : "",
+      variables,
+      call_id: item?.id ?? item?.call_id ?? null,
+    });
+  }
+  return calls;
+}
+
+function extractAssistantBlocks(payload, fallbackOutputItems = []) {
+  const output = Array.isArray(payload?.content)
+    ? payload.content
+    : Array.isArray(payload?.output)
+      ? payload.output
+      : (Array.isArray(fallbackOutputItems) ? fallbackOutputItems : []);
+  const blocks = [];
+
+  for (const item of output) {
+    if (item?.type === "text" && typeof item?.text === "string") {
+      blocks.push({ type: "text", text: item.text });
+      continue;
+    }
+    if (item?.type === "tool_use") {
+      blocks.push({
+        type: "tool_use",
+        id: item?.id ?? null,
+        name: typeof item?.name === "string" ? item.name : "",
+        input: item?.input && typeof item.input === "object" ? item.input : {},
+      });
+      continue;
+    }
+    if (item?.type === "function_call") {
+      let input = {};
+      if (typeof item?.arguments === "string") {
+        try {
+          const parsed = JSON.parse(item.arguments);
+          if (parsed && typeof parsed === "object") input = parsed;
+        } catch (_) {}
+      }
+      blocks.push({
+        type: "tool_use",
+        id: item?.call_id ?? null,
+        name: typeof item?.name === "string" ? item.name : "",
+        input,
+      });
+      continue;
+    }
+    if (item?.type === "message") {
+      const content = Array.isArray(item?.content) ? item.content : [];
+      for (const part of content) {
+        if (
+          (part?.type === "output_text" || part?.type === "text") &&
+          typeof part?.text === "string"
+        ) {
+          blocks.push({ type: "text", text: part.text });
+        }
+      }
+    }
+  }
+
+  return blocks;
+}
+function toXAiInputItems(messages, assistantBlocks, toolResults) {
+  const input = [...toOpenAiInputItems(messages)];
+
+  for (const item of Array.isArray(assistantBlocks) ? assistantBlocks : []) {
+    if (item?.type === "text") {
+      input.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: String(item.text ?? "") }],
+      });
+      continue;
+    }
+    if (item?.type === "tool_use") {
+      input.push({
+        type: "function_call",
+        call_id: item?.id ?? null,
+        name: String(item?.name ?? ""),
+        arguments: JSON.stringify(item?.input && typeof item.input === "object" ? item.input : {}),
+      });
+    }
+  }
+
+  for (const result of Array.isArray(toolResults) ? toolResults : []) {
+    input.push({
+      type: "function_call_output",
+      call_id: result?.call_id ?? null,
+      output: JSON.stringify(result),
+    });
+  }
+
+  return input;
+}
+
+function createXAiRequestBody({ model, instructions, messages, tools, inputItems }) {
+  const systemRules = [
+    "TOOL RULES (MUST FOLLOW):",
+    "- Use provided tools when needed.",
+    "- Never call a tool unless required parameters are present.",
+    "- If a tool is needed, call it before user-facing final answer text.",
+  ].join("\n");
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const requestBody = {
+    model,
+    instructions: finalInstructions,
+    input: Array.isArray(inputItems) ? inputItems : toOpenAiInputItems(messages),
+    text: { verbosity: "low" },
+    stream: false,
+  };
+
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = tools;
+    requestBody.tool_choice = "auto";
+  }
+
+  return requestBody;
+}
+
+async function callXAiWithModel({ apiKey, model, instructions, messages, tools, inputItems }) {
+  const requestBody = createXAiRequestBody({
+    model,
+    instructions,
+    messages,
+    tools,
+    inputItems,
+  });
+
+  let response;
+  try {
+    response = await fetch(XAI_RESPONSES_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling xAI" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "xAI request failed",
+    };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Invalid JSON from xAI" };
+  }
+
+  const actionCalls = extractFunctionCalls(payload);
+  const assistantBlocks = extractAssistantBlocks(payload);
+  if (actionCalls.length > 0) {
+    return {
+      ok: true,
+      data: { mode: "actions_needed", reply: "", action_calls: actionCalls },
+      usage: payload?.usage ?? null,
+      output_items: assistantBlocks,
+    };
+  }
+
+  const rawText = extractResponseText(payload);
+  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+
+  return {
+    ok: true,
+    data: { mode: "reply", reply: rawText, action_calls: [] },
+    usage: payload?.usage ?? null,
+    output_items: assistantBlocks,
+  };
+}
+
+async function getXAiChatCompletion({ apiKey, model, instructions, messages, tools, inputItems }) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+  const uniqueModels = Array.from(
+    new Set(
+      [model, ...XAI_MODEL_FALLBACKS]
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    )
+  );
+
+  let lastError = null;
+  for (const modelName of uniqueModels) {
+    const result = await callXAiWithModel({
+      apiKey,
+      model: modelName,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+    });
+    if (result.ok) return result;
+
+    lastError = { status: result.status, error: result.error };
+    const isModelNotFound =
+      result.status === 400 && /model not found/i.test(String(result.error || ""));
+    if (isModelNotFound) continue;
+    return result;
+  }
+
+  return {
+    ok: false,
+    status: lastError?.status || 502,
+    error: lastError?.error || "xAI request failed",
+  };
+}
+
+function parseActionBodyTemplate(bodyTemplate) {
+  if (!bodyTemplate) return null;
+  if (typeof bodyTemplate === "object") return bodyTemplate;
+  if (typeof bodyTemplate !== "string") return null;
+  const trimmed = bodyTemplate.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : trimmed;
+  } catch (_) {
+    return trimmed;
+  }
+}
+
+function isJsonSchemaNode(node) {
+  if (!node || typeof node !== "object" || Array.isArray(node)) return false;
+  return (
+    Object.prototype.hasOwnProperty.call(node, "type") ||
+    Object.prototype.hasOwnProperty.call(node, "properties") ||
+    Object.prototype.hasOwnProperty.call(node, "items") ||
+    Object.prototype.hasOwnProperty.call(node, "required") ||
+    Object.prototype.hasOwnProperty.call(node, "additionalProperties")
+  );
+}
+
+function getValueAtPath(source, pathParts) {
+  let current = source;
+  for (const part of pathParts) {
+    if (!current || typeof current !== "object" || !(part in current)) {
+      return undefined;
+    }
+    current = current[part];
+  }
+  return current;
+}
+
+function lookupTemplateValue(variables, pathParts) {
+  if (!Array.isArray(pathParts) || pathParts.length === 0) return undefined;
+  const directValue = getValueAtPath(variables, pathParts);
+  if (directValue !== undefined) return directValue;
+
+  const dottedKey = pathParts.join(".");
+  if (variables && typeof variables === "object" && dottedKey in variables) {
+    return variables[dottedKey];
+  }
+
+  const underscoredKey = pathParts.join("_");
+  if (variables && typeof variables === "object" && underscoredKey in variables) {
+    return variables[underscoredKey];
+  }
+
+  return undefined;
+}
+
+function renderTemplateValue(template, variables) {
+  if (typeof template === "string") {
+    const exactMatch = template.match(/^\{\{\s*([^}]+?)\s*\}\}$/);
+    if (exactMatch) {
+      const value = lookupTemplateValue(
+        variables,
+        exactMatch[1]
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+      return value === undefined ? null : value;
+    }
+    return template.replace(/\{\{\s*([^}]+?)\s*\}\}/g, (_, rawPath) => {
+      const value = lookupTemplateValue(
+        variables,
+        String(rawPath)
+          .split(".")
+          .map((part) => part.trim())
+          .filter(Boolean)
+      );
+      if (value === undefined || value === null) return "";
+      return typeof value === "string" ? value : JSON.stringify(value);
+    });
+  }
+
+  if (Array.isArray(template)) return template.map((item) => renderTemplateValue(item, variables));
+  if (template && typeof template === "object") {
+    const result = {};
+    for (const [key, value] of Object.entries(template)) {
+      result[key] = renderTemplateValue(value, variables);
+    }
+    return result;
+  }
+  return template;
+}
+function materializeSchemaNode(schema, source, pathParts = []) {
+  if (!schema || typeof schema !== "object") return lookupTemplateValue(source, pathParts);
+  const type = Array.isArray(schema.type) ? schema.type[0] : schema.type;
+
+  if (type === "object" || schema.properties) {
+    const properties =
+      schema.properties && typeof schema.properties === "object" ? schema.properties : {};
+    const result = {};
+    for (const [key, childSchema] of Object.entries(properties)) {
+      const value = materializeSchemaNode(childSchema, source, [...pathParts, key]);
+      if (value !== undefined) result[key] = value;
+    }
+    if (Object.keys(result).length > 0) return result;
+    const directObject = lookupTemplateValue(source, pathParts);
+    if (directObject && typeof directObject === "object") return directObject;
+    return pathParts.length === 0 ? {} : undefined;
+  }
+
+  if (type === "array" || schema.items) {
+    const arrayValue = lookupTemplateValue(source, pathParts);
+    if (!Array.isArray(arrayValue)) return undefined;
+    if (!schema.items || typeof schema.items !== "object") return arrayValue;
+    return arrayValue.map((item) => materializeSchemaNode(schema.items, item, []));
+  }
+
+  return lookupTemplateValue(source, pathParts);
+}
+
+function buildActionRequestPayload(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate) return variables;
+  if (typeof parsedTemplate === "string") return renderTemplateValue(parsedTemplate, variables);
+
+  if (isJsonSchemaNode(parsedTemplate)) {
+    const materialized = materializeSchemaNode(parsedTemplate, variables, []);
+    if (materialized && typeof materialized === "object" && !Array.isArray(materialized)) {
+      return materialized;
+    }
+    return variables;
+  }
+
+  return renderTemplateValue(parsedTemplate, variables);
+}
+
+function getMissingRequiredFields(actionDef, variables) {
+  const parsedTemplate = parseActionBodyTemplate(actionDef?.body_template);
+  if (!parsedTemplate || !isJsonSchemaNode(parsedTemplate)) return [];
+  const required = Array.isArray(parsedTemplate.required) ? parsedTemplate.required : [];
+  const source = variables && typeof variables === "object" ? variables : {};
+  const missing = [];
+  for (const field of required) {
+    if (typeof field !== "string" || !field.trim()) continue;
+    const value = lookupTemplateValue(source, [field]);
+    if (value === undefined || value === null || value === "") missing.push(field);
+  }
+  return missing;
+}
+
+function parseFixedOffsetMinutes(timeZone) {
+  if (typeof timeZone !== "string") return null;
+  const match = timeZone.trim().match(/^GMT([+-])(\d{2}):(\d{2})$/i);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1 : 1;
+  return sign * (Number(match[2]) * 60 + Number(match[3]));
+}
+
+function getTimeZoneOffsetMinutes(date, timeZone) {
+  const fixedOffset = parseFixedOffsetMinutes(timeZone);
+  if (fixedOffset !== null) return fixedOffset;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+    const map = {};
+    for (const part of parts) {
+      if (part.type !== "literal") map[part.type] = part.value;
+    }
+    const localMillis = Date.UTC(
+      Number(map.year),
+      Number(map.month) - 1,
+      Number(map.day),
+      Number(map.hour),
+      Number(map.minute),
+      Number(map.second)
+    );
+    return Math.round((localMillis - date.getTime()) / 60000);
+  } catch {
+    return 0;
+  }
+}
+
+function parseLocalToUtcIso(value, timeZone) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+    String(value || "").trim()
+  );
+  if (!match) return String(value || "");
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6] || "0");
+
+  let utcMillis = Date.UTC(year, month - 1, day, hour, minute, second);
+  for (let i = 0; i < 2; i += 1) {
+    const offset = getTimeZoneOffsetMinutes(new Date(utcMillis), timeZone);
+    utcMillis = Date.UTC(year, month - 1, day, hour, minute, second) - offset * 60000;
+  }
+  return new Date(utcMillis).toISOString();
+}
+
+function normalizeRfc3339(value, timeZone) {
+  if (typeof value !== "string") return value;
+  const trimmed = value.trim();
+  if (!trimmed) return value;
+  if (/[zZ]$/.test(trimmed)) return trimmed;
+  if (/[+-]\d{2}:\d{2}$/.test(trimmed)) return trimmed;
+  if (timeZone) return parseLocalToUtcIso(trimmed, timeZone);
+  return `${trimmed}Z`;
+}
+
+function addMinutesToRfc3339(value, minutes) {
+  const ts = Date.parse(String(value || ""));
+  if (!Number.isFinite(ts)) return value;
+  return new Date(ts + Number(minutes) * 60 * 1000).toISOString();
+}
+
+function getHourInTimeZone(isoValue, timeZone) {
+  const date = new Date(String(isoValue || ""));
+  if (!Number.isFinite(date.getTime())) return null;
+  const fixedOffset = parseFixedOffsetMinutes(timeZone);
+  if (fixedOffset !== null) {
+    const local = new Date(date.getTime() + fixedOffset * 60000);
+    return local.getUTCHours();
+  }
+  try {
+    const hourText = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || "UTC",
+      hour: "2-digit",
+      hour12: false,
+    }).format(date);
+    const hour = Number(hourText);
+    return Number.isFinite(hour) ? hour : null;
+  } catch {
+    return null;
+  }
+}
+
+function getMinuteInTimeZone(isoValue, timeZone) {
+  const date = new Date(String(isoValue || ""));
+  if (!Number.isFinite(date.getTime())) return null;
+  const fixedOffset = parseFixedOffsetMinutes(timeZone);
+  if (fixedOffset !== null) {
+    const local = new Date(date.getTime() + fixedOffset * 60000);
+    return local.getUTCMinutes();
+  }
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone: timeZone || "UTC",
+      minute: "2-digit",
+      hour: "2-digit",
+      hour12: false,
+    }).formatToParts(date);
+    const minute = Number(parts.find((p) => p.type === "minute")?.value);
+    return Number.isFinite(minute) ? minute : null;
+  } catch {
+    return null;
+  }
+}
+
+function usageToTokens(usage) {
+  const toFinite = (value) => {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  };
+  const pickMax = (values) => values.reduce((max, value) => Math.max(max, toFinite(value)), 0);
+  const input = pickMax([
+    usage?.input_tokens,
+    usage?.prompt_tokens,
+    usage?.input_text_tokens,
+    usage?.prompt_token_count,
+    usage?.input_token_count,
+  ]);
+  const output = pickMax([
+    usage?.output_tokens,
+    usage?.completion_tokens,
+    usage?.output_text_tokens,
+    usage?.completion_token_count,
+    usage?.output_token_count,
+  ]);
+  return {
+    input: Number.isFinite(input) && input > 0 ? Math.floor(input) : 0,
+    output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
+  };
+}
+async function executeActionCalls({ actionCalls, toolsResult, agentId }) {
+  const toolResults = [];
+  let calendarContext = null;
+
+  for (const call of actionCalls) {
+    const actionDef = toolsResult.actionMap.get(call.action_key);
+    if (!actionDef) {
+      toolResults.push({ call_id: call.call_id ?? null, ok: false, error: "Unknown action" });
+      continue;
+    }
+
+    if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
+      if (!calendarContext) {
+        calendarContext = {
+          timezone: actionDef.timezone || "UTC",
+          duration_mins: actionDef.duration_mins ?? null,
+          open_hour: actionDef.open_hour ?? null,
+          close_hour: actionDef.close_hour ?? null,
+          event_type: actionDef.event_type ?? null,
+        };
+      }
+    }
+
+    let headers = {};
+    if (actionDef.headers && typeof actionDef.headers === "object") {
+      headers = { ...actionDef.headers };
+    } else if (typeof actionDef.headers === "string") {
+      try {
+        const parsed = JSON.parse(actionDef.headers);
+        if (parsed && typeof parsed === "object") headers = { ...parsed };
+      } catch (_) {}
+    }
+
+    const method = String(actionDef.method || "POST").toUpperCase();
+    const variables = call?.variables ?? {};
+    let url = actionDef.url;
+    let requestBody;
+    let requestPayloadForLog = variables;
+
+    if (!url) {
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        tool_args: variables,
+        request: { url: null, method, headers, body: variables },
+        response: { ok: false, status: 400, error: "Unknown action" },
+      });
+      continue;
+    }
+
+    const missingRequiredFields =
+      actionDef.kind === "custom" || actionDef.kind === "zapier" || actionDef.kind === "make"
+        ? getMissingRequiredFields(actionDef, variables)
+        : [];
+    if (missingRequiredFields.length > 0) {
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        tool_args: variables,
+        request: { url, method, headers, body: requestPayloadForLog },
+        response: {
+          ok: false,
+          status: 400,
+          error: "Missing required tool arguments",
+          missing_required_fields: missingRequiredFields,
+        },
+      });
+      continue;
+    }
+
+    if (actionDef.kind === "gmail_send") {
+      const tokenResult = await ensureAccessToken({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        connection: actionDef.gmail_connection,
+      });
+      if (!tokenResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url, method, headers, body: variables },
+          response: { ok: false, status: 401, error: tokenResult.error || "Gmail authorization failed" },
+        });
+        continue;
+      }
+      headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
+      requestPayloadForLog = {
+        raw: buildRawEmail({
+          to: variables?.to,
+          subject: variables?.subject,
+          body: variables?.body,
+          cc: variables?.cc,
+          bcc: variables?.bcc,
+        }),
+      };
+      requestBody = JSON.stringify(requestPayloadForLog);
+      if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    } else if (actionDef.kind === "calendar_create" || actionDef.kind === "calendar_list") {
+      const tokenResult = await ensureCalendarAccessToken({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        clientId: process.env.GOOGLE_CLIENT_ID,
+        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+        connection: actionDef.calendar_connection,
+      });
+      if (!tokenResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url, method, headers, body: variables },
+          response: {
+            ok: false,
+            status: 401,
+            error: tokenResult.error || "Calendar authorization failed",
+          },
+        });
+        continue;
+      }
+      headers.Authorization = `${tokenResult.token_type} ${tokenResult.access_token}`;
+
+      if (actionDef.kind === "calendar_create") {
+        const calendarTimeZone = actionDef.timezone || "UTC";
+        const startTime = normalizeRfc3339(variables?.start_time, calendarTimeZone);
+        const durationMins = Number(actionDef.duration_mins);
+        const effectiveDuration = Number.isFinite(durationMins) && durationMins > 0 ? durationMins : 30;
+        const reducedDuration = Math.max(1, Math.floor(effectiveDuration * 0.95));
+        const endTime = addMinutesToRfc3339(startTime, reducedDuration);
+        const startHour = getHourInTimeZone(startTime, calendarTimeZone);
+        const endHour = getHourInTimeZone(endTime, calendarTimeZone);
+        const startMin = getMinuteInTimeZone(startTime, calendarTimeZone);
+        const endMin = getMinuteInTimeZone(endTime, calendarTimeZone);
+        const openHour = Number(actionDef.open_hour);
+        const closeHour = Number(actionDef.close_hour);
+        const hasOpenHours =
+          Number.isFinite(openHour) && Number.isFinite(closeHour) && openHour >= 0 && closeHour <= 24;
+        const isAllDayOpen = hasOpenHours && openHour === 0 && closeHour === 24;
+
+        if (
+          hasOpenHours &&
+          !isAllDayOpen &&
+          startHour !== null &&
+          endHour !== null &&
+          startMin !== null &&
+          endMin !== null
+        ) {
+          const startTotal = startHour * 60 + startMin;
+          const endTotal = endHour * 60 + endMin;
+          const openTotal = Math.max(0, openHour * 60 - 1);
+          const closeTotal = Math.min(24 * 60, closeHour * 60 + 1);
+          if (startTotal < openTotal || endTotal > closeTotal || startTotal >= closeTotal) {
+            toolResults.push({
+              call_id: call.call_id ?? null,
+              action_key: call.action_key,
+              tool_args: variables,
+              request: { url, method, headers, body: variables },
+              response: { ok: false, status: 409, error: "Requested time is outside of open hours" },
+            });
+            continue;
+          }
+        }
+
+        requestPayloadForLog = {
+          summary: actionDef.event_type || "Event",
+          location: actionDef.location ?? undefined,
+          start: { dateTime: startTime, timeZone: calendarTimeZone },
+          end: { dateTime: endTime, timeZone: calendarTimeZone },
+          attendees: Array.isArray(variables?.attendees)
+            ? variables.attendees.map((email) => ({ email }))
+            : undefined,
+        };
+        requestBody = JSON.stringify(requestPayloadForLog);
+        if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+      } else {
+        const qs = new URLSearchParams();
+        const calendarTimeZone = actionDef.timezone || "UTC";
+        qs.append("timeMin", normalizeRfc3339(variables?.time_min, calendarTimeZone));
+        qs.append("timeMax", normalizeRfc3339(variables?.time_max, calendarTimeZone));
+        qs.append("singleEvents", "true");
+        qs.append("orderBy", "startTime");
+        if (Number.isFinite(Number(variables?.max_results))) {
+          qs.append("maxResults", String(Number(variables.max_results)));
+        }
+        const qsText = qs.toString();
+        if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+      }
+    } else if (actionDef.kind === "slack") {
+      requestPayloadForLog = {
+        text: typeof variables?.message === "string" ? variables.message : "",
+        username: actionDef.username || "MitsoLab",
+      };
+      requestBody = JSON.stringify(requestPayloadForLog);
+      if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    } else if (method === "GET") {
+      const qs = new URLSearchParams();
+      for (const [key, value] of Object.entries(variables)) {
+        if (value === undefined) continue;
+        qs.append(key, typeof value === "string" ? value : JSON.stringify(value));
+      }
+      const qsText = qs.toString();
+      if (qsText) url = `${url}${url.includes("?") ? "&" : "?"}${qsText}`;
+      requestPayloadForLog = null;
+    } else {
+      requestPayloadForLog = buildActionRequestPayload(actionDef, variables);
+      requestBody = JSON.stringify(requestPayloadForLog);
+      if (!headers["Content-Type"]) headers["Content-Type"] = "application/json";
+    }
+
+    let actionResponse;
+    try {
+      const actionRes = await fetch(url, { method, headers, body: requestBody });
+      const text = await actionRes.text();
+      actionResponse = { ok: actionRes.ok, status: actionRes.status, body: text };
+    } catch (_) {
+      actionResponse = { ok: false, status: 502, error: "Action request failed" };
+    }
+
+    toolResults.push({
+      call_id: call.call_id ?? null,
+      action_key: call.action_key,
+      tool_args: variables,
+      request: { url, method, headers, body: requestPayloadForLog },
+      response: actionResponse,
+    });
+  }
+
+  return { toolResults, calendarContext };
+}
 function toWebhookEvents(payload) {
   const objectType = String(payload?.object || "").toLowerCase();
   const entries = Array.isArray(payload?.entry) ? payload.entry : [];
@@ -188,7 +896,6 @@ function toWebhookEvents(payload) {
     const messaging = Array.isArray(entry?.messaging) ? entry.messaging : [];
     const entryId = String(entry?.id || "").trim();
     const field = String(entry?.changes?.[0]?.field || "messaging").trim();
-
     for (const item of messaging) {
       const isEcho = Boolean(item?.message?.is_echo);
       const text = typeof item?.message?.text === "string" ? item.message.text.trim() : "";
@@ -213,13 +920,11 @@ function toWebhookEvents(payload) {
       });
     }
   }
-
   return events;
 }
 
 async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
   if (!supId || !supKey) return;
-
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = `${baseUrl}/meta_webhook_debug_messages`;
   const payload = {
@@ -232,7 +937,6 @@ async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
     message_text: String(event?.text || ""),
     raw: raw && typeof raw === "object" ? raw : { note: String(raw || "") },
   };
-
   try {
     await fetch(url, {
       method: "POST",
@@ -248,12 +952,8 @@ async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
 }
 
 async function fetchChannelPage({ supId, supKey, channel, lookupId }) {
-  if (!supId || !supKey) {
-    return { ok: false, status: 500, error: "Server configuration error" };
-  }
-  if (!lookupId) {
-    return { ok: false, status: 404, error: "Channel page not found" };
-  }
+  if (!supId || !supKey) return { ok: false, status: 500, error: "Server configuration error" };
+  if (!lookupId) return { ok: false, status: 404, error: "Channel page not found" };
 
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = new URL(`${baseUrl}/meta_channel_pages`);
@@ -261,7 +961,6 @@ async function fetchChannelPage({ supId, supKey, channel, lookupId }) {
     "select",
     "agent_id,page_id,page_access_token,instagram_business_account_id,instagram_connected,messenger_connected,supports_instagram,supports_messenger"
   );
-
   if (channel === "instagram") {
     url.searchParams.set(
       "or",
@@ -285,10 +984,7 @@ async function fetchChannelPage({ supId, supKey, channel, lookupId }) {
     return { ok: false, status: 502, error: "Channel page service unavailable" };
   }
 
-  if (!response.ok) {
-    return { ok: false, status: 502, error: "Channel page service unavailable" };
-  }
-
+  if (!response.ok) return { ok: false, status: 502, error: "Channel page service unavailable" };
   let payload;
   try {
     payload = await response.json();
@@ -341,30 +1037,20 @@ async function sendMetaTextReply({ pageAccessToken, recipientId, text }) {
     try {
       body = await response.text();
     } catch (_) {}
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: body || "Meta send API error",
-    };
+    return { ok: false, status: response.status || 502, error: body || "Meta send API error" };
   }
-
   return { ok: true };
 }
 
 async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/messages`);
   endpoint.searchParams.set("access_token", pageAccessToken);
-
   try {
     const response = await fetch(endpoint.toString(), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        recipient: { id: recipientId },
-        sender_action: action,
-      }),
+      body: JSON.stringify({ recipient: { id: recipientId }, sender_action: action }),
     });
-
     if (!response.ok) {
       let body = "";
       try {
@@ -379,146 +1065,318 @@ async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   } catch (_) {
     return { ok: false, status: 502, error: "Meta sender action API unavailable" };
   }
-
   return { ok: true };
 }
 
 function startTypingHeartbeat({ pageAccessToken, recipientId, intervalMs = 3500 }) {
   let closed = false;
-  let timer = null;
-
   const tick = async () => {
     if (closed) return;
-    await sendMetaSenderAction({
-      pageAccessToken,
-      recipientId,
-      action: "typing_on",
-    });
+    await sendMetaSenderAction({ pageAccessToken, recipientId, action: "typing_on" });
   };
-
   void tick();
-  timer = setInterval(() => {
-    void tick();
-  }, Math.max(1000, Number(intervalMs) || 3500));
+  const timer = setInterval(() => void tick(), Math.max(1000, Number(intervalMs) || 3500));
 
   return async function stop() {
     if (closed) return;
     closed = true;
-    if (timer) clearInterval(timer);
-    await sendMetaSenderAction({
-      pageAccessToken,
-      recipientId,
-      action: "typing_off",
-    });
+    clearInterval(timer);
+    await sendMetaSenderAction({ pageAccessToken, recipientId, action: "typing_off" });
   };
 }
 
-async function handleIncomingMessage({ supId, supKey, event, page }) {
+function buildChannelPrompt({ systemRole, chunks, nowIso }) {
+  const sections = [];
+  if (typeof systemRole === "string" && systemRole.trim()) {
+    sections.push(systemRole.trim());
+  }
+  sections.push(
+    [
+      "SYSTEM RULES",
+      "You are replying inside Instagram/Messenger chat.",
+      "Use plain text only.",
+      "Do not use Markdown symbols like **, *, _, #, or code fences.",
+      "Use short direct sentences.",
+      "If list needed, use '-' bullets only.",
+      "Do not claim capabilities or actions you cannot execute.",
+      "Treat abusive or hateful language safely and professionally; do not mirror abusive tone.",
+    ].join("\n")
+  );
+  sections.push(["CURRENT DATE", nowIso].join("\n"));
+  if (Array.isArray(chunks) && chunks.length > 0) {
+    sections.push(["KNOWLEDGE CHUNKS", ...chunks].join("\n"));
+  }
+  return sections.join("\n\n");
+}
+
+function calendarContextNote(calendarContext) {
+  if (!calendarContext) return "";
+  return [
+    "CALENDAR SETTINGS",
+    `Timezone: ${calendarContext.timezone}`,
+    calendarContext.duration_mins !== null
+      ? `Duration: ${calendarContext.duration_mins} minutes`
+      : "Duration: default",
+    Number.isFinite(Number(calendarContext.open_hour)) &&
+    Number.isFinite(Number(calendarContext.close_hour))
+      ? `Open hours: ${calendarContext.open_hour}:00-${calendarContext.close_hour}:00`
+      : "Open hours: not set",
+    calendarContext.event_type ? `Event type: ${calendarContext.event_type}` : "Event type: not set",
+    "Speak as business availability, not as user's personal calendar.",
+  ].join("\n");
+}
+
+async function verifyMetaWebhookSignature(req) {
+  const appSecret = String(process.env.META_APP_SECRET || "");
+  if (!appSecret) return { ok: true, reason: "skipped_no_secret" };
+
+  const signatureHeader = String(req?.headers?.["x-hub-signature-256"] || "");
+  if (!signatureHeader.startsWith("sha256=")) {
+    return { ok: false, reason: "missing_signature" };
+  }
+  const expectedHex = signatureHeader.slice("sha256=".length).trim();
+  if (!/^[a-f0-9]{64}$/i.test(expectedHex)) {
+    return { ok: false, reason: "invalid_signature_format" };
+  }
+
+  const candidates = [];
+  if (typeof req?.rawBody === "string" || Buffer.isBuffer(req?.rawBody)) {
+    candidates.push(Buffer.isBuffer(req.rawBody) ? req.rawBody : Buffer.from(req.rawBody));
+  }
+  if (typeof req?.body === "string") {
+    candidates.push(Buffer.from(req.body));
+  } else if (req?.body && typeof req.body === "object") {
+    candidates.push(Buffer.from(JSON.stringify(req.body)));
+  }
+  if (candidates.length === 0) return { ok: false, reason: "missing_raw_body" };
+
+  const expected = Buffer.from(expectedHex, "hex");
+  for (const bodyBuffer of candidates) {
+    const digest = createHmac("sha256", appSecret).update(bodyBuffer).digest();
+    if (digest.length === expected.length && timingSafeEqual(digest, expected)) {
+      return { ok: true, reason: "verified" };
+    }
+  }
+  return { ok: false, reason: "signature_mismatch" };
+}
+async function processIncomingMessage({ event, page, headers }) {
+  const requestStartedAt = Date.now();
   const agentId = page.agent_id;
   const anonId = `${event.channel}:${event.senderId}`;
   const chatId = `${event.channel}:${page.page_id}:${event.senderId}`;
-
-  const normalizedMessage = normalizeIncomingMessage(event.text);
+  const requestCountry = getRequestCountry(headers);
+  const incomingText = sanitizeIncomingUserText(event.text);
+  const normalizedMessage = normalizeIncomingMessage(incomingText);
 
   const usageCheckPromise = checkMessageCap({
-    supId,
-    supKey,
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
     agentId,
   });
-
   const historyPromise = getChatHistory({
-    supId,
-    supKey,
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
     agentId,
     anonId,
     chatId,
     maxRows: 3,
   });
-
   const ragPromise =
     normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
       ? getRelevantKnowledgeChunks({
-          supId,
-          supKey,
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
           voyageApiKey: process.env.VOYAGE_API_KEY,
           outputDimension: process.env.VOYAGE_OUTPUT_DIMENSION,
           agentId,
           anonId,
           chatId,
-          message: event.text,
+          message: incomingText,
         })
       : Promise.resolve({ ok: true, chunks: [] });
-
   const agentInfoPromise = getAgentInfo({
-    supId,
-    supKey,
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+  const toolsResultPromise = getAgentAllActions({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
     agentId,
   });
 
-  const [usageCheck, historyResult, vectorResult, agentInfo] = await Promise.all([
+  let latencyMiniMs = null;
+  let latencyNanoMs = null;
+  let latencyToolsMs = null;
+
+  const [usageCheck, historyResult, ragResult, agentInfo, toolsResult] = await Promise.all([
     usageCheckPromise,
     historyPromise,
     ragPromise,
     agentInfoPromise,
+    toolsResultPromise,
   ]);
 
   if (!usageCheck.ok) return { ok: false, status: usageCheck.status, error: usageCheck.error };
   if (!historyResult.ok) return { ok: false, status: historyResult.status, error: historyResult.error };
-  if (!vectorResult.ok) return { ok: false, status: vectorResult.status, error: vectorResult.error };
+  if (!ragResult.ok) return { ok: false, status: ragResult.status, error: ragResult.error };
   if (!agentInfo.ok) return { ok: false, status: agentInfo.status, error: agentInfo.error };
+  if (!toolsResult.ok) return { ok: false, status: toolsResult.status, error: toolsResult.error };
 
-  const promptSections = [];
-  if (typeof agentInfo.role === "string" && agentInfo.role.trim()) {
-    promptSections.push(agentInfo.role.trim());
-  }
-  promptSections.push(
-    [
-      "SYSTEM RULES",
-      "Reply in plain text suitable for messaging apps.",
-      "Do not use Markdown symbols like **, *, _, #, or code fences.",
-      "Use simple plain lines and short bullet lines only.",
-      "Do not claim capabilities you cannot execute.",
-    ].join("\n")
-  );
-  promptSections.push(["CURRENT DATE", new Date().toISOString()].join("\n"));
-  if (Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0) {
-    promptSections.push(["KNOWLEDGE CHUNKS", ...vectorResult.chunks].join("\n"));
-  }
+  const prompt = buildChannelPrompt({
+    systemRole: agentInfo.role,
+    chunks: ragResult.chunks,
+    nowIso: new Date().toISOString(),
+  });
 
-  const messages = [
-    ...(Array.isArray(historyResult.messages) ? historyResult.messages : []),
-    { role: "user", content: String(event.text || "") },
-  ];
+  const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
+  const messages = [...historyMessages, { role: "user", content: incomingText }];
 
+  const completionStartedAt = Date.now();
   const completion = await getXAiChatCompletion({
     apiKey: process.env.XAI_API_KEY,
     model: PRIMARY_MODEL,
-    instructions: promptSections.join("\n\n"),
+    instructions: prompt,
     messages,
+    tools: toolsResult.tools,
   });
+  latencyMiniMs = Date.now() - completionStartedAt;
   if (!completion.ok) return { ok: false, status: completion.status, error: completion.error };
 
-  const reply = formatReplyForMetaText(completion.data?.reply ?? "");
+  let replyRaw = completion.data?.reply ?? "";
+  let actionCount = 0;
+
+  if (completion.data?.mode === "actions_needed") {
+    const actionCalls = Array.isArray(completion.data?.action_calls) ? completion.data.action_calls : [];
+    actionCount = actionCalls.length;
+
+    const toolsStartedAt = Date.now();
+    const { toolResults, calendarContext } = await executeActionCalls({
+      actionCalls,
+      toolsResult,
+      agentId,
+    });
+    latencyToolsMs = Date.now() - toolsStartedAt;
+
+    const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
+    const followupInputItems = toXAiInputItems(messages, assistantBlocks, toolResults);
+    const followupPrompt = calendarContext
+      ? [prompt, calendarContextNote(calendarContext)].join("\n\n")
+      : prompt;
+
+    const followupStartedAt = Date.now();
+    const followup = await getXAiChatCompletion({
+      apiKey: process.env.XAI_API_KEY,
+      model: FOLLOWUP_MODEL,
+      instructions: followupPrompt,
+      messages,
+      inputItems: followupInputItems,
+    });
+    latencyNanoMs = Date.now() - followupStartedAt;
+    if (!followup.ok) return { ok: false, status: followup.status, error: followup.error };
+
+    replyRaw = followup.data?.reply ?? "";
+
+    const finalReply = formatReplyForMetaText(replyRaw);
+    if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
+
+    const saveResult = await saveMessage({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId,
+      workspaceId: agentInfo.workspace_id,
+      anonId,
+      chatId,
+      country: requestCountry,
+      prompt: incomingText,
+      result: finalReply,
+      source: `meta_${event.channel}`,
+      action: true,
+    });
+    if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
+
+    const miniTokens = usageToTokens(completion.usage);
+    const nanoTokens = usageToTokens(followup.usage);
+    void saveMessageAnalytics({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId,
+      workspaceId: agentInfo.workspace_id,
+      endpoint: "channels",
+      source: `meta_${event.channel}`,
+      country: requestCountry,
+      anonId,
+      chatId,
+      modelMini: PRIMARY_MODEL,
+      modelNano: FOLLOWUP_MODEL,
+      miniInputTokens: miniTokens.input,
+      miniOutputTokens: miniTokens.output,
+      nanoInputTokens: nanoTokens.input,
+      nanoOutputTokens: nanoTokens.output,
+      actionUsed: true,
+      actionCount,
+      ragUsed: Array.isArray(ragResult.chunks) && ragResult.chunks.length > 0,
+      ragChunkCount: Array.isArray(ragResult.chunks) ? ragResult.chunks.length : 0,
+      statusCode: 200,
+      latencyTotalMs: Date.now() - requestStartedAt,
+      latencyMiniMs,
+      latencyNanoMs,
+      latencyToolsMs,
+      errorCode: null,
+    }).catch(() => {});
+
+    return { ok: true, reply: finalReply, actionUsed: true, actionCount };
+  }
+
+  const reply = formatReplyForMetaText(replyRaw);
   if (!reply) return { ok: false, status: 502, error: "Empty model output" };
 
   const saveResult = await saveMessage({
-    supId,
-    supKey,
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
     agentId,
     workspaceId: agentInfo.workspace_id,
     anonId,
     chatId,
-    country: null,
-    prompt: String(event.text || ""),
+    country: requestCountry,
+    prompt: incomingText,
     result: reply,
     source: `meta_${event.channel}`,
     action: false,
   });
   if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
-  return { ok: true, reply };
-}
+  const miniTokens = usageToTokens(completion.usage);
+  void saveMessageAnalytics({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    workspaceId: agentInfo.workspace_id,
+    endpoint: "channels",
+    source: `meta_${event.channel}`,
+    country: requestCountry,
+    anonId,
+    chatId,
+    modelMini: PRIMARY_MODEL,
+    modelNano: FOLLOWUP_MODEL,
+    miniInputTokens: miniTokens.input,
+    miniOutputTokens: miniTokens.output,
+    nanoInputTokens: 0,
+    nanoOutputTokens: 0,
+    actionUsed: false,
+    actionCount: 0,
+    ragUsed: Array.isArray(ragResult.chunks) && ragResult.chunks.length > 0,
+    ragChunkCount: Array.isArray(ragResult.chunks) ? ragResult.chunks.length : 0,
+    statusCode: 200,
+    latencyTotalMs: Date.now() - requestStartedAt,
+    latencyMiniMs,
+    latencyNanoMs: null,
+    latencyToolsMs: null,
+    errorCode: null,
+  }).catch(() => {});
 
+  return { ok: true, reply, actionUsed: false, actionCount: 0 };
+}
 module.exports = async function handler(req, res) {
   try {
     if (req.method === "GET") {
@@ -526,18 +1384,36 @@ module.exports = async function handler(req, res) {
       const token = String(req.query["hub.verify_token"] || "");
       const challenge = req.query["hub.challenge"];
       const expectedToken = String(process.env.META_WEBHOOK_VERIFY_TOKEN || "");
-
       if (mode === "subscribe" && expectedToken && token === expectedToken) {
         res.status(200).send(String(challenge || ""));
         return;
       }
-
       res.status(403).json({ error: "Invalid verify token" });
       return;
     }
 
     if (req.method !== "POST") {
       res.status(405).json({ error: "Method not allowed" });
+      return;
+    }
+
+    const signature = await verifyMetaWebhookSignature(req);
+    if (!signature.ok) {
+      await insertMetaWebhookDebugMessage({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        event: {
+          object: String(req?.body?.object || ""),
+          field: "",
+          lookupId: "",
+          senderId: "",
+          recipientId: "",
+          messageId: "",
+          text: "",
+        },
+        raw: { stage: "signature_failed", reason: signature.reason },
+      });
+      res.status(403).json({ error: "Invalid webhook signature" });
       return;
     }
 
@@ -596,19 +1472,6 @@ module.exports = async function handler(req, res) {
         continue;
       }
 
-      await insertMetaWebhookDebugMessage({
-        supId: process.env.SUP_ID,
-        supKey: process.env.SUP_KEY,
-        event,
-        raw: {
-          stage: "page_lookup_ok",
-          channel: event.channel,
-          lookup_id: event.lookupId,
-          agent_id: pageResult.page?.agent_id ?? null,
-          page_id: pageResult.page?.page_id ?? null,
-        },
-      });
-
       const typingStartedAt = Date.now();
       const typingOnResult = await sendMetaSenderAction({
         pageAccessToken: pageResult.page.page_access_token,
@@ -622,46 +1485,17 @@ module.exports = async function handler(req, res) {
             recipientId: event.senderId,
           })
         : null;
-      if (!typingOnResult.ok) {
-        await insertMetaWebhookDebugMessage({
-          supId: process.env.SUP_ID,
-          supKey: process.env.SUP_KEY,
-          event,
-          raw: {
-            stage: "typing_on_failed",
-            channel: event.channel,
-            recipient_id: event.senderId,
-            status: typingOnResult?.status ?? null,
-            error: typingOnResult?.error ?? "Unknown typing_on error",
-          },
-        });
-      } else {
-        await insertMetaWebhookDebugMessage({
-          supId: process.env.SUP_ID,
-          supKey: process.env.SUP_KEY,
-          event,
-          raw: {
-            stage: "typing_on_ok",
-            channel: event.channel,
-            recipient_id: event.senderId,
-            min_typing_ms: META_MIN_TYPING_MS,
-          },
-        });
-      }
 
-      const handled = await handleIncomingMessage({
-        supId: process.env.SUP_ID,
-        supKey: process.env.SUP_KEY,
+      const handled = await processIncomingMessage({
         event,
         page: pageResult.page,
+        headers: req.headers,
       });
       if (!handled.ok) {
         if (typingOnOk && META_MIN_TYPING_MS > 0) {
           const elapsed = Date.now() - typingStartedAt;
           const waitMs = META_MIN_TYPING_MS - elapsed;
-          if (waitMs > 0) {
-            await sleep(waitMs);
-          }
+          if (waitMs > 0) await sleep(waitMs);
         }
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
@@ -686,34 +1520,10 @@ module.exports = async function handler(req, res) {
         continue;
       }
 
-      await insertMetaWebhookDebugMessage({
-        supId: process.env.SUP_ID,
-        supKey: process.env.SUP_KEY,
-        event,
-        raw: {
-          stage: "reply_generated",
-          channel: event.channel,
-          reply: handled.reply ?? "",
-        },
-      });
-
       if (typingOnOk && META_MIN_TYPING_MS > 0) {
         const elapsed = Date.now() - typingStartedAt;
         const waitMs = META_MIN_TYPING_MS - elapsed;
-        if (waitMs > 0) {
-          await sleep(waitMs);
-          await insertMetaWebhookDebugMessage({
-            supId: process.env.SUP_ID,
-            supKey: process.env.SUP_KEY,
-            event,
-            raw: {
-              stage: "typing_delay_applied",
-              channel: event.channel,
-              waited_ms: waitMs,
-              min_typing_ms: META_MIN_TYPING_MS,
-            },
-          });
-        }
+        if (waitMs > 0) await sleep(waitMs);
       }
 
       const sendResult = await sendMetaTextReply({
@@ -730,6 +1540,8 @@ module.exports = async function handler(req, res) {
             stage: "send_ok",
             channel: event.channel,
             recipient_id: event.senderId,
+            action_used: Boolean(handled.actionUsed),
+            action_count: Number(handled.actionCount || 0),
           },
         });
         processedCount += 1;
@@ -748,29 +1560,13 @@ module.exports = async function handler(req, res) {
         });
       }
 
-      const typingOffResult =
-        typeof stopTypingHeartbeat === "function"
-          ? await (async () => {
-              await stopTypingHeartbeat();
-              return { ok: true };
-            })()
-          : await sendMetaSenderAction({
-              pageAccessToken: pageResult.page.page_access_token,
-              recipientId: event.senderId,
-              action: "typing_off",
-            });
-      if (!typingOffResult.ok) {
-        await insertMetaWebhookDebugMessage({
-          supId: process.env.SUP_ID,
-          supKey: process.env.SUP_KEY,
-          event,
-          raw: {
-            stage: "typing_off_failed",
-            channel: event.channel,
-            recipient_id: event.senderId,
-            status: typingOffResult?.status ?? null,
-            error: typingOffResult?.error ?? "Unknown typing_off error",
-          },
+      if (typeof stopTypingHeartbeat === "function") {
+        await stopTypingHeartbeat();
+      } else {
+        await sendMetaSenderAction({
+          pageAccessToken: pageResult.page.page_access_token,
+          recipientId: event.senderId,
+          action: "typing_off",
         });
       }
     }
@@ -792,7 +1588,6 @@ module.exports = async function handler(req, res) {
       raw: {
         stage: "handler_exception",
         error: String(error?.message || error || "Unknown error"),
-        request_body: req?.body ?? null,
       },
     });
     res.status(200).json({
