@@ -383,6 +383,36 @@ async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   return { ok: true };
 }
 
+function startTypingHeartbeat({ pageAccessToken, recipientId, intervalMs = 3500 }) {
+  let closed = false;
+  let timer = null;
+
+  const tick = async () => {
+    if (closed) return;
+    await sendMetaSenderAction({
+      pageAccessToken,
+      recipientId,
+      action: "typing_on",
+    });
+  };
+
+  void tick();
+  timer = setInterval(() => {
+    void tick();
+  }, Math.max(1000, Number(intervalMs) || 3500));
+
+  return async function stop() {
+    if (closed) return;
+    closed = true;
+    if (timer) clearInterval(timer);
+    await sendMetaSenderAction({
+      pageAccessToken,
+      recipientId,
+      action: "typing_off",
+    });
+  };
+}
+
 async function handleIncomingMessage({ supId, supKey, event, page }) {
   const agentId = page.agent_id;
   const anonId = `${event.channel}:${event.senderId}`;
@@ -586,6 +616,12 @@ module.exports = async function handler(req, res) {
         action: "typing_on",
       });
       const typingOnOk = Boolean(typingOnResult.ok);
+      const stopTypingHeartbeat = typingOnOk
+        ? startTypingHeartbeat({
+            pageAccessToken: pageResult.page.page_access_token,
+            recipientId: event.senderId,
+          })
+        : null;
       if (!typingOnResult.ok) {
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
@@ -638,11 +674,15 @@ module.exports = async function handler(req, res) {
             error: handled?.error ?? "Unknown processing error",
           },
         });
-        await sendMetaSenderAction({
-          pageAccessToken: pageResult.page.page_access_token,
-          recipientId: event.senderId,
-          action: "typing_off",
-        });
+        if (typeof stopTypingHeartbeat === "function") {
+          await stopTypingHeartbeat();
+        } else {
+          await sendMetaSenderAction({
+            pageAccessToken: pageResult.page.page_access_token,
+            recipientId: event.senderId,
+            action: "typing_off",
+          });
+        }
         continue;
       }
 
@@ -708,11 +748,17 @@ module.exports = async function handler(req, res) {
         });
       }
 
-      const typingOffResult = await sendMetaSenderAction({
-        pageAccessToken: pageResult.page.page_access_token,
-        recipientId: event.senderId,
-        action: "typing_off",
-      });
+      const typingOffResult =
+        typeof stopTypingHeartbeat === "function"
+          ? await (async () => {
+              await stopTypingHeartbeat();
+              return { ok: true };
+            })()
+          : await sendMetaSenderAction({
+              pageAccessToken: pageResult.page.page_access_token,
+              recipientId: event.senderId,
+              action: "typing_off",
+            });
       if (!typingOffResult.ok) {
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
