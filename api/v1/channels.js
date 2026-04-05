@@ -2013,7 +2013,7 @@ module.exports = async function handler(req, res) {
           if (isStartCommand) {
             securityReply = isAllowed
               ? "You are already approved. Your Telegram connection is active."
-              : "Access request submitted. Please wait for approval in Live Channels.";
+              : "Access request submitted. Please wait for approval from the admin.";
           } else if (!isAllowed) {
             securityReply = "You are not approved yet. Send /start YourName to request access.";
           }
