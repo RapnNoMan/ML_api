@@ -892,6 +892,47 @@ function toWebhookEvents(payload) {
   const entries = Array.isArray(payload?.entry) ? payload.entry : [];
   const events = [];
 
+  if (objectType === "whatsapp_business_account") {
+    for (const entry of entries) {
+      const entryId = String(entry?.id || "").trim();
+      const changes = Array.isArray(entry?.changes) ? entry.changes : [];
+      for (const change of changes) {
+        const field = String(change?.field || "").trim();
+        if (field !== "messages") continue;
+        const value = change?.value && typeof change.value === "object" ? change.value : {};
+        const phoneNumberId = String(value?.metadata?.phone_number_id || "").trim();
+        const messages = Array.isArray(value?.messages) ? value.messages : [];
+
+        for (const message of messages) {
+          const msgType = String(message?.type || "").trim();
+          const senderId = String(message?.from || "").trim();
+          if (!senderId) continue;
+
+          const textBody =
+            msgType === "text" && typeof message?.text?.body === "string"
+              ? message.text.body.trim()
+              : "";
+          const hasAttachment = msgType && msgType !== "text";
+          if (!textBody && !hasAttachment) continue;
+
+          events.push({
+            eventId: String(message?.id || value?.statuses?.[0]?.id || "").trim(),
+            object: objectType,
+            field,
+            channel: "whatsapp",
+            lookupId: phoneNumberId || entryId,
+            senderId,
+            recipientId: phoneNumberId || "",
+            messageId: String(message?.id || "").trim(),
+            text: textBody || "[User sent an attachment]",
+            rawItem: change,
+          });
+        }
+      }
+    }
+    return events;
+  }
+
   for (const entry of entries) {
     const messaging = Array.isArray(entry?.messaging) ? entry.messaging : [];
     const entryId = String(entry?.id || "").trim();
@@ -951,9 +992,86 @@ async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
   } catch (_) {}
 }
 
-async function fetchChannelPage({ supId, supKey, channel, lookupId }) {
+async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
   if (!supId || !supKey) return { ok: false, status: 500, error: "Server configuration error" };
-  if (!lookupId) return { ok: false, status: 404, error: "Channel page not found" };
+  if (!lookupId) return { ok: false, status: 404, error: "Channel not found" };
+
+  if (channel === "whatsapp") {
+    const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+    const numbersUrl = new URL(`${baseUrl}/whatsapp_channel_numbers`);
+    numbersUrl.searchParams.set("select", "agent_id,phone_number_id,waba_id,connected");
+    numbersUrl.searchParams.set("phone_number_id", `eq.${lookupId}`);
+    numbersUrl.searchParams.set("limit", "5");
+
+    let numbersRes;
+    try {
+      numbersRes = await fetch(numbersUrl.toString(), {
+        headers: {
+          apikey: supKey,
+          Authorization: `Bearer ${supKey}`,
+          Accept: "application/json",
+        },
+      });
+    } catch (_) {
+      return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
+    }
+    if (!numbersRes.ok) return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
+
+    let numbersPayload;
+    try {
+      numbersPayload = await numbersRes.json();
+    } catch (_) {
+      return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
+    }
+
+    const numbers = Array.isArray(numbersPayload) ? numbersPayload : [];
+    const numberRow = numbers.find((row) => Boolean(row?.connected));
+    if (!numberRow) return { ok: false, status: 404, error: "WhatsApp number not connected" };
+
+    const connectionsUrl = new URL(`${baseUrl}/whatsapp_channel_connections`);
+    connectionsUrl.searchParams.set("select", "agent_id,business_access_token,connected,waba_id");
+    connectionsUrl.searchParams.set("agent_id", `eq.${numberRow.agent_id}`);
+    connectionsUrl.searchParams.set("limit", "1");
+
+    let connectionsRes;
+    try {
+      connectionsRes = await fetch(connectionsUrl.toString(), {
+        headers: {
+          apikey: supKey,
+          Authorization: `Bearer ${supKey}`,
+          Accept: "application/json",
+        },
+      });
+    } catch (_) {
+      return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
+    }
+    if (!connectionsRes.ok) return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
+
+    let connectionsPayload;
+    try {
+      connectionsPayload = await connectionsRes.json();
+    } catch (_) {
+      return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
+    }
+
+    const connections = Array.isArray(connectionsPayload) ? connectionsPayload : [];
+    const connectionRow = connections.find((row) => Boolean(row?.connected));
+    if (!connectionRow) return { ok: false, status: 404, error: "WhatsApp connection not found" };
+    if (!connectionRow?.business_access_token) {
+      return { ok: false, status: 400, error: "Missing WhatsApp business access token" };
+    }
+
+    return {
+      ok: true,
+      connection: {
+        kind: "whatsapp",
+        agent_id: numberRow.agent_id,
+        thread_id: String(numberRow.phone_number_id || ""),
+        phone_number_id: String(numberRow.phone_number_id || ""),
+        access_token: String(connectionRow.business_access_token || ""),
+      },
+    };
+  }
 
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = new URL(`${baseUrl}/meta_channel_pages`);
@@ -1006,10 +1124,12 @@ async function fetchChannelPage({ supId, supKey, channel, lookupId }) {
 
   return {
     ok: true,
-    page: {
+    connection: {
+      kind: "meta",
       agent_id: row.agent_id,
+      thread_id: String(row.page_id || ""),
       page_id: String(row.page_id || ""),
-      page_access_token: String(row.page_access_token || ""),
+      access_token: String(row.page_access_token || ""),
     },
   };
 }
@@ -1038,6 +1158,37 @@ async function sendMetaTextReply({ pageAccessToken, recipientId, text }) {
       body = await response.text();
     } catch (_) {}
     return { ok: false, status: response.status || 502, error: body || "Meta send API error" };
+  }
+  return { ok: true };
+}
+
+async function sendWhatsAppTextReply({ accessToken, phoneNumberId, recipientId, text }) {
+  const endpoint = `https://graph.facebook.com/${META_GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        messaging_product: "whatsapp",
+        to: recipientId,
+        type: "text",
+        text: { body: String(text || "") },
+      }),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "WhatsApp send API unavailable" };
+  }
+
+  if (!response.ok) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch (_) {}
+    return { ok: false, status: response.status || 502, error: body || "WhatsApp send API error" };
   }
   return { ok: true };
 }
@@ -1085,19 +1236,26 @@ function startTypingHeartbeat({ pageAccessToken, recipientId, intervalMs = 3500 
   };
 }
 
-function buildChannelPrompt({ systemRole, chunks, nowIso }) {
+function buildChannelPrompt({ systemRole, chunks, nowIso, channel }) {
   const sections = [];
   if (typeof systemRole === "string" && systemRole.trim()) {
     sections.push(systemRole.trim());
   }
+  const isWhatsApp = channel === "whatsapp";
   sections.push(
     [
       "SYSTEM RULES",
-      "You are replying inside Instagram/Messenger chat.",
-      "Use plain text only.",
-      "Do not use Markdown symbols like **, *, _, #, or code fences.",
-      "Use short direct sentences.",
-      "If list needed, use '-' bullets only.",
+      isWhatsApp
+        ? "You are replying inside WhatsApp chat."
+        : "You are replying inside Instagram/Messenger chat.",
+      isWhatsApp ? "Use concise chat style." : "Use plain text only.",
+      ...(isWhatsApp
+        ? []
+        : [
+            "Do not use Markdown symbols like **, *, _, #, or code fences.",
+            "Use short direct sentences.",
+            "If list needed, use '-' bullets only.",
+          ]),
       "Do not claim capabilities or actions you cannot execute.",
       "Treat abusive or hateful language safely and professionally; do not mirror abusive tone.",
     ].join("\n")
@@ -1159,11 +1317,11 @@ async function verifyMetaWebhookSignature(req) {
   }
   return { ok: false, reason: "signature_mismatch" };
 }
-async function processIncomingMessage({ event, page, headers }) {
+async function processIncomingMessage({ event, connection, headers }) {
   const requestStartedAt = Date.now();
-  const agentId = page.agent_id;
+  const agentId = connection.agent_id;
   const anonId = `${event.channel}:${event.senderId}`;
-  const chatId = `${event.channel}:${page.page_id}:${event.senderId}`;
+  const chatId = `${event.channel}:${connection.thread_id}:${event.senderId}`;
   const requestCountry = getRequestCountry(headers);
   const incomingText = sanitizeIncomingUserText(event.text);
   const normalizedMessage = normalizeIncomingMessage(incomingText);
@@ -1227,6 +1385,7 @@ async function processIncomingMessage({ event, page, headers }) {
     systemRole: agentInfo.role,
     chunks: ragResult.chunks,
     nowIso: new Date().toISOString(),
+    channel: event.channel,
   });
 
   const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
@@ -1277,7 +1436,10 @@ async function processIncomingMessage({ event, page, headers }) {
 
     replyRaw = followup.data?.reply ?? "";
 
-    const finalReply = formatReplyForMetaText(replyRaw);
+    const finalReply =
+      event.channel === "whatsapp"
+        ? String(replyRaw || "").trim()
+        : formatReplyForMetaText(replyRaw);
     if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
 
     const saveResult = await saveMessage({
@@ -1328,7 +1490,10 @@ async function processIncomingMessage({ event, page, headers }) {
     return { ok: true, reply: finalReply, actionUsed: true, actionCount };
   }
 
-  const reply = formatReplyForMetaText(replyRaw);
+  const reply =
+    event.channel === "whatsapp"
+      ? String(replyRaw || "").trim()
+      : formatReplyForMetaText(replyRaw);
   if (!reply) return { ok: false, status: 502, error: "Empty model output" };
 
   const saveResult = await saveMessage({
@@ -1424,7 +1589,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const pageCache = new Map();
+    const connectionCache = new Map();
     const processedEventIds = new Set();
     let processedCount = 0;
 
@@ -1446,17 +1611,17 @@ module.exports = async function handler(req, res) {
       });
 
       const cacheKey = `${event.channel}:${event.lookupId}`;
-      let pageResult = pageCache.get(cacheKey);
-      if (!pageResult) {
-        pageResult = await fetchChannelPage({
+      let connectionResult = connectionCache.get(cacheKey);
+      if (!connectionResult) {
+        connectionResult = await fetchChannelConnection({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
           channel: event.channel,
           lookupId: event.lookupId,
         });
-        pageCache.set(cacheKey, pageResult);
+        connectionCache.set(cacheKey, connectionResult);
       }
-      if (!pageResult?.ok) {
+      if (!connectionResult?.ok) {
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -1465,30 +1630,60 @@ module.exports = async function handler(req, res) {
             stage: "page_lookup_failed",
             channel: event.channel,
             lookup_id: event.lookupId,
-            status: pageResult?.status ?? null,
-            error: pageResult?.error ?? "Unknown page lookup error",
+            status: connectionResult?.status ?? null,
+            error: connectionResult?.error ?? "Unknown page lookup error",
           },
         });
         continue;
       }
+      await insertMetaWebhookDebugMessage({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        event,
+        raw: {
+          stage: "page_lookup_ok",
+          channel: event.channel,
+          lookup_id: event.lookupId,
+          agent_id: connectionResult.connection?.agent_id ?? null,
+          connection_kind: connectionResult.connection?.kind ?? null,
+          thread_id: connectionResult.connection?.thread_id ?? null,
+        },
+      });
 
       const typingStartedAt = Date.now();
-      const typingOnResult = await sendMetaSenderAction({
-        pageAccessToken: pageResult.page.page_access_token,
-        recipientId: event.senderId,
-        action: "typing_on",
-      });
+      const shouldUseMetaTyping = connectionResult.connection?.kind === "meta";
+      const typingOnResult = shouldUseMetaTyping
+        ? await sendMetaSenderAction({
+            pageAccessToken: connectionResult.connection.access_token,
+            recipientId: event.senderId,
+            action: "typing_on",
+          })
+        : { ok: false, status: null, error: "typing_not_supported_for_channel" };
+      if (shouldUseMetaTyping && !typingOnResult.ok) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "typing_on_failed",
+            channel: event.channel,
+            recipient_id: event.senderId,
+            status: typingOnResult?.status ?? null,
+            error: typingOnResult?.error ?? "Unknown typing_on error",
+          },
+        });
+      }
       const typingOnOk = Boolean(typingOnResult.ok);
       const stopTypingHeartbeat = typingOnOk
         ? startTypingHeartbeat({
-            pageAccessToken: pageResult.page.page_access_token,
+            pageAccessToken: connectionResult.connection.access_token,
             recipientId: event.senderId,
           })
         : null;
 
       const handled = await processIncomingMessage({
         event,
-        page: pageResult.page,
+        connection: connectionResult.connection,
         headers: req.headers,
       });
       if (!handled.ok) {
@@ -1510,15 +1705,42 @@ module.exports = async function handler(req, res) {
         });
         if (typeof stopTypingHeartbeat === "function") {
           await stopTypingHeartbeat();
-        } else {
-          await sendMetaSenderAction({
-            pageAccessToken: pageResult.page.page_access_token,
+        } else if (shouldUseMetaTyping) {
+          const typingOffResult = await sendMetaSenderAction({
+            pageAccessToken: connectionResult.connection.access_token,
             recipientId: event.senderId,
             action: "typing_off",
           });
+          if (!typingOffResult.ok) {
+            await insertMetaWebhookDebugMessage({
+              supId: process.env.SUP_ID,
+              supKey: process.env.SUP_KEY,
+              event,
+              raw: {
+                stage: "typing_off_failed",
+                channel: event.channel,
+                recipient_id: event.senderId,
+                status: typingOffResult?.status ?? null,
+                error: typingOffResult?.error ?? "Unknown typing_off error",
+              },
+            });
+          }
         }
         continue;
       }
+
+      await insertMetaWebhookDebugMessage({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        event,
+        raw: {
+          stage: "reply_generated",
+          channel: event.channel,
+          reply: handled.reply ?? "",
+          action_used: Boolean(handled.actionUsed),
+          action_count: Number(handled.actionCount || 0),
+        },
+      });
 
       if (typingOnOk && META_MIN_TYPING_MS > 0) {
         const elapsed = Date.now() - typingStartedAt;
@@ -1526,11 +1748,19 @@ module.exports = async function handler(req, res) {
         if (waitMs > 0) await sleep(waitMs);
       }
 
-      const sendResult = await sendMetaTextReply({
-        pageAccessToken: pageResult.page.page_access_token,
-        recipientId: event.senderId,
-        text: handled.reply,
-      });
+      const sendResult =
+        connectionResult.connection?.kind === "whatsapp"
+          ? await sendWhatsAppTextReply({
+              accessToken: connectionResult.connection.access_token,
+              phoneNumberId: connectionResult.connection.phone_number_id,
+              recipientId: event.senderId,
+              text: handled.reply,
+            })
+          : await sendMetaTextReply({
+              pageAccessToken: connectionResult.connection.access_token,
+              recipientId: event.senderId,
+              text: handled.reply,
+            });
       if (sendResult.ok) {
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
@@ -1562,12 +1792,26 @@ module.exports = async function handler(req, res) {
 
       if (typeof stopTypingHeartbeat === "function") {
         await stopTypingHeartbeat();
-      } else {
-        await sendMetaSenderAction({
-          pageAccessToken: pageResult.page.page_access_token,
+      } else if (shouldUseMetaTyping) {
+        const typingOffResult = await sendMetaSenderAction({
+          pageAccessToken: connectionResult.connection.access_token,
           recipientId: event.senderId,
           action: "typing_off",
         });
+        if (!typingOffResult.ok) {
+          await insertMetaWebhookDebugMessage({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            event,
+            raw: {
+              stage: "typing_off_failed",
+              channel: event.channel,
+              recipient_id: event.senderId,
+              status: typingOffResult?.status ?? null,
+              error: typingOffResult?.error ?? "Unknown typing_off error",
+            },
+          });
+        }
       }
     }
 
