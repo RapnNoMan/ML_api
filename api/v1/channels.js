@@ -135,6 +135,17 @@ function normalizeJsonArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function tailWordsByRatio(text, ratio = 0.2) {
+  const words = String(text || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (words.length === 0) return "";
+  const rawCount = Math.ceil(words.length * Number(ratio || 0));
+  const count = Math.max(8, Math.min(words.length, rawCount));
+  return words.slice(words.length - count).join(" ");
+}
+
 function toOpenAiInputItems(messages) {
   return (Array.isArray(messages) ? messages : []).map((message) => {
     const role = message?.role === "assistant" ? "assistant" : "user";
@@ -1658,7 +1669,16 @@ async function processIncomingMessage({ event, connection, headers }) {
   });
 
   const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
-  const messages = [...historyMessages, { role: "user", content: incomingText }];
+  const userHistoryMessages = historyMessages.filter((m) => m?.role === "user");
+  const lastAssistantMessage = [...historyMessages]
+    .reverse()
+    .find((m) => m?.role === "assistant" && typeof m?.content === "string" && m.content.trim());
+  const assistantTail = tailWordsByRatio(lastAssistantMessage?.content || "", 0.2);
+  const messages = [
+    ...userHistoryMessages,
+    ...(assistantTail ? [{ role: "assistant", content: `Recent reply: ${assistantTail}` }] : []),
+    { role: "user", content: incomingText },
+  ];
 
   const completionStartedAt = Date.now();
   const completion = await getXAiChatCompletion({
