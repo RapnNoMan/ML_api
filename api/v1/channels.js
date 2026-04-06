@@ -1617,7 +1617,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     agentId,
     anonId,
     chatId,
-    maxRows: 3,
+    maxRows: 2,
   });
   const ragPromise =
     normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
