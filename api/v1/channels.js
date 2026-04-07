@@ -1,5 +1,8 @@
 const { createHmac, timingSafeEqual } = require("node:crypto");
-const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
+const {
+  checkMessageCap,
+  refundExtraMessageCredit,
+} = require("../../scripts/internal/checkMessageCap");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
@@ -1605,6 +1608,9 @@ async function processIncomingMessage({ event, connection, headers }) {
   const requestCountry = getRequestCountry(headers);
   const incomingText = sanitizeIncomingUserText(event.text);
   const normalizedMessage = normalizeIncomingMessage(incomingText);
+  let consumedExtraCreditRowId = null;
+  let requestSucceeded = false;
+  try {
 
   const usageCheckPromise = checkMessageCap({
     supId: process.env.SUP_ID,
@@ -1656,6 +1662,10 @@ async function processIncomingMessage({ event, connection, headers }) {
   ]);
 
   if (!usageCheck.ok) return { ok: false, status: usageCheck.status, error: usageCheck.error };
+  const usageCheckExtraCreditRowId = Number(usageCheck?.extraCreditRowId);
+  if (Number.isFinite(usageCheckExtraCreditRowId) && usageCheckExtraCreditRowId > 0) {
+    consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
+  }
   if (!historyResult.ok) return { ok: false, status: historyResult.status, error: historyResult.error };
   if (!ragResult.ok) return { ok: false, status: ragResult.status, error: ragResult.error };
   if (!agentInfo.ok) return { ok: false, status: agentInfo.status, error: agentInfo.error };
@@ -1778,6 +1788,7 @@ async function processIncomingMessage({ event, connection, headers }) {
       errorCode: null,
     }).catch(() => {});
 
+    requestSucceeded = true;
     return { ok: true, reply: finalReply, actionUsed: true, actionCount };
   }
 
@@ -1833,7 +1844,17 @@ async function processIncomingMessage({ event, connection, headers }) {
     errorCode: null,
   }).catch(() => {});
 
+  requestSucceeded = true;
   return { ok: true, reply, actionUsed: false, actionCount: 0 };
+  } finally {
+    if (consumedExtraCreditRowId !== null && !requestSucceeded) {
+      await refundExtraMessageCredit({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        rowId: consumedExtraCreditRowId,
+      }).catch(() => {});
+    }
+  }
 }
 module.exports = async function handler(req, res) {
   try {

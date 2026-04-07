@@ -1,4 +1,7 @@
-const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
+const {
+  checkMessageCap,
+  refundExtraMessageCredit,
+} = require("../../scripts/internal/checkMessageCap");
 const { validateDashboardAgentAccess } = require("../../scripts/internal/validateDashboardAgentAccess");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
@@ -1161,6 +1164,8 @@ function sendSseEvent(res, event, payload) {
 }
 
 module.exports = async function handler(req, res) {
+  let consumedExtraCreditRowId = null;
+  let requestSucceeded = false;
   try {
     setDashboardCorsHeaders(req, res);
     if (req.method === "OPTIONS") {
@@ -1241,6 +1246,10 @@ module.exports = async function handler(req, res) {
   if (!usageCheck.ok) {
     res.status(usageCheck.status).json({ error: usageCheck.error });
     return;
+  }
+  const usageCheckExtraCreditRowId = Number(usageCheck?.extraCreditRowId);
+  if (Number.isFinite(usageCheckExtraCreditRowId) && usageCheckExtraCreditRowId > 0) {
+    consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
   }
 
   const normalizedMessage = String(body.message)
@@ -2090,6 +2099,7 @@ module.exports = async function handler(req, res) {
         customButtonPayload ? { done: true, custom_button: customButtonPayload } : { done: true }
       );
       closeStream();
+      requestSucceeded = true;
       return;
     }
 
@@ -2103,6 +2113,7 @@ module.exports = async function handler(req, res) {
             reply: followupReply,
           }
     );
+    requestSucceeded = true;
     return;
   }
 
@@ -2166,12 +2177,14 @@ module.exports = async function handler(req, res) {
     if (streamReady) {
       sendSseEvent(res, "done", { done: true });
       closeStream();
+      requestSucceeded = true;
       return;
     }
 
     res.status(200).json({
       reply: finalReply,
     });
+    requestSucceeded = true;
   } catch (error) {
     const contentType = String(res.getHeader("Content-Type") || "").toLowerCase();
     if (contentType.includes("text/event-stream")) {
@@ -2187,5 +2200,13 @@ module.exports = async function handler(req, res) {
       detail: String(error?.message || error || "Unknown error"),
       stack: typeof error?.stack === "string" ? error.stack : null,
     });
+  } finally {
+    if (consumedExtraCreditRowId !== null && !requestSucceeded) {
+      await refundExtraMessageCredit({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        rowId: consumedExtraCreditRowId,
+      }).catch(() => {});
+    }
   }
 };

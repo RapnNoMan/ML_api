@@ -1,5 +1,8 @@
 const { validateAgentKey } = require("../../scripts/internal/validateAgentKey");
-const { checkMessageCap } = require("../../scripts/internal/checkMessageCap");
+const {
+  checkMessageCap,
+  refundExtraMessageCredit,
+} = require("../../scripts/internal/checkMessageCap");
 const { SKIP_VECTOR_MESSAGES } = require("../../scripts/internal/skipVectorMessages");
 const { getAgentInfo } = require("../../scripts/internal/getAgentInfo");
 const { getAgentAllActions } = require("../../scripts/internal/getAgentAllActions");
@@ -825,6 +828,8 @@ function usageToTokens(usage) {
 }
 
 module.exports = async function handler(req, res) {
+  let consumedExtraCreditRowId = null;
+  let requestSucceeded = false;
   try {
     setChatCorsHeaders(res);
     if (req.method === "OPTIONS") {
@@ -895,6 +900,10 @@ module.exports = async function handler(req, res) {
   if (!usageCheck.ok) {
     res.status(usageCheck.status).json({ error: usageCheck.error });
     return;
+  }
+  const usageCheckExtraCreditRowId = Number(usageCheck?.extraCreditRowId);
+  if (Number.isFinite(usageCheckExtraCreditRowId) && usageCheckExtraCreditRowId > 0) {
+    consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
   }
 
   const normalizedMessage = String(body.message)
@@ -1570,6 +1579,7 @@ module.exports = async function handler(req, res) {
     res.status(200).json({
       reply: followupReply,
     });
+    requestSucceeded = true;
     return;
   }
 
@@ -1624,11 +1634,20 @@ module.exports = async function handler(req, res) {
     res.status(200).json({
       reply: completionReply,
     });
+    requestSucceeded = true;
   } catch (error) {
     res.status(500).json({
       error: "Server error",
       detail: String(error?.message || error || "Unknown error"),
       stack: typeof error?.stack === "string" ? error.stack : null,
     });
+  } finally {
+    if (consumedExtraCreditRowId !== null && !requestSucceeded) {
+      await refundExtraMessageCredit({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        rowId: consumedExtraCreditRowId,
+      }).catch(() => {});
+    }
   }
 };
