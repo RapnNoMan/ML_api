@@ -56,7 +56,28 @@ async function fetchTable({ supId, supKey, agentId, table, fields }) {
   return { ok: true, rows: Array.isArray(payload) ? payload : [] };
 }
 
-async function getAgentAllActions({ supId, supKey, agentId }) {
+async function fetchWorkspaceAppsRow({ supId, supKey, agentId }) {
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = `${baseUrl}/workspace_apps?select=workspace_id,tickets_enabled,ticket_email_required,ticket_phone_required&agent_id=eq.${agentId}&limit=1`;
+
+  const response = await fetch(url, {
+    headers: {
+      apikey: supKey,
+      Authorization: `Bearer ${supKey}`,
+      Accept: "application/json",
+    },
+  });
+
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Apps service unavailable" };
+  }
+
+  const payload = await response.json();
+  const rows = Array.isArray(payload) ? payload : [];
+  return { ok: true, row: rows[0] || null };
+}
+
+async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets = false }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
@@ -69,18 +90,10 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
   let gmailConnectionsRows = [];
   let calendarActionsRows = [];
   let calendarConnectionsRows = [];
+  let workspaceAppsRow = null;
 
   try {
-    const [
-      custom,
-      zapier,
-      make,
-      slack,
-      gmailActions,
-      gmailConnections,
-      calendarActions,
-      calendarConnections,
-    ] = await Promise.all([
+    const requests = [
       fetchTable({
         supId,
         supKey,
@@ -137,9 +150,31 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         table: "google_calendar_connections",
         fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
       }),
-    ]);
+    ];
+    if (includePortalTickets) {
+      requests.push(
+        fetchWorkspaceAppsRow({
+          supId,
+          supKey,
+          agentId,
+        })
+      );
+    }
 
-    const results = [
+    const results = await Promise.all(requests);
+    const [
+      custom,
+      zapier,
+      make,
+      slack,
+      gmailActions,
+      gmailConnections,
+      calendarActions,
+      calendarConnections,
+      workspaceApps,
+    ] = results;
+
+    const statusResults = [
       custom,
       zapier,
       make,
@@ -149,7 +184,9 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
       calendarActions,
       calendarConnections,
     ];
-    const firstFailed = results.find((result) => !result?.ok);
+    if (includePortalTickets) statusResults.push(workspaceApps);
+
+    const firstFailed = statusResults.find((result) => !result?.ok);
     if (firstFailed) return firstFailed;
 
     customRows = custom.rows;
@@ -160,6 +197,7 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
     gmailConnectionsRows = gmailConnections.rows;
     calendarActionsRows = calendarActions.rows;
     calendarConnectionsRows = calendarConnections.rows;
+    workspaceAppsRow = workspaceApps?.row || null;
   } catch (error) {
     return { ok: false, status: 502, error: "Actions service unavailable" };
   }
@@ -378,6 +416,55 @@ async function getAgentAllActions({ supId, supKey, agentId }) {
         },
       });
     }
+  }
+
+  if (includePortalTickets && workspaceAppsRow && workspaceAppsRow.tickets_enabled === true) {
+    if (!process.env.PORTAL_ID || !process.env.PORTAL_SECRET_KEY) {
+      return { ok: false, status: 500, error: "Server configuration error" };
+    }
+
+    const toolName = sanitizeToolName("create_support_ticket", "tickets", usedNames);
+    const ticketEmailRequired = workspaceAppsRow.ticket_email_required !== false;
+    const ticketPhoneRequired = workspaceAppsRow.ticket_phone_required === true;
+    const requiredFields = ["subject", "summary", "customer_name"];
+    if (ticketEmailRequired) requiredFields.push("customer_email");
+    if (ticketPhoneRequired) requiredFields.push("customer_phone");
+
+    tools.push({
+      type: "function",
+      name: toolName,
+      description:
+        "Create a new customer support ticket. Ask only for missing required fields before calling.",
+      parameters: {
+        type: "object",
+        properties: {
+          subject: { type: "string" },
+          summary: { type: "string" },
+          summery: { type: "string" },
+          customer_name: { type: "string" },
+          customer_email: { type: "string" },
+          email: { type: "string" },
+          customer_phone: { type: "string" },
+          phone: { type: "string" },
+        },
+        required: requiredFields,
+        additionalProperties: false,
+      },
+    });
+
+    actionMap.set(toolName, {
+      tool_name: toolName,
+      id: workspaceAppsRow.workspace_id ?? null,
+      title: "Create Support Ticket",
+      description: "Create a new customer support ticket.",
+      url: "",
+      method: "POST",
+      headers: {},
+      body_template: null,
+      kind: "ticket_create",
+      ticket_email_required: ticketEmailRequired,
+      ticket_phone_required: ticketPhoneRequired,
+    });
   }
 
   return { ok: true, tools, actionMap };

@@ -12,6 +12,8 @@ const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
+const { createPortalTicket } = require("../../scripts/internal/ticketsPortal");
+const { evaluateAnonSpamAndMaybeBan } = require("../../scripts/internal/spamGuard");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
@@ -114,9 +116,9 @@ function formatReplyForTelegramText(text) {
 function sanitizeIncomingUserText(value) {
   const raw = String(value || "").replace(/\0/g, "");
   const trimmed = raw.trim();
-  const maxLen = 4000;
+  const maxLen = 800;
   if (trimmed.length <= maxLen) return trimmed;
-  return trimmed.slice(0, maxLen);
+  return trimmed.slice(-maxLen);
 }
 
 function normalizeIncomingMessage(value) {
@@ -715,7 +717,15 @@ function usageToTokens(usage) {
     output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
   };
 }
-async function executeActionCalls({ actionCalls, toolsResult, agentId }) {
+async function executeActionCalls({
+  actionCalls,
+  toolsResult,
+  agentId,
+  anonId,
+  chatId,
+  country,
+  source,
+}) {
   const toolResults = [];
   let calendarContext = null;
 
@@ -781,6 +791,105 @@ async function executeActionCalls({ actionCalls, toolsResult, agentId }) {
           error: "Missing required tool arguments",
           missing_required_fields: missingRequiredFields,
         },
+      });
+      continue;
+    }
+
+    if (actionDef.kind === "ticket_create") {
+      const normalizedSubject = String(variables?.subject ?? "").trim();
+      const normalizedSummary = String(variables?.summary ?? variables?.summery ?? "").trim();
+      const normalizedCustomerName = String(variables?.customer_name ?? "").trim();
+      const normalizedCustomerEmail = String(variables?.customer_email ?? variables?.email ?? "").trim();
+      const normalizedCustomerPhone = String(variables?.customer_phone ?? variables?.phone ?? "").trim();
+      const missingTicketFields = [];
+      if (!normalizedSubject) missingTicketFields.push("subject");
+      if (!normalizedSummary) missingTicketFields.push("summary");
+      if (!normalizedCustomerName) missingTicketFields.push("customer_name");
+      if (actionDef.ticket_email_required === true && !normalizedCustomerEmail) {
+        missingTicketFields.push("customer_email");
+      }
+      if (actionDef.ticket_phone_required === true && !normalizedCustomerPhone) {
+        missingTicketFields.push("customer_phone");
+      }
+      if (!normalizedCustomerEmail && !normalizedCustomerPhone) {
+        missingTicketFields.push("customer_email_or_customer_phone");
+      }
+
+      const requestPayload = {
+        subject: normalizedSubject,
+        summary: normalizedSummary,
+        customer_name: normalizedCustomerName,
+        customer_email: normalizedCustomerEmail || null,
+        customer_phone: normalizedCustomerPhone || null,
+        anon_id: anonId,
+        chat_id: chatId,
+        chat_source: source,
+        country: country || "UN",
+        agent_id: agentId,
+      };
+
+      if (missingTicketFields.length > 0) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: {
+            url: `https://${process.env.PORTAL_ID || "PORTAL_ID"}.supabase.co/rest/v1/tickets`,
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: requestPayload,
+          },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Missing required tool arguments",
+            missing_required_fields: missingTicketFields,
+          },
+        });
+        continue;
+      }
+
+      const ticketResult = await createPortalTicket({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        chatId,
+        anonId,
+        chatSource: source,
+        country: country || "UN",
+        subject: normalizedSubject,
+        summary: normalizedSummary,
+        customerName: normalizedCustomerName,
+        customerEmail: normalizedCustomerEmail || null,
+        customerPhone: normalizedCustomerPhone || null,
+      });
+
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        tool_args: variables,
+        request: {
+          url: `https://${process.env.PORTAL_ID || "PORTAL_ID"}.supabase.co/rest/v1/tickets`,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: requestPayload,
+        },
+        response: ticketResult.ok
+          ? {
+              ok: true,
+              status: ticketResult.status,
+              body: JSON.stringify({
+                ticket_id: ticketResult.ticket?.id ?? null,
+                ticket_code: ticketResult.ticket?.ticket_code ?? null,
+                status: ticketResult.ticket?.status ?? "open",
+              }),
+            }
+          : {
+              ok: false,
+              status: ticketResult.status,
+              error: ticketResult.error || "Ticket creation failed",
+              details: ticketResult.details || null,
+            },
       });
       continue;
     }
@@ -1611,6 +1720,21 @@ async function processIncomingMessage({ event, connection, headers }) {
   let consumedExtraCreditRowId = null;
   let requestSucceeded = false;
   try {
+  const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    xaiApiKey: process.env.XAI_API_KEY,
+    xaiModel: process.env.XAI_SPAM_MODEL || process.env.XAI_PRIMARY_MODEL,
+    agentId,
+    anonId,
+    incomingMessage: incomingText,
+  });
+  if (!spamGuardResult.ok) {
+    return { ok: false, status: spamGuardResult.status || 502, error: spamGuardResult.error || "Spam guard failed" };
+  }
+  if (spamGuardResult.banned) {
+    return { ok: false, status: 403, error: "User is banned" };
+  }
 
   const usageCheckPromise = checkMessageCap({
     supId: process.env.SUP_ID,
@@ -1647,6 +1771,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
+    includePortalTickets: true,
   });
 
   let latencyMiniMs = null;
@@ -1713,6 +1838,10 @@ async function processIncomingMessage({ event, connection, headers }) {
       actionCalls,
       toolsResult,
       agentId,
+      anonId,
+      chatId,
+      country: requestCountry,
+      source: `meta_${event.channel}`,
     });
     latencyToolsMs = Date.now() - toolsStartedAt;
 
