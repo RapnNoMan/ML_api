@@ -1,6 +1,7 @@
 {
   "rewrites": [
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
+    { "source": "/v1/grok-tool-test", "destination": "/api/v1/grok_tool_test" },
     { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
     { "source": "/v1/widget_dashboard/:agent_id", "destination": "/api/v1/widget_dashboard?agent_id=:agent_id" },
     { "source": "/v1/widget-dashboard/:agent_id", "destination": "/api/v1/widget_dashboard?agent_id=:agent_id" },
