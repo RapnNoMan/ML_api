@@ -36,6 +36,21 @@ function parseBodyTemplate(bodyTemplate) {
   return { type: "object", properties: {}, additionalProperties: false };
 }
 
+function normalizeDynamicSourceType(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "int" || text === "float" || text === "bool" || text === "date") {
+    return text;
+  }
+  return "text";
+}
+
+function toDynamicSourceParameterSchema(dataType) {
+  if (dataType === "int") return { type: "integer" };
+  if (dataType === "float") return { type: "number" };
+  if (dataType === "bool") return { type: "boolean" };
+  return { type: "string" };
+}
+
 async function fetchTable({ supId, supKey, agentId, table, fields }) {
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = `${baseUrl}/${table}?select=${fields}&agent_id=eq.${agentId}`;
@@ -90,6 +105,9 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
   let gmailConnectionsRows = [];
   let calendarActionsRows = [];
   let calendarConnectionsRows = [];
+  let dynamicSourcesRows = [];
+  let dynamicSourceColumnsRows = [];
+  let dynamicSourceRowsRows = [];
   let workspaceAppsRow = null;
 
   try {
@@ -150,6 +168,27 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
         table: "google_calendar_connections",
         fields: "id,agent_id,access_token,refresh_token,token_type,expires_at",
       }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "dynamic_sources",
+        fields: "id,agent_id,name,enabled",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "dynamic_source_columns",
+        fields: "id,agent_id,source_id,column_key,name,data_type,filter_sort_enabled,position",
+      }),
+      fetchTable({
+        supId,
+        supKey,
+        agentId,
+        table: "dynamic_source_rows",
+        fields: "id,agent_id,source_id,row_key,cells,position",
+      }),
     ];
     if (includePortalTickets) {
       requests.push(
@@ -171,6 +210,9 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
       gmailConnections,
       calendarActions,
       calendarConnections,
+      dynamicSources,
+      dynamicSourceColumns,
+      dynamicSourceRows,
       workspaceApps,
     ] = results;
 
@@ -183,6 +225,9 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
       gmailConnections,
       calendarActions,
       calendarConnections,
+      dynamicSources,
+      dynamicSourceColumns,
+      dynamicSourceRows,
     ];
     if (includePortalTickets) statusResults.push(workspaceApps);
 
@@ -197,6 +242,9 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
     gmailConnectionsRows = gmailConnections.rows;
     calendarActionsRows = calendarActions.rows;
     calendarConnectionsRows = calendarConnections.rows;
+    dynamicSourcesRows = dynamicSources.rows;
+    dynamicSourceColumnsRows = dynamicSourceColumns.rows;
+    dynamicSourceRowsRows = dynamicSourceRows.rows;
     workspaceAppsRow = workspaceApps?.row || null;
   } catch (error) {
     return { ok: false, status: 502, error: "Actions service unavailable" };
@@ -416,6 +464,102 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
         },
       });
     }
+  }
+
+  const dynamicSource = dynamicSourcesRows.find((row) => row?.enabled === true);
+  if (dynamicSource) {
+    const sourceId = dynamicSource.id;
+    const sourceName =
+      typeof dynamicSource.name === "string" && dynamicSource.name.trim()
+        ? dynamicSource.name.trim()
+        : "My New Table";
+    const sourceColumns = dynamicSourceColumnsRows
+      .filter((row) => row?.source_id === sourceId)
+      .sort((a, b) => Number(a?.position ?? 0) - Number(b?.position ?? 0));
+    const sourceRows = dynamicSourceRowsRows
+      .filter((row) => row?.source_id === sourceId)
+      .sort((a, b) => Number(a?.position ?? 0) - Number(b?.position ?? 0));
+    const filterSortColumns = sourceColumns
+      .filter((row) => row?.filter_sort_enabled === true)
+      .map((row) => {
+        const key =
+          typeof row?.column_key === "string" && row.column_key.trim()
+            ? row.column_key.trim()
+            : "";
+        const label =
+          typeof row?.name === "string" && row.name.trim() ? row.name.trim() : key;
+        const dataType = normalizeDynamicSourceType(row?.data_type);
+        return {
+          key,
+          name: label || key,
+          data_type: dataType,
+          filter_sort_enabled: true,
+        };
+      })
+      .filter((column) => column.key);
+
+    const dynamicFiltersProperties = {};
+    for (const column of filterSortColumns) {
+      dynamicFiltersProperties[column.key] = toDynamicSourceParameterSchema(column.data_type);
+    }
+
+    const toolName = sanitizeToolName("query_dynamic_source", dynamicSource.id, usedNames);
+    const filterSortLabel = filterSortColumns
+      .map((column) => `${column.name} (${column.key}: ${column.data_type})`)
+      .join(", ");
+    const description = filterSortColumns.length > 0
+      ? `Query Dynamic Source table "${sourceName}". Filter and sort only by: ${filterSortLabel}. Always returns up to 5 rows.`
+      : `Query Dynamic Source table "${sourceName}". No filter/sort columns are enabled. Always returns up to 5 rows.`;
+
+    const parameters = {
+      type: "object",
+      properties: {
+        filters: {
+          type: "object",
+          properties: dynamicFiltersProperties,
+          additionalProperties: false,
+        },
+      },
+      required: [],
+      additionalProperties: false,
+    };
+    if (filterSortColumns.length > 0) {
+      parameters.properties.sort_by = {
+        type: "string",
+        enum: filterSortColumns.map((column) => column.key),
+      };
+      parameters.properties.sort_order = {
+        type: "string",
+        enum: ["asc", "desc"],
+      };
+    }
+
+    tools.push({
+      type: "function",
+      name: toolName,
+      description,
+      parameters,
+    });
+
+    actionMap.set(toolName, {
+      tool_name: toolName,
+      id: dynamicSource.id ?? null,
+      title: `Query Dynamic Source: ${sourceName}`,
+      description,
+      url: "",
+      method: "LOCAL",
+      headers: {},
+      body_template: null,
+      kind: "dynamic_source_query",
+      dynamic_source_name: sourceName,
+      dynamic_source_columns: filterSortColumns,
+      dynamic_source_rows: sourceRows.map((row) => ({
+        id: row?.id ?? null,
+        row_key: row?.row_key ?? null,
+        position: row?.position ?? null,
+        cells: row?.cells && typeof row.cells === "object" ? row.cells : {},
+      })),
+    });
   }
 
   if (includePortalTickets && workspaceAppsRow && workspaceAppsRow.tickets_enabled === true) {

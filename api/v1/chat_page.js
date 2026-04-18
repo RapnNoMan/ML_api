@@ -14,6 +14,7 @@ const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/goo
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 const { createPortalTicket } = require("../../scripts/internal/ticketsPortal");
 const { evaluateAnonSpamAndMaybeBan } = require("../../scripts/internal/spamGuard");
+const { executeDynamicSourceQuery } = require("../../scripts/internal/queryDynamicSource");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
@@ -1536,6 +1537,38 @@ module.exports = async function handler(req, res) {
             status: 200,
             body: "Button sent to the user in the chat. You can reference it as button below.",
           },
+        });
+        continue;
+      }
+
+      if (actionDef.kind === "dynamic_source_query") {
+        const queryResult = executeDynamicSourceQuery(actionDef, variables);
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: {
+            url: null,
+            method: "LOCAL",
+            headers: {},
+            body: {
+              filters: variables?.filters,
+              sort_by: variables?.sort_by,
+              sort_order: variables?.sort_order,
+            },
+          },
+          response: queryResult.ok
+            ? {
+                ok: true,
+                status: queryResult.status,
+                body: JSON.stringify(queryResult.body),
+              }
+            : {
+                ok: false,
+                status: queryResult.status,
+                error: queryResult.error || "Dynamic source query failed",
+                details: queryResult.details || null,
+              },
         });
         continue;
       }

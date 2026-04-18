@@ -12,6 +12,7 @@ const { saveMessage } = require("../../scripts/internal/saveMessage");
 const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
+const { executeDynamicSourceQuery } = require("../../scripts/internal/queryDynamicSource");
 const { randomBytes } = require("node:crypto");
 
 function toInputItems(messages) {
@@ -625,7 +626,7 @@ module.exports = async function handler(req, res) {
         call_id: call?.call_id ?? null,
       };
       const actionDef = toolsResult.actionMap.get(call.action_key);
-      if (!actionDef || !actionDef.url) {
+      if (!actionDef) {
         perToolTiming.total_ms = Date.now() - toolCallStartedAt;
         timing.toolCalls.push(perToolTiming);
         toolResults.push({
@@ -662,6 +663,51 @@ module.exports = async function handler(req, res) {
       const variables = call?.variables ?? {};
       let url = actionDef.url;
       let requestBody;
+
+      if (actionDef.kind === "dynamic_source_query") {
+        const queryResult = executeDynamicSourceQuery(actionDef, variables);
+        perToolTiming.total_ms = Date.now() - toolCallStartedAt;
+        timing.toolCalls.push(perToolTiming);
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: {
+            url: null,
+            method: "LOCAL",
+            headers: {},
+            body: {
+              filters: variables?.filters,
+              sort_by: variables?.sort_by,
+              sort_order: variables?.sort_order,
+            },
+          },
+          response: queryResult.ok
+            ? {
+                ok: true,
+                status: queryResult.status,
+                body: JSON.stringify(queryResult.body),
+              }
+            : {
+                ok: false,
+                status: queryResult.status,
+                error: queryResult.error || "Dynamic source query failed",
+                details: queryResult.details || null,
+              },
+        });
+        continue;
+      }
+
+      if (!url) {
+        perToolTiming.total_ms = Date.now() - toolCallStartedAt;
+        timing.toolCalls.push(perToolTiming);
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          ok: false,
+          error: "Unknown action",
+        });
+        continue;
+      }
 
       if (actionDef.kind === "gmail_send") {
         const tokenStartedAt = Date.now();
