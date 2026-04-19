@@ -74,6 +74,93 @@ function getServiceHeaders(supKey) {
   };
 }
 
+function safeTextSnippet(value, maxLen = 220) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen)}...`;
+}
+
+async function runSupabaseRawProbes({ supId, supKey, agentId }) {
+  if (!supId || !supKey) {
+    return {
+      ok: false,
+      status: 500,
+      error: "Server configuration error",
+      target: supId ? `https://${supId}.supabase.co/rest/v1` : null,
+      probes: [],
+    };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const headers = getServiceHeaders(supKey);
+  const probes = [];
+
+  const run = async ({ name, method, url, body }) => {
+    let response;
+    let responseText = "";
+    try {
+      response = await fetch(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      try {
+        responseText = await response.text();
+      } catch (_) {}
+    } catch (_) {
+      probes.push({
+        name,
+        method,
+        url,
+        status: null,
+        ok: false,
+        detail: "Network error",
+      });
+      return;
+    }
+
+    let rowCount = null;
+    try {
+      const parsed = responseText ? JSON.parse(responseText) : null;
+      if (Array.isArray(parsed)) rowCount = parsed.length;
+    } catch (_) {}
+
+    probes.push({
+      name,
+      method,
+      url,
+      status: response.status,
+      ok: response.ok,
+      row_count: rowCount,
+      detail: safeTextSnippet(responseText),
+    });
+  };
+
+  await run({
+    name: "agents_lookup",
+    method: "GET",
+    url: `${baseUrl}/agents?select=id,workspace_id&id=eq.${agentId}&limit=1`,
+  });
+  await run({
+    name: "widget_embed_lookup",
+    method: "GET",
+    url: `${baseUrl}/widget_embed?select=id&agent_id=eq.${agentId}&limit=1`,
+  });
+  await run({
+    name: "usage_rpc",
+    method: "POST",
+    url: `${baseUrl}/rpc/get_message_usage_service`,
+    body: { p_agent_id: agentId },
+  });
+
+  return {
+    ok: true,
+    target: baseUrl,
+    probes,
+  };
+}
+
 async function fetchUsageReadOnly({ supId, supKey, agentId }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
@@ -240,6 +327,10 @@ module.exports = async function handler(req, res) {
     PORTAL_ID: Boolean(process.env.PORTAL_ID),
     PORTAL_SECRET_KEY: Boolean(process.env.PORTAL_SECRET_KEY),
   };
+  const config = {
+    supabase_rest_base:
+      process.env.SUP_ID ? `https://${process.env.SUP_ID}.supabase.co/rest/v1` : null,
+  };
 
   const steps = [];
   let failedStep = null;
@@ -280,6 +371,21 @@ module.exports = async function handler(req, res) {
     note: "This checker does not consume extra credits.",
   });
   if (!usage.ok) failedStep = failedStep || "usage_check_readonly";
+
+  const rawProbes = await runSupabaseRawProbes({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+  steps.push({
+    step: "supabase_raw_probes",
+    status: statusFromResult(rawProbes),
+    code: rawProbes.status ?? null,
+    error: rawProbes.error ?? null,
+    target: rawProbes.target ?? null,
+    probes: rawProbes.probes ?? [],
+  });
+  if (!rawProbes.ok) failedStep = failedStep || "supabase_raw_probes";
 
   const history = await getChatHistory({
     supId: process.env.SUP_ID,
@@ -409,7 +515,7 @@ module.exports = async function handler(req, res) {
     total_ms: Date.now() - startedAt,
     agent_id: agentId,
     env_present: env,
+    config,
     steps,
   });
 };
-
