@@ -7,7 +7,7 @@ from urllib import error, request
 
 # Hard-coded defaults for one-click "Run Python File" in VS Code.
 DEFAULT_BASE_URL = "https://api.mitsolab.com"
-DEFAULT_AGENT_ID = "befcd1a8-fe43-4df8-b197-eb0f007bd148"
+DEFAULT_AGENT_ID = "befcd1a8-fe43-4df8-b197-eb6f007bd148"
 DEFAULT_MESSAGE = "hello from checker test"
 DEFAULT_ANON_ID = "checker-anon-001"
 DEFAULT_CHAT_ID = "checker-chat-001"

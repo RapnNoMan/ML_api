@@ -4,6 +4,53 @@ function parseDateValue(value) {
   return Number.isFinite(ts) ? ts : null;
 }
 
+function normalizeText(value) {
+  if (value === null || value === undefined) return "";
+  return String(value).trim().toLowerCase();
+}
+
+function levenshteinDistance(a, b) {
+  const left = normalizeText(a);
+  const right = normalizeText(b);
+  const n = left.length;
+  const m = right.length;
+  if (n === 0) return m;
+  if (m === 0) return n;
+
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0));
+  for (let i = 0; i <= n; i += 1) dp[i][0] = i;
+  for (let j = 0; j <= m; j += 1) dp[0][j] = j;
+
+  for (let i = 1; i <= n; i += 1) {
+    for (let j = 1; j <= m; j += 1) {
+      const cost = left[i - 1] === right[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+
+  return dp[n][m];
+}
+
+function getTextMatchScore(actual, expected) {
+  const left = normalizeText(actual);
+  const right = normalizeText(expected);
+  if (!right) return 1;
+  if (!left) return 0;
+  if (left === right) return 1;
+  if (left.startsWith(right)) return 0.96;
+  if (left.includes(right)) return 0.9;
+
+  const distance = levenshteinDistance(left, right);
+  const maxLen = Math.max(left.length, right.length);
+  if (maxLen === 0) return 1;
+  const similarity = 1 - distance / maxLen;
+  return Math.max(0, Math.min(1, similarity));
+}
+
 function normalizeByType(value, dataType) {
   if (dataType === "int") {
     const num = Number(value);
@@ -79,6 +126,7 @@ function executeDynamicSourceQuery(actionDef, variables) {
     };
   }
 
+  const textFilterScores = new Map();
   let filteredRows = rows;
   for (const key of requestedFilterKeys) {
     const column = columnsByKey.get(key);
@@ -86,7 +134,31 @@ function executeDynamicSourceQuery(actionDef, variables) {
     filteredRows = filteredRows.filter((row) => {
       const cells = row?.cells && typeof row.cells === "object" ? row.cells : {};
       const actualValue = normalizeByType(cells[key], column.data_type);
+      if (column.data_type === "text") {
+        const score = getTextMatchScore(actualValue, expectedValue);
+        if (score < 0.6) return false;
+        const rowKey = String(row?.id ?? row?.row_key ?? JSON.stringify(cells));
+        const previous = textFilterScores.get(rowKey) ?? 0;
+        textFilterScores.set(rowKey, previous + score);
+        return true;
+      }
       return compareValues(actualValue, expectedValue, column.data_type) === 0;
+    });
+  }
+
+  const hasTextFilters = requestedFilterKeys.some(
+    (key) => columnsByKey.get(key)?.data_type === "text"
+  );
+  if (hasTextFilters && !variables?.sort_by) {
+    filteredRows = [...filteredRows].sort((left, right) => {
+      const leftCells = left?.cells && typeof left.cells === "object" ? left.cells : {};
+      const rightCells = right?.cells && typeof right.cells === "object" ? right.cells : {};
+      const leftKey = String(left?.id ?? left?.row_key ?? JSON.stringify(leftCells));
+      const rightKey = String(right?.id ?? right?.row_key ?? JSON.stringify(rightCells));
+      const leftScore = textFilterScores.get(leftKey) ?? 0;
+      const rightScore = textFilterScores.get(rightKey) ?? 0;
+      if (leftScore === rightScore) return 0;
+      return rightScore - leftScore;
     });
   }
 
