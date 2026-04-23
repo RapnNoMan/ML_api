@@ -15,8 +15,11 @@ module.exports = async function handler(req, res) {
   res.setHeader("Cache-Control", "no-store");
 
   if (!serveBrowserView) {
-    res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.status(200).send('{"status":"loaded","env":"production"}');
+    res.status(200).json({
+      status: "loaded",
+      env: "production",
+      profile: "cluster-eu-prod",
+    });
     return;
   }
 
