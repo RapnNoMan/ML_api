@@ -1204,6 +1204,8 @@ module.exports = async function handler(req, res) {
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
+  const debugTicket =
+    body?.debug_ticket === true || String(body?.debug_ticket || "").toLowerCase() === "true";
   const incomingMessage = sanitizeIncomingUserText(body.message);
   const acceptHeader = String(req?.headers?.accept || "").toLowerCase();
   const hasExplicitStreamFlag =
@@ -2285,9 +2287,11 @@ module.exports = async function handler(req, res) {
         ? {
             reply: finalFollowupReply,
             custom_button: customButtonPayload,
+            ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
           }
         : {
             reply: finalFollowupReply,
+            ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
           }
     );
     requestSucceeded = true;
