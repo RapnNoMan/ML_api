@@ -578,13 +578,22 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
       type: "function",
       name: toolName,
       description:
-        "Create a new customer support ticket. Ask only for missing required fields before calling.",
+        "Create a new customer support ticket. Do not ask the user for subject or summary; ask only what the issue is, then write subject and summary yourself. Ask only for other missing required fields before calling.",
       parameters: {
         type: "object",
         properties: {
-          subject: { type: "string" },
-          summary: { type: "string" },
-          summery: { type: "string" },
+          subject: {
+            type: "string",
+            description: "Generate this yourself from the reported issue. Do not ask the user for it.",
+          },
+          summary: {
+            type: "string",
+            description: "Generate this yourself from the reported issue. Do not ask the user for it.",
+          },
+          summery: {
+            type: "string",
+            description: "Legacy alias for summary. Generate from issue; do not ask user for it.",
+          },
           customer_name: { type: "string" },
           customer_email: { type: "string" },
           email: { type: "string" },
@@ -600,7 +609,8 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
       tool_name: toolName,
       id: workspaceAppsRow.workspace_id ?? null,
       title: "Create Support Ticket",
-      description: "Create a new customer support ticket.",
+      description:
+        "Create a new customer support ticket. Do not ask for subject/summary; generate both from the reported issue.",
       url: "",
       method: "POST",
       headers: {},

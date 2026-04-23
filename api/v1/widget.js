@@ -15,6 +15,10 @@ const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/
 const { createPortalTicket } = require("../../scripts/internal/ticketsPortal");
 const { evaluateAnonSpamAndMaybeBan } = require("../../scripts/internal/spamGuard");
 const { executeDynamicSourceQuery } = require("../../scripts/internal/queryDynamicSource");
+const {
+  getLatestTicketOutcome,
+  buildTicketOutcomeInstruction,
+} = require("../../scripts/internal/ticketOutcome");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
@@ -2150,10 +2154,15 @@ module.exports = async function handler(req, res) {
           "If availability is checked, do not reveal event details.",
         ].join("\n")
       : null;
+    const ticketOutcome = getLatestTicketOutcome({
+      toolResults,
+      actionMap: toolsResult.actionMap,
+    });
+    const ticketOutcomeNote = buildTicketOutcomeInstruction(ticketOutcome);
 
-    const followupInstructions = calendarNote
-      ? [prompt, calendarNote].join("\n\n")
-      : prompt;
+    const followupInstructions = [prompt, calendarNote, ticketOutcomeNote]
+      .filter(Boolean)
+      .join("\n\n");
 
     if (streamReady && streamClosed) {
       closeStream();

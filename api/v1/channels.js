@@ -15,6 +15,10 @@ const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/
 const { createPortalTicket } = require("../../scripts/internal/ticketsPortal");
 const { evaluateAnonSpamAndMaybeBan } = require("../../scripts/internal/spamGuard");
 const { executeDynamicSourceQuery } = require("../../scripts/internal/queryDynamicSource");
+const {
+  getLatestTicketOutcome,
+  buildTicketOutcomeInstruction,
+} = require("../../scripts/internal/ticketOutcome");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
@@ -1880,9 +1884,17 @@ async function processIncomingMessage({ event, connection, headers }) {
 
     const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
     const followupInputItems = toXAiInputItems(messages, assistantBlocks, toolResults);
-    const followupPrompt = calendarContext
-      ? [prompt, calendarContextNote(calendarContext)].join("\n\n")
-      : prompt;
+    const ticketOutcome = getLatestTicketOutcome({
+      toolResults,
+      actionMap: toolsResult.actionMap,
+    });
+    const followupPrompt = [
+      prompt,
+      calendarContext ? calendarContextNote(calendarContext) : null,
+      buildTicketOutcomeInstruction(ticketOutcome),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
 
     const followupStartedAt = Date.now();
     const followup = await getXAiChatCompletion({
