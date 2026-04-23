@@ -39,7 +39,6 @@ function getLatestTicketOutcome({ toolResults, actionMap }) {
         ok: true,
         status: response.status ?? null,
         ticketCode: toNonEmptyText(body?.ticket_code),
-        ticketId: body?.ticket_id ?? null,
         ticketStatus: toNonEmptyText(body?.status) || "open",
       };
       continue;
@@ -64,7 +63,6 @@ function buildTicketOutcomeInstruction(ticketOutcome) {
       "TICKET RESULT (SOURCE OF TRUTH)",
       "ticket_created: true",
       `ticket_code: ${ticketOutcome.ticketCode || "null"}`,
-      `ticket_id: ${ticketOutcome.ticketId ?? "null"}`,
       `ticket_status: ${ticketOutcome.ticketStatus || "open"}`,
       "RULES:",
       "- You may say the ticket is created.",

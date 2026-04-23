@@ -1260,13 +1260,12 @@ module.exports = async function handler(req, res) {
           },
           response: ticketResult.ok
             ? {
-                ok: true,
-                status: ticketResult.status,
-                body: JSON.stringify({
-                  ticket_id: ticketResult.ticket?.id ?? null,
+              ok: true,
+              status: ticketResult.status,
+              body: JSON.stringify({
                   ticket_code: ticketResult.ticket?.ticket_code ?? null,
                   status: ticketResult.ticket?.status ?? "open",
-                }),
+              }),
               }
             : {
                 ok: false,

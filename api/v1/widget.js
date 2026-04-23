@@ -1199,7 +1199,6 @@ module.exports = async function handler(req, res) {
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
-  const debugTicket = true;
   const incomingMessage = sanitizeIncomingUserText(body.message);
   const acceptHeader = String(req?.headers?.accept || "").toLowerCase();
   const hasExplicitStreamFlag =
@@ -1738,13 +1737,12 @@ module.exports = async function handler(req, res) {
           },
           response: ticketResult.ok
             ? {
-                ok: true,
-                status: ticketResult.status,
-                body: JSON.stringify({
-                  ticket_id: ticketResult.ticket?.id ?? null,
+              ok: true,
+              status: ticketResult.status,
+              body: JSON.stringify({
                   ticket_code: ticketResult.ticket?.ticket_code ?? null,
                   status: ticketResult.ticket?.status ?? "open",
-                }),
+              }),
               }
             : {
                 ok: false,
@@ -2265,11 +2263,9 @@ module.exports = async function handler(req, res) {
           ? {
               done: true,
               custom_button: customButtonPayload,
-              ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
             }
           : {
               done: true,
-              ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
             }
       );
       closeStream();
@@ -2282,11 +2278,9 @@ module.exports = async function handler(req, res) {
         ? {
             reply: finalFollowupReply,
             custom_button: customButtonPayload,
-            ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
           }
         : {
             reply: finalFollowupReply,
-            ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
           }
     );
     requestSucceeded = true;
@@ -2351,11 +2345,7 @@ module.exports = async function handler(req, res) {
   }).catch(() => {});
 
     if (streamReady) {
-      sendSseEvent(
-        res,
-        "done",
-        debugTicket ? { done: true, debug_ticket: null } : { done: true }
-      );
+      sendSseEvent(res, "done", { done: true });
       closeStream();
       requestSucceeded = true;
       return;

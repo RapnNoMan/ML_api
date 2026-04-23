@@ -63,6 +63,54 @@ async function fetchLatestTicketForChatAnon({
   return { ok: true, ticket: rows[0] || null };
 }
 
+async function fetchRecentTicketsForAnon({
+  portalId,
+  portalSecretKey,
+  agentId,
+  anonId,
+  sinceIso,
+  limit = 2,
+}) {
+  const cleanAnonId = toNonEmptyText(anonId);
+  if (!cleanAnonId) return { ok: true, rows: [] };
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const endpoint = new URL(`${baseUrl}/tickets`);
+  endpoint.searchParams.set("select", "id,created_at");
+  endpoint.searchParams.set("agent_id", `eq.${agentId}`);
+  endpoint.searchParams.set("anon_id", `eq.${cleanAnonId}`);
+  endpoint.searchParams.set("created_at", `gte.${sinceIso}`);
+  endpoint.searchParams.set("order", "created_at.desc");
+  endpoint.searchParams.set("limit", String(Math.max(1, Number(limit) || 2)));
+
+  let response;
+  try {
+    response = await fetch(endpoint.toString(), {
+      method: "GET",
+      headers: {
+        apikey: portalSecretKey,
+        Authorization: `Bearer ${portalSecretKey}`,
+        Accept: "application/json",
+      },
+    });
+  } catch {
+    return { ok: false, status: 502, error: "Tickets service unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Tickets service unavailable" };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, status: 502, error: "Tickets service unavailable" };
+  }
+
+  return { ok: true, rows: Array.isArray(payload) ? payload : [] };
+}
+
 async function fetchNextTicketCode({ portalId, portalSecretKey, agentId }) {
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const endpoint = new URL(`${baseUrl}/tickets`);
@@ -175,6 +223,29 @@ async function createPortalTicket({
         },
       };
     }
+  }
+
+  const anonWindowSinceIso = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const recentAnonTicketsResult = await fetchRecentTicketsForAnon({
+    portalId,
+    portalSecretKey,
+    agentId,
+    anonId: cleanAnonId,
+    sinceIso: anonWindowSinceIso,
+    limit: 2,
+  });
+  if (!recentAnonTicketsResult.ok) return recentAnonTicketsResult;
+  if (Array.isArray(recentAnonTicketsResult.rows) && recentAnonTicketsResult.rows.length >= 2) {
+    return {
+      ok: false,
+      status: 429,
+      error: "User has created too many tickets in the past 24 horus",
+      details: {
+        anon_id: cleanAnonId,
+        recent_ticket_count: recentAnonTicketsResult.rows.length,
+        window_hours: 24,
+      },
+    };
   }
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
