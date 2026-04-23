@@ -5,7 +5,8 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "config-loader" },
         { "key": "X-Env", "value": "production" },
-        { "key": "X-Cluster", "value": "eu-west-1a" }
+        { "key": "X-Cluster", "value": "eu-west-1a" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     },
     {
@@ -13,7 +14,8 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "dotenv-sync" },
         { "key": "X-Env", "value": "staging-shadow" },
-        { "key": "X-Cluster", "value": "eu-west-1b" }
+        { "key": "X-Cluster", "value": "eu-west-1b" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     },
     {
@@ -21,7 +23,8 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "iam-gateway" },
         { "key": "X-Env", "value": "prod-admin" },
-        { "key": "X-Cluster", "value": "eu-central-1" }
+        { "key": "X-Cluster", "value": "eu-central-1" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     },
     {
@@ -29,7 +32,8 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "trace-collector" },
         { "key": "X-Env", "value": "canary" },
-        { "key": "X-Cluster", "value": "us-east-2" }
+        { "key": "X-Cluster", "value": "us-east-2" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     },
     {
@@ -37,7 +41,8 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "svc-mesh-router" },
         { "key": "X-Env", "value": "production" },
-        { "key": "X-Cluster", "value": "us-west-2" }
+        { "key": "X-Cluster", "value": "us-west-2" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     },
     {
@@ -45,7 +50,8 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "config-distributor" },
         { "key": "X-Env", "value": "prod-config" },
-        { "key": "X-Cluster", "value": "ap-south-1" }
+        { "key": "X-Cluster", "value": "ap-south-1" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     },
     {
@@ -53,18 +59,19 @@
       "headers": [
         { "key": "X-Internal-Service", "value": "vault-proxy" },
         { "key": "X-Env", "value": "prod-secrets" },
-        { "key": "X-Cluster", "value": "eu-north-1" }
+        { "key": "X-Cluster", "value": "eu-north-1" },
+        { "key": "Cache-Control", "value": "no-store" }
       ]
     }
   ],
   "rewrites": [
-    { "source": "/.env", "destination": "/config_deadend.html" },
-    { "source": "/.env.local", "destination": "/config_deadend.html" },
-    { "source": "/admin", "destination": "/config_deadend.html" },
-    { "source": "/debug", "destination": "/config_deadend.html" },
-    { "source": "/internal", "destination": "/config_deadend.html" },
-    { "source": "/config", "destination": "/config_deadend.html" },
-    { "source": "/secret", "destination": "/config_deadend.html" },
+    { "source": "/.env", "destination": "/api/deadend_probe" },
+    { "source": "/.env.local", "destination": "/api/deadend_probe" },
+    { "source": "/admin", "destination": "/api/deadend_probe" },
+    { "source": "/debug", "destination": "/api/deadend_probe" },
+    { "source": "/internal", "destination": "/api/deadend_probe" },
+    { "source": "/config", "destination": "/api/deadend_probe" },
+    { "source": "/secret", "destination": "/api/deadend_probe" },
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
     { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
     { "source": "/v1/widget_checker/:agent_id", "destination": "/api/v1/widget_checker?agent_id=:agent_id" },
