@@ -1199,8 +1199,7 @@ module.exports = async function handler(req, res) {
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
-  const debugTicket =
-    body?.debug_ticket === true || String(body?.debug_ticket || "").toLowerCase() === "true";
+  const debugTicket = true;
   const incomingMessage = sanitizeIncomingUserText(body.message);
   const acceptHeader = String(req?.headers?.accept || "").toLowerCase();
   const hasExplicitStreamFlag =
