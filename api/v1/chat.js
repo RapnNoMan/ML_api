@@ -863,8 +863,6 @@ module.exports = async function handler(req, res) {
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
-  const debugTicket =
-    body?.debug_ticket === true || String(body?.debug_ticket || "").toLowerCase() === "true";
   const incomingMessage = sanitizeIncomingUserText(body.message);
   const requestCountry = getRequestCountry(req.headers);
   const authHeader = req.headers.authorization || "";
@@ -1131,7 +1129,7 @@ module.exports = async function handler(req, res) {
         continue;
       }
 
-      if (!url) {
+      if (!url && actionDef.kind !== "ticket_create") {
         toolResults.push({
           call_id: call.call_id ?? null,
           action_key: call.action_key,
@@ -1753,16 +1751,9 @@ module.exports = async function handler(req, res) {
       errorCode: null,
     }).catch(() => {});
 
-    res.status(200).json(
-      debugTicket
-        ? {
-            reply: finalFollowupReply,
-            debug_ticket: ticketOutcome || null,
-          }
-        : {
-            reply: finalFollowupReply,
-          }
-    );
+    res.status(200).json({
+      reply: finalFollowupReply,
+    });
     requestSucceeded = true;
     return;
   }

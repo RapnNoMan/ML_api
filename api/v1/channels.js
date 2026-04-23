@@ -801,7 +801,7 @@ async function executeActionCalls({
       continue;
     }
 
-    if (!url) {
+    if (!url && actionDef.kind !== "ticket_create") {
       toolResults.push({
         call_id: call.call_id ?? null,
         action_key: call.action_key,
