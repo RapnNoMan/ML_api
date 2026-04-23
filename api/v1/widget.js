@@ -2221,6 +2221,11 @@ module.exports = async function handler(req, res) {
       action: true,
     });
     if (!saveResult.ok) {
+      if (streamReady) {
+        sendSseEvent(res, "error", { error: saveResult.error || "Message service unavailable" });
+        closeStream();
+        return;
+      }
       res.status(saveResult.status).json({ error: saveResult.error });
       return;
     }
@@ -2311,6 +2316,11 @@ module.exports = async function handler(req, res) {
     action: false,
   });
   if (!saveResult.ok) {
+    if (streamReady) {
+      sendSseEvent(res, "error", { error: saveResult.error || "Message service unavailable" });
+      closeStream();
+      return;
+    }
     res.status(saveResult.status).json({ error: saveResult.error });
     return;
   }
