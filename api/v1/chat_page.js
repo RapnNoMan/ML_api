@@ -2178,6 +2178,7 @@ module.exports = async function handler(req, res) {
       wantsStream && nanoStreamChunks.length > 0
         ? nanoStreamChunks.join("")
         : (followup.data?.reply ?? "");
+    const finalFollowupReply = followupReply;
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -2187,7 +2188,7 @@ module.exports = async function handler(req, res) {
       chatId,
       country: requestCountry,
       prompt: String(incomingMessage),
-      result: followupReply,
+      result: finalFollowupReply,
       source: "chat_page",
       action: true,
     });
@@ -2240,11 +2241,11 @@ module.exports = async function handler(req, res) {
     res.status(200).json(
       customButtonPayload
         ? {
-            reply: followupReply,
+            reply: finalFollowupReply,
             custom_button: customButtonPayload,
           }
         : {
-            reply: followupReply,
+            reply: finalFollowupReply,
           }
     );
     requestSucceeded = true;

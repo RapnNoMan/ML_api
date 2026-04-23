@@ -12,6 +12,57 @@ function parseTicketCodeNumber(ticketCode) {
   return Math.floor(value);
 }
 
+async function fetchLatestTicketForChatAnon({
+  portalId,
+  portalSecretKey,
+  agentId,
+  chatId,
+  anonId,
+}) {
+  const cleanChatId = toNonEmptyText(chatId);
+  const cleanAnonId = toNonEmptyText(anonId);
+  if (!cleanChatId || !cleanAnonId) {
+    return { ok: true, ticket: null };
+  }
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const endpoint = new URL(`${baseUrl}/tickets`);
+  endpoint.searchParams.set("select", "id,ticket_code,created_at,status");
+  endpoint.searchParams.set("agent_id", `eq.${agentId}`);
+  endpoint.searchParams.set("chat_id", `eq.${cleanChatId}`);
+  endpoint.searchParams.set("anon_id", `eq.${cleanAnonId}`);
+  endpoint.searchParams.set("order", "created_at.desc");
+  endpoint.searchParams.set("limit", "1");
+
+  let response;
+  try {
+    response = await fetch(endpoint.toString(), {
+      method: "GET",
+      headers: {
+        apikey: portalSecretKey,
+        Authorization: `Bearer ${portalSecretKey}`,
+        Accept: "application/json",
+      },
+    });
+  } catch {
+    return { ok: false, status: 502, error: "Tickets service unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Tickets service unavailable" };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, status: 502, error: "Tickets service unavailable" };
+  }
+
+  const rows = Array.isArray(payload) ? payload : [];
+  return { ok: true, ticket: rows[0] || null };
+}
+
 async function fetchNextTicketCode({ portalId, portalSecretKey, agentId }) {
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const endpoint = new URL(`${baseUrl}/tickets`);
@@ -97,6 +148,34 @@ async function createPortalTicket({
 
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const endpoint = `${baseUrl}/tickets`;
+
+  const latestTicketResult = await fetchLatestTicketForChatAnon({
+    portalId,
+    portalSecretKey,
+    agentId,
+    chatId: cleanChatId,
+    anonId: cleanAnonId,
+  });
+  if (!latestTicketResult.ok) return latestTicketResult;
+
+  const latestTicket = latestTicketResult.ticket;
+  if (latestTicket) {
+    const createdAtMs = Date.parse(String(latestTicket.created_at || ""));
+    const twelveHoursMs = 12 * 60 * 60 * 1000;
+    if (Number.isFinite(createdAtMs) && Date.now() - createdAtMs < twelveHoursMs) {
+      return {
+        ok: false,
+        status: 409,
+        error: "A ticket has already been created.",
+        details: {
+          ticket_id: latestTicket.id ?? null,
+          ticket_code: latestTicket.ticket_code ?? null,
+          created_at: latestTicket.created_at ?? null,
+          status: latestTicket.status ?? null,
+        },
+      };
+    }
+  }
 
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const codeResult = await fetchNextTicketCode({

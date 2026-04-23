@@ -1702,7 +1702,7 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const followupReply = followup.data?.reply ?? "";
+    const finalFollowupReply = followup.data?.reply ?? "";
     const saveResult = await saveMessage({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -1712,7 +1712,7 @@ module.exports = async function handler(req, res) {
       chatId,
       country: requestCountry,
       prompt: String(incomingMessage),
-      result: followupReply,
+      result: finalFollowupReply,
       source: "api",
       action: true,
     });
@@ -1752,7 +1752,7 @@ module.exports = async function handler(req, res) {
     }).catch(() => {});
 
     res.status(200).json({
-      reply: followupReply,
+      reply: finalFollowupReply,
     });
     requestSucceeded = true;
     return;
