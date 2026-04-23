@@ -1,6 +1,69 @@
 {
+  "headers": [
+    {
+      "source": "/.env",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "config-loader" },
+        { "key": "X-Env", "value": "production" },
+        { "key": "X-Cluster", "value": "eu-west-1a" }
+      ]
+    },
+    {
+      "source": "/.env.local",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "dotenv-sync" },
+        { "key": "X-Env", "value": "staging-shadow" },
+        { "key": "X-Cluster", "value": "eu-west-1b" }
+      ]
+    },
+    {
+      "source": "/admin",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "iam-gateway" },
+        { "key": "X-Env", "value": "prod-admin" },
+        { "key": "X-Cluster", "value": "eu-central-1" }
+      ]
+    },
+    {
+      "source": "/debug",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "trace-collector" },
+        { "key": "X-Env", "value": "canary" },
+        { "key": "X-Cluster", "value": "us-east-2" }
+      ]
+    },
+    {
+      "source": "/internal",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "svc-mesh-router" },
+        { "key": "X-Env", "value": "production" },
+        { "key": "X-Cluster", "value": "us-west-2" }
+      ]
+    },
+    {
+      "source": "/config",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "config-distributor" },
+        { "key": "X-Env", "value": "prod-config" },
+        { "key": "X-Cluster", "value": "ap-south-1" }
+      ]
+    },
+    {
+      "source": "/secret",
+      "headers": [
+        { "key": "X-Internal-Service", "value": "vault-proxy" },
+        { "key": "X-Env", "value": "prod-secrets" },
+        { "key": "X-Cluster", "value": "eu-north-1" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "/.env", "destination": "/TOP_SECRET.jpg" },
+    { "source": "/.env.local", "destination": "/TOP_SECRET.jpg" },
+    { "source": "/admin", "destination": "/TOP_SECRET.jpg" },
+    { "source": "/debug", "destination": "/TOP_SECRET.jpg" },
+    { "source": "/internal", "destination": "/TOP_SECRET.jpg" },
+    { "source": "/config", "destination": "/TOP_SECRET.jpg" },
     { "source": "/secret", "destination": "/TOP_SECRET.jpg" },
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
     { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
