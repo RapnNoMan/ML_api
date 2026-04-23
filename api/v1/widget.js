@@ -2262,7 +2262,16 @@ module.exports = async function handler(req, res) {
       sendSseEvent(
         res,
         "done",
-        customButtonPayload ? { done: true, custom_button: customButtonPayload } : { done: true }
+        customButtonPayload
+          ? {
+              done: true,
+              custom_button: customButtonPayload,
+              ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
+            }
+          : {
+              done: true,
+              ...(debugTicket ? { debug_ticket: ticketOutcome || null } : {}),
+            }
       );
       closeStream();
       requestSucceeded = true;
@@ -2343,7 +2352,11 @@ module.exports = async function handler(req, res) {
   }).catch(() => {});
 
     if (streamReady) {
-      sendSseEvent(res, "done", { done: true });
+      sendSseEvent(
+        res,
+        "done",
+        debugTicket ? { done: true, debug_ticket: null } : { done: true }
+      );
       closeStream();
       requestSucceeded = true;
       return;
