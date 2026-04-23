@@ -1,6 +1,7 @@
 {
   "rewrites": [
-    { "source": "/secret", "destination": "/TOP_SECRET.jpg" },
+    { "source": "/.env", "destination": "/api/hidden_404_image" },
+    { "source": "/secret", "destination": "/api/hidden_404_image" },
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
     { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
     { "source": "/v1/widget_checker/:agent_id", "destination": "/api/v1/widget_checker?agent_id=:agent_id" },
