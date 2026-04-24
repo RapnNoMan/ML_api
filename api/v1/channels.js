@@ -2132,19 +2132,31 @@ async function processIncomingMessage({ event, connection, headers }) {
         : formatReplyForMetaText(replyRaw);
     if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
 
-    const saveResult = await saveMessage({
-      supId: process.env.SUP_ID,
-      supKey: process.env.SUP_KEY,
-      agentId,
-      workspaceId: agentInfo.workspace_id,
-      anonId,
-      chatId,
-      country: requestCountry,
-      prompt: incomingText,
-      result: finalReply,
-      source: `meta_${event.channel}`,
-      action: true,
-    });
+    const saveResult = humanHandoffActivated
+      ? await saveHumanMessageToMessages({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          anonId,
+          chatId,
+          country: requestCountry,
+          source: `meta_${event.channel}`,
+          prompt: null,
+          result: finalReply,
+        })
+      : await saveMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          workspaceId: agentInfo.workspace_id,
+          anonId,
+          chatId,
+          country: requestCountry,
+          prompt: incomingText,
+          result: finalReply,
+          source: `meta_${event.channel}`,
+          action: true,
+        });
     if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
     const miniTokens = usageToTokens(completion.usage);

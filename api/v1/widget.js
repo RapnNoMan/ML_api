@@ -2421,19 +2421,31 @@ module.exports = async function handler(req, res) {
         ? nanoStreamChunks.join("")
         : (followup.data?.reply ?? "");
     const finalFollowupReply = followupReply;
-    const saveResult = await saveMessage({
-      supId: process.env.SUP_ID,
-      supKey: process.env.SUP_KEY,
-      agentId,
-      workspaceId: agentInfo.workspace_id,
-      anonId,
-      chatId,
-      country: requestCountry,
-      prompt: String(incomingMessage),
-      result: finalFollowupReply,
-      source: "widget",
-      action: true,
-    });
+    const saveResult = humanHandoffActivated
+      ? await saveHumanMessageToMessages({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          anonId,
+          chatId,
+          country: requestCountry,
+          source: "widget",
+          prompt: null,
+          result: finalFollowupReply,
+        })
+      : await saveMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          workspaceId: agentInfo.workspace_id,
+          anonId,
+          chatId,
+          country: requestCountry,
+          prompt: String(incomingMessage),
+          result: finalFollowupReply,
+          source: "widget",
+          action: true,
+        });
     if (!saveResult.ok) {
       if (streamReady) {
         sendSseEvent(res, "error", { error: saveResult.error || "Message service unavailable" });
