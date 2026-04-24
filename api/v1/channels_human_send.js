@@ -54,6 +54,54 @@ function mapChatSourceToMessageSource(chatSource) {
   return "meta_messenger";
 }
 
+async function findRecentMatchingHumanOutbound({
+  portalId,
+  portalSecretKey,
+  agentId,
+  chatId,
+  assignedHumanAgentUserId,
+  message,
+  windowSeconds = 12,
+}) {
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/widget_human_messages`);
+  url.searchParams.set("select", "id,created_at,result");
+  url.searchParams.set("agent_id", `eq.${agentId}`);
+  url.searchParams.set("chat_id", `eq.${chatId}`);
+  url.searchParams.set("sender_type", "eq.human_agent");
+  url.searchParams.set("assigned_human_agent_user_id", `eq.${assignedHumanAgentUserId}`);
+  url.searchParams.set("result", `eq.${message}`);
+  url.searchParams.set("order", "created_at.desc");
+  url.searchParams.set("limit", "1");
+
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: {
+        apikey: portalSecretKey,
+        Authorization: `Bearer ${portalSecretKey}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (_) {
+    return { ok: false, duplicate: false };
+  }
+  if (!response.ok) return { ok: false, duplicate: false };
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, duplicate: false };
+  }
+  const row = Array.isArray(payload) ? payload[0] : null;
+  if (!row?.created_at) return { ok: true, duplicate: false };
+  const createdTs = Date.parse(String(row.created_at));
+  if (!Number.isFinite(createdTs)) return { ok: true, duplicate: false };
+  const ageMs = Date.now() - createdTs;
+  const duplicate = ageMs >= 0 && ageMs <= Math.max(1, Number(windowSeconds) || 12) * 1000;
+  return { ok: true, duplicate, row };
+}
+
 async function getPortalUserFromToken({ portalId, portalSecretKey, accessToken }) {
   if (!portalId || !portalSecretKey || !accessToken) {
     return { ok: false, status: 401, error: "Unauthorized" };
@@ -462,6 +510,19 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const dedupeCheck = await findRecentMatchingHumanOutbound({
+    portalId: process.env.PORTAL_ID,
+    portalSecretKey: process.env.PORTAL_SECRET_KEY,
+    agentId,
+    chatId,
+    assignedHumanAgentUserId: assignedUserId,
+    message,
+  });
+  if (dedupeCheck.ok && dedupeCheck.duplicate) {
+    res.status(200).json({ ok: true, sent: true, deduped: true });
+    return;
+  }
+
   const connectionResult = await fetchChannelConnectionForSend({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -534,4 +595,3 @@ module.exports = async function handler(req, res) {
 
   res.status(200).json({ ok: true, sent: true });
 };
-

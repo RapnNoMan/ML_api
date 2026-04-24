@@ -1346,10 +1346,16 @@ module.exports = async function handler(req, res) {
         res.setHeader("Connection", "keep-alive");
         res.setHeader("X-Accel-Buffering", "no");
         if (typeof res.flushHeaders === "function") res.flushHeaders();
-        sendSseEvent(res, "done", { done: true, human_handoff: true });
+        sendSseEvent(res, "done", {
+          done: true,
+          human_handoff: true,
+        });
         if (!res.writableEnded) res.end();
       } else {
-        res.status(200).json({ reply: null, human_handoff: true });
+        res.status(200).json({
+          reply: null,
+          human_handoff: true,
+        });
       }
       requestSucceeded = true;
       return;
@@ -1712,32 +1718,6 @@ module.exports = async function handler(req, res) {
               ok: false,
               status: saveDashboardResult.status || 502,
               error: saveDashboardResult.error || "Message service unavailable",
-            },
-          });
-          continue;
-        }
-        const savePortalResult = await saveHumanMessageToPortalFeed({
-          portalId: process.env.PORTAL_ID,
-          portalSecretKey: process.env.PORTAL_SECRET_KEY,
-          agentId,
-          anonId,
-          chatId,
-          source: "Website",
-          senderType: "customer",
-          assignedHumanAgentUserId: assignResult.assignedHumanAgentUserId,
-          prompt: String(incomingMessage),
-          result: null,
-        });
-        if (!savePortalResult.ok) {
-          toolResults.push({
-            call_id: call.call_id ?? null,
-            action_key: call.action_key,
-            tool_args: { subject, summery },
-            request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
-            response: {
-              ok: false,
-              status: savePortalResult.status || 502,
-              error: savePortalResult.error || "Human message service unavailable",
             },
           });
           continue;
@@ -2494,11 +2474,19 @@ module.exports = async function handler(req, res) {
           ? {
               done: true,
               custom_button: customButtonPayload,
-              human_handoff: humanHandoffActivated || undefined,
+              ...(humanHandoffActivated
+                ? {
+                    human_handoff: true,
+                  }
+                : {}),
             }
           : {
               done: true,
-              human_handoff: humanHandoffActivated || undefined,
+              ...(humanHandoffActivated
+                ? {
+                    human_handoff: true,
+                  }
+                : {}),
             }
       );
       closeStream();
@@ -2511,11 +2499,19 @@ module.exports = async function handler(req, res) {
         ? {
             reply: finalFollowupReply,
             custom_button: customButtonPayload,
-            human_handoff: humanHandoffActivated || undefined,
+            ...(humanHandoffActivated
+              ? {
+                  human_handoff: true,
+                }
+              : {}),
           }
         : {
             reply: finalFollowupReply,
-            human_handoff: humanHandoffActivated || undefined,
+            ...(humanHandoffActivated
+              ? {
+                  human_handoff: true,
+                }
+              : {}),
           }
     );
     requestSucceeded = true;

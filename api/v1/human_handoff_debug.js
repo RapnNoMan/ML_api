@@ -228,18 +228,21 @@ module.exports = async function handler(req, res) {
       });
 
       const portalSource = chatSource === "widget" ? "Website" : `meta_${chatSource}`;
-      const portalSave = await saveHumanMessageToPortalFeed({
-        portalId: process.env.PORTAL_ID,
-        portalSecretKey: process.env.PORTAL_SECRET_KEY,
-        agentId,
-        anonId,
-        chatId,
-        source: portalSource,
-        senderType: "customer",
-        assignedHumanAgentUserId: assignment.assignedHumanAgentUserId ?? null,
-        prompt: message || "Debug: customer asked for human support",
-        result: null,
-      });
+      const portalSave =
+        chatSource === "widget"
+          ? { ok: true, skipped: true, reason: "widget_trigger_message_not_inserted" }
+          : await saveHumanMessageToPortalFeed({
+              portalId: process.env.PORTAL_ID,
+              portalSecretKey: process.env.PORTAL_SECRET_KEY,
+              agentId,
+              anonId,
+              chatId,
+              source: portalSource,
+              senderType: "customer",
+              assignedHumanAgentUserId: assignment.assignedHumanAgentUserId ?? null,
+              prompt: message || "Debug: customer asked for human support",
+              result: null,
+            });
       trace.push({
         step: "tool_flow_save_portal_message",
         result: portalSave,
