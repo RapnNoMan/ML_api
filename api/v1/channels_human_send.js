@@ -182,6 +182,31 @@ async function getActiveHandoffChat({ portalId, portalSecretKey, agentId, chatSo
   return { ok: true, chat: row };
 }
 
+async function fetchDashboardAgentWorkspaceId({ supId, supKey, agentId }) {
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/agents`);
+  url.searchParams.set("select", "workspace_id");
+  url.searchParams.set("id", `eq.${agentId}`);
+  url.searchParams.set("limit", "1");
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Agent service unavailable", workspaceId: null };
+  }
+  if (!response.ok) return { ok: false, status: 502, error: "Agent service unavailable", workspaceId: null };
+  const payload = await response.json().catch(() => []);
+  const row = Array.isArray(payload) ? payload[0] : null;
+  const workspaceId = normalizeIdValue(row?.workspace_id) || null;
+  return { ok: true, workspaceId };
+}
+
 async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSource, threadId }) {
   if (chatSource === "telegram") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
@@ -499,10 +524,20 @@ module.exports = async function handler(req, res) {
   }
 
   const messageSource = mapChatSourceToMessageSource(chatSource);
+  const workspaceLookup = await fetchDashboardAgentWorkspaceId({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+  if (!workspaceLookup.ok) {
+    res.status(workspaceLookup.status).json({ error: workspaceLookup.error });
+    return;
+  }
   const saveDashboardResult = await saveHumanMessageToMessages({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
+    workspaceId: workspaceLookup.workspaceId,
     anonId: normalizeIdValue(body.anon_id) || `${chatSource}:${parsed.recipientId}`,
     chatId,
     country: normalizeIdValue(body.country) || null,

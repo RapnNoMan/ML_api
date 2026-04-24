@@ -130,6 +130,7 @@ async function saveHumanMessageToMessages({
   supId,
   supKey,
   agentId,
+  workspaceId = null,
   anonId,
   chatId,
   country,
@@ -144,6 +145,7 @@ async function saveHumanMessageToMessages({
   const url = `${baseUrl}/messages`;
   const payload = {
     agent_id: agentId,
+    workspace_id: workspaceId ?? null,
     annon: anonId ?? null,
     chat_id: chatId,
     country: country ?? null,
