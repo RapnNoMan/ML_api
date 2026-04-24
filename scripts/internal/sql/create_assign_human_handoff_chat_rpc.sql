@@ -104,11 +104,11 @@ begin
   ),
   ordered as (
     select
-      shift_id,
-      human_agent_user_id,
-      row_number() over (order by shift_id asc) as rn,
+      e.shift_id,
+      e.human_agent_user_id,
+      row_number() over (order by e.shift_id asc) as rn,
       count(*) over () as total_count
-    from capacity_ok
+    from capacity_ok e
   ),
   pivot as (
     select rn as last_rn
@@ -118,8 +118,8 @@ begin
     limit 1
   ),
   choice as (
-    select shift_id, human_agent_user_id
-    from ordered
+    select o.shift_id, o.human_agent_user_id
+    from ordered o
     order by
       case
         when (select last_rn from pivot) is null then rn
