@@ -20,6 +20,9 @@ def main():
         "summery": "Debug check for handoff gating and assignment.",
         # False = gating checks only, True = also attempts assignment RPC.
         "run_assignment": False,
+        # True = simulate full post-tool path:
+        # assign handoff chat + insert customer message into both tables.
+        "run_tool_flow": True,
     }
 
     # Optional: only needed if HUMAN_HANDOFF_DEBUG_KEY is configured on API env.
@@ -59,4 +62,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

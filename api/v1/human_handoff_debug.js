@@ -3,6 +3,8 @@ const {
   getOpenHumanHandoffChat,
   checkAvailableHumanAgents,
   assignHumanHandoffChat,
+  saveHumanMessageToMessages,
+  saveHumanMessageToPortalFeed,
 } = require("../../scripts/internal/humanHandoff");
 
 function normalize(value) {
@@ -82,6 +84,7 @@ module.exports = async function handler(req, res) {
   const source = normalize(body.source) || (chatSource === "widget" ? "Website" : `meta_${chatSource}`);
   const message = normalize(body.message);
   const runAssignment = body.run_assignment === true || body.run_assignment === "true";
+  const runToolFlow = body.run_tool_flow === true || body.run_tool_flow === "true";
 
   const missing = [];
   if (!agentId) missing.push("agent_id");
@@ -172,6 +175,94 @@ module.exports = async function handler(req, res) {
     });
   }
 
+  let toolFlowResult = null;
+  if (runToolFlow) {
+    const normalizedSubject = normalize(body.subject) || "Human handoff debug subject";
+    const normalizedSummery =
+      normalize(body.summery) ||
+      (message
+        ? `Debug request from API: ${message}`
+        : "Debug request from API without additional user message.");
+
+    const assignment = await assignHumanHandoffChat({
+      portalId: process.env.PORTAL_ID,
+      portalSecretKey: process.env.PORTAL_SECRET_KEY,
+      agentId,
+      chatSource,
+      source,
+      chatId,
+      anonId,
+      externalUserId: anonId,
+      country,
+      subject: normalizedSubject,
+      summery: normalizedSummery,
+    });
+    trace.push({
+      step: "tool_flow_assignment",
+      result: assignment,
+      input: {
+        subject: normalizedSubject,
+        summery: normalizedSummery,
+      },
+    });
+
+    if (assignment.ok) {
+      const dashboardSource = chatSource === "widget" ? "widget" : `meta_${chatSource}`;
+      const dashboardSave = await saveHumanMessageToMessages({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        anonId,
+        chatId,
+        country,
+        source: dashboardSource,
+        prompt: message || "Debug: customer asked for human support",
+        result: null,
+      });
+      trace.push({
+        step: "tool_flow_save_dashboard_message",
+        result: dashboardSave,
+        input: {
+          source: dashboardSource,
+        },
+      });
+
+      const portalSource = chatSource === "widget" ? "Website" : `meta_${chatSource}`;
+      const portalSave = await saveHumanMessageToPortalFeed({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        anonId,
+        chatId,
+        source: portalSource,
+        senderType: "customer",
+        assignedHumanAgentUserId: assignment.assignedHumanAgentUserId ?? null,
+        prompt: message || "Debug: customer asked for human support",
+        result: null,
+      });
+      trace.push({
+        step: "tool_flow_save_portal_message",
+        result: portalSave,
+        input: {
+          source: portalSource,
+          assigned_human_agent_user_id: assignment.assignedHumanAgentUserId ?? null,
+        },
+      });
+
+      toolFlowResult = {
+        ok: Boolean(assignment.ok && dashboardSave.ok && portalSave.ok),
+        assignment,
+        dashboardSave,
+        portalSave,
+      };
+    } else {
+      toolFlowResult = {
+        ok: false,
+        assignment,
+      };
+    }
+  }
+
   res.status(200).json({
     ok: true,
     computed: {
@@ -181,6 +272,7 @@ module.exports = async function handler(req, res) {
       tool_should_be_included: toolShouldBeIncluded,
       llm_would_be_bypassed_due_to_open_chat: hasOpenChat,
       run_assignment: runAssignment,
+      run_tool_flow: runToolFlow,
     },
     input: {
       agent_id: agentId,
@@ -191,6 +283,7 @@ module.exports = async function handler(req, res) {
       source,
       message,
     },
+    tool_flow_result: toolFlowResult,
     trace,
   });
 };
