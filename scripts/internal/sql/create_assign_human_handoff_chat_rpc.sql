@@ -95,6 +95,7 @@ begin
     where hs.agent_id = p_agent_id
       and hs.is_on_shift = true
       and hs.on_break = false
+      and hs.wrap_up = false
   ),
   capacity_ok as (
     select *
@@ -193,4 +194,3 @@ begin
     v_existing.status as status;
 end;
 $$;
-

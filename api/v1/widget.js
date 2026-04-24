@@ -23,7 +23,6 @@ const {
   HUMAN_HANDOFF_TOOL_NAME,
   HUMAN_HANDOFF_TOOL,
   HUMAN_HANDOFF_PROMPT_BLOCK,
-  HUMAN_HANDOFF_CONFIRMATION_REPLY,
   checkHumanAgentsAppEnabled,
   getOpenHumanHandoffChat,
   checkAvailableHumanAgents,
@@ -1620,7 +1619,6 @@ module.exports = async function handler(req, res) {
     let calendarContext = null;
     let customButtonPayload = null;
     let humanHandoffActivated = false;
-    let humanHandoffReply = "";
     const toolsStartedAt = Date.now();
     for (const call of actionCalls) {
       const actionDef = effectiveActionMap.get(call.action_key);
@@ -1758,7 +1756,6 @@ module.exports = async function handler(req, res) {
           },
         });
         humanHandoffActivated = true;
-        humanHandoffReply = HUMAN_HANDOFF_CONFIRMATION_REPLY;
         break;
       }
 
@@ -2308,18 +2305,6 @@ module.exports = async function handler(req, res) {
       });
     }
     latencyToolsMs = Date.now() - toolsStartedAt;
-    if (humanHandoffActivated) {
-      if (streamReady) {
-        sendSseEvent(res, "token", { text: humanHandoffReply });
-        sendSseEvent(res, "done", { done: true, human_handoff: true });
-        closeStream();
-        requestSucceeded = true;
-        return;
-      }
-      res.status(200).json({ reply: humanHandoffReply, human_handoff: true });
-      requestSucceeded = true;
-      return;
-    }
 
     const assistantBlocks =
       completion.output_items && Array.isArray(completion.output_items)
@@ -2378,8 +2363,17 @@ module.exports = async function handler(req, res) {
       actionMap: toolsResult.actionMap,
     });
     const ticketOutcomeNote = buildTicketOutcomeInstruction(ticketOutcome);
+    const humanHandoffNote = humanHandoffActivated
+      ? [
+          "HUMAN HANDOFF CONFIRMATION",
+          "A human handoff request has been successfully created.",
+          "Tell the customer they are now in queue for a human agent.",
+          "Invite them to share any additional details in the meantime so the human agent has more context.",
+          "Keep the message short and reassuring.",
+        ].join("\n")
+      : null;
 
-    const followupInstructions = [prompt, calendarNote, ticketOutcomeNote]
+    const followupInstructions = [prompt, calendarNote, ticketOutcomeNote, humanHandoffNote]
       .filter(Boolean)
       .join("\n\n");
 
@@ -2488,9 +2482,11 @@ module.exports = async function handler(req, res) {
           ? {
               done: true,
               custom_button: customButtonPayload,
+              human_handoff: humanHandoffActivated || undefined,
             }
           : {
               done: true,
+              human_handoff: humanHandoffActivated || undefined,
             }
       );
       closeStream();
@@ -2503,9 +2499,11 @@ module.exports = async function handler(req, res) {
         ? {
             reply: finalFollowupReply,
             custom_button: customButtonPayload,
+            human_handoff: humanHandoffActivated || undefined,
           }
         : {
             reply: finalFollowupReply,
+            human_handoff: humanHandoffActivated || undefined,
           }
     );
     requestSucceeded = true;

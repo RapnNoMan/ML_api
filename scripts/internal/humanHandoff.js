@@ -110,6 +110,7 @@ async function checkAvailableHumanAgents({ portalId, portalSecretKey, agentId })
     agent_id: `eq.${agentId}`,
     is_on_shift: "eq.true",
     on_break: "eq.false",
+    wrap_up: "eq.false",
     limit: "1",
   });
 

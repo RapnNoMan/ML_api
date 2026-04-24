@@ -23,7 +23,6 @@ const {
   HUMAN_HANDOFF_TOOL_NAME,
   HUMAN_HANDOFF_TOOL,
   HUMAN_HANDOFF_PROMPT_BLOCK,
-  HUMAN_HANDOFF_CONFIRMATION_REPLY,
   checkHumanAgentsAppEnabled,
   getOpenHumanHandoffChat,
   checkAvailableHumanAgents,
@@ -748,7 +747,6 @@ async function executeActionCalls({
   const toolResults = [];
   let calendarContext = null;
   let humanHandoffActivated = false;
-  let humanHandoffReply = "";
 
   for (const call of actionCalls) {
     const actionDef = actionMap.get(call.action_key);
@@ -880,7 +878,6 @@ async function executeActionCalls({
         },
       });
       humanHandoffActivated = true;
-      humanHandoffReply = HUMAN_HANDOFF_CONFIRMATION_REPLY;
       break;
     }
 
@@ -1206,7 +1203,7 @@ async function executeActionCalls({
     });
   }
 
-  return { toolResults, calendarContext, humanHandoffActivated, humanHandoffReply };
+  return { toolResults, calendarContext, humanHandoffActivated };
 }
 function toWebhookEvents(payload) {
   const objectType = String(payload?.object || "").toLowerCase();
@@ -2077,7 +2074,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     actionCount = actionCalls.length;
 
     const toolsStartedAt = Date.now();
-    const { toolResults, calendarContext, humanHandoffActivated, humanHandoffReply } =
+    const { toolResults, calendarContext, humanHandoffActivated } =
       await executeActionCalls({
       actionCalls,
       actionMap: effectiveActionMap,
@@ -2090,16 +2087,6 @@ async function processIncomingMessage({ event, connection, headers }) {
       incomingMessage: incomingText,
     });
     latencyToolsMs = Date.now() - toolsStartedAt;
-    if (humanHandoffActivated) {
-      requestSucceeded = true;
-      return {
-        ok: true,
-        reply: humanHandoffReply,
-        humanHandoff: true,
-        actionUsed: true,
-        actionCount,
-      };
-    }
 
     const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
     const followupInputItems = toXAiInputItems(messages, assistantBlocks, toolResults);
@@ -2111,6 +2098,15 @@ async function processIncomingMessage({ event, connection, headers }) {
       prompt,
       calendarContext ? calendarContextNote(calendarContext) : null,
       buildTicketOutcomeInstruction(ticketOutcome),
+      humanHandoffActivated
+        ? [
+            "HUMAN HANDOFF CONFIRMATION",
+            "A human handoff request has been successfully created.",
+            "Tell the customer they are now in queue for a human agent.",
+            "Invite them to share additional details in the meantime so the human agent has context.",
+            "Keep the response concise and clear.",
+          ].join("\n")
+        : null,
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -2182,7 +2178,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     }).catch(() => {});
 
     requestSucceeded = true;
-    return { ok: true, reply: finalReply, actionUsed: true, actionCount };
+    return { ok: true, reply: finalReply, humanHandoff: humanHandoffActivated, actionUsed: true, actionCount };
   }
 
   const reply =
