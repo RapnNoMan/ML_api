@@ -10,7 +10,8 @@
     "message": "User asked to speak to a human.",
     "subject": "Human handoff debug",
     "summery": "Debug check for handoff gating and assignment.",
-    "run_assignment": false
+    "run_assignment": false,
+    "run_tool_flow": true
   },
   "status_code": 200,
   "reason": "OK",
@@ -22,7 +23,8 @@
       "has_available_shift": true,
       "tool_should_be_included": true,
       "llm_would_be_bypassed_due_to_open_chat": false,
-      "run_assignment": false
+      "run_assignment": false,
+      "run_tool_flow": true
     },
     "input": {
       "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
@@ -32,6 +34,14 @@
       "country": "US",
       "source": "Website",
       "message": "User asked to speak to a human."
+    },
+    "tool_flow_result": {
+      "ok": false,
+      "assignment": {
+        "ok": false,
+        "status": 502,
+        "error": "Human handoff service unavailable"
+      }
     },
     "trace": [
       {
@@ -117,8 +127,20 @@
             "updated_at": "2026-04-24T01:32:36.535737+00:00"
           }
         ]
+      },
+      {
+        "step": "tool_flow_assignment",
+        "result": {
+          "ok": false,
+          "status": 502,
+          "error": "Human handoff service unavailable"
+        },
+        "input": {
+          "subject": "Human handoff debug",
+          "summery": "Debug check for handoff gating and assignment."
+        }
       }
     ]
   },
-  "response_text": "{\"ok\":true,\"computed\":{\"app_enabled\":true,\"has_open_handoff_chat\":false,\"has_available_shift\":true,\"tool_should_be_included\":true,\"llm_would_be_bypassed_due_to_open_chat\":false,\"run_assignment\":false},\"input\":{\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"chat_source\":\"widget\",\"chat_id\":\"widget:debug-thread:debug-user\",\"anon_id\":\"debug-anon\",\"country\":\"US\",\"source\":\"Website\",\"message\":\"User asked to speak to a human.\"},\"trace\":[{\"step\":\"dashboard_app_gate\",\"result\":{\"ok\":true,\"enabled\":true},\"raw_row\":{\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"enabled\":true,\"human_agents_enabled\":true,\"workspace_id\":\"0ed20582-e518-4d63-a03f-1f3d16027538\",\"updated_at\":\"2026-04-23T21:56:24.04847+00:00\"},\"raw_row_fetch_ok\":true,\"raw_row_fetch_status\":200},{\"step\":\"portal_open_handoff_chat_check\",\"result\":{\"ok\":true,\"chat\":null}},{\"step\":\"portal_shift_availability_check\",\"result\":{\"ok\":true,\"available\":true},\"raw_shift_rows_fetch_ok\":true,\"raw_shift_rows_fetch_status\":200,\"raw_shift_rows\":[{\"id\":5,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":true,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T05:40:54.668355+00:00\"},{\"id\":4,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":true,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T05:37:53.561117+00:00\"},{\"id\":3,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T01:54:50.820443+00:00\"},{\"id\":2,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T01:34:42.023934+00:00\"},{\"id\":1,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T01:32:36.535737+00:00\"}]}]}"
+  "response_text": "{\"ok\":true,\"computed\":{\"app_enabled\":true,\"has_open_handoff_chat\":false,\"has_available_shift\":true,\"tool_should_be_included\":true,\"llm_would_be_bypassed_due_to_open_chat\":false,\"run_assignment\":false,\"run_tool_flow\":true},\"input\":{\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"chat_source\":\"widget\",\"chat_id\":\"widget:debug-thread:debug-user\",\"anon_id\":\"debug-anon\",\"country\":\"US\",\"source\":\"Website\",\"message\":\"User asked to speak to a human.\"},\"tool_flow_result\":{\"ok\":false,\"assignment\":{\"ok\":false,\"status\":502,\"error\":\"Human handoff service unavailable\"}},\"trace\":[{\"step\":\"dashboard_app_gate\",\"result\":{\"ok\":true,\"enabled\":true},\"raw_row\":{\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"enabled\":true,\"human_agents_enabled\":true,\"workspace_id\":\"0ed20582-e518-4d63-a03f-1f3d16027538\",\"updated_at\":\"2026-04-23T21:56:24.04847+00:00\"},\"raw_row_fetch_ok\":true,\"raw_row_fetch_status\":200},{\"step\":\"portal_open_handoff_chat_check\",\"result\":{\"ok\":true,\"chat\":null}},{\"step\":\"portal_shift_availability_check\",\"result\":{\"ok\":true,\"available\":true},\"raw_shift_rows_fetch_ok\":true,\"raw_shift_rows_fetch_status\":200,\"raw_shift_rows\":[{\"id\":5,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":true,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T05:40:54.668355+00:00\"},{\"id\":4,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":true,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T05:37:53.561117+00:00\"},{\"id\":3,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T01:54:50.820443+00:00\"},{\"id\":2,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T01:34:42.023934+00:00\"},{\"id\":1,\"agent_id\":\"befcd1a8-fe43-4df8-b197-eb6f007bd148\",\"human_agent_user_id\":\"3120c94d-26bd-4f26-8337-5eac4779326f\",\"is_on_shift\":false,\"on_break\":false,\"wrap_up\":false,\"max_concurrent_chats\":null,\"updated_at\":\"2026-04-24T01:32:36.535737+00:00\"}]},{\"step\":\"tool_flow_assignment\",\"result\":{\"ok\":false,\"status\":502,\"error\":\"Human handoff service unavailable\"},\"input\":{\"subject\":\"Human handoff debug\",\"summery\":\"Debug check for handoff gating and assignment.\"}}]}"
 }

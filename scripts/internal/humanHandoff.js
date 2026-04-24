@@ -268,7 +268,20 @@ async function assignHumanHandoffChat({
     if (/NO_AVAILABLE_HUMAN_AGENT/i.test(text)) {
       return { ok: false, status: 409, error: "No human agents available" };
     }
-    return { ok: false, status: 502, error: "Human handoff service unavailable" };
+    if (response.status === 404 && /assign_human_handoff_chat/i.test(text)) {
+      return {
+        ok: false,
+        status: 404,
+        error: "assign_human_handoff_chat RPC not found",
+        details: text || null,
+      };
+    }
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: "Human handoff assignment failed",
+      details: text || null,
+    };
   }
 
   let payloadRows;
@@ -279,7 +292,7 @@ async function assignHumanHandoffChat({
   }
   const row = Array.isArray(payloadRows) ? payloadRows[0] : payloadRows;
   if (!row || typeof row !== "object") {
-    return { ok: false, status: 502, error: "Human handoff service unavailable" };
+    return { ok: false, status: 502, error: "Invalid assignment RPC response" };
   }
 
   return {
