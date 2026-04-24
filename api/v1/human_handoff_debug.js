@@ -180,7 +180,7 @@ module.exports = async function handler(req, res) {
       has_available_shift: hasAvailableShift,
       tool_should_be_included: toolShouldBeIncluded,
       llm_would_be_bypassed_due_to_open_chat: hasOpenChat,
-      run_assignment,
+      run_assignment: runAssignment,
     },
     input: {
       agent_id: agentId,
@@ -194,4 +194,3 @@ module.exports = async function handler(req, res) {
     trace,
   });
 };
-

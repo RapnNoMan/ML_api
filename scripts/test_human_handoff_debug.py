@@ -9,7 +9,7 @@ def main():
 
     # Hardcoded values: update these before running.
     payload = {
-        "agent_id": "00000000-0000-0000-0000-000000000000",
+        "agent_id": "befcd1a8-fe43-4df8-b197-eb6f007bd148",
         "chat_source": "widget",
         "chat_id": "widget:debug-thread:debug-user",
         "anon_id": "debug-anon",
