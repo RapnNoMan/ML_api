@@ -1,3 +1,15 @@
+const ACTIONS_CACHE_TTL_MS = Math.max(
+  0,
+  Number.isFinite(Number(process.env.ACTIONS_CACHE_TTL_MS))
+    ? Math.floor(Number(process.env.ACTIONS_CACHE_TTL_MS))
+    : 60000
+);
+const agentActionsCache = new Map();
+
+function getActionsCacheKey({ supId, agentId, includePortalTickets }) {
+  return `${supId || ""}::${agentId || ""}::${includePortalTickets ? "tickets" : "base"}`;
+}
+
 function sanitizeToolName(rawName, id, usedNames) {
   let name = String(rawName || "")
     .toLowerCase()
@@ -95,6 +107,15 @@ async function fetchWorkspaceAppsRow({ supId, supKey, agentId }) {
 async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets = false }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const cacheKey = getActionsCacheKey({ supId, agentId, includePortalTickets });
+  const cached = agentActionsCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+  if (cached && cached.expiresAt <= Date.now()) {
+    agentActionsCache.delete(cacheKey);
   }
 
   let customRows = [];
@@ -621,7 +642,14 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
     });
   }
 
-  return { ok: true, tools, actionMap };
+  const result = { ok: true, tools, actionMap };
+  if (ACTIONS_CACHE_TTL_MS > 0) {
+    agentActionsCache.set(cacheKey, {
+      expiresAt: Date.now() + ACTIONS_CACHE_TTL_MS,
+      value: result,
+    });
+  }
+  return result;
 }
 
 module.exports = {

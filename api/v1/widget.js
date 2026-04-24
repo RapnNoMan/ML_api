@@ -19,6 +19,18 @@ const {
   getLatestTicketOutcome,
   buildTicketOutcomeInstruction,
 } = require("../../scripts/internal/ticketOutcome");
+const {
+  HUMAN_HANDOFF_TOOL_NAME,
+  HUMAN_HANDOFF_TOOL,
+  HUMAN_HANDOFF_PROMPT_BLOCK,
+  HUMAN_HANDOFF_CONFIRMATION_REPLY,
+  checkHumanAgentsAppEnabled,
+  getOpenHumanHandoffChat,
+  checkAvailableHumanAgents,
+  saveHumanMessageToMessages,
+  saveHumanMessageToPortalFeed,
+  assignHumanHandoffChat,
+} = require("../../scripts/internal/humanHandoff");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
@@ -1272,6 +1284,81 @@ module.exports = async function handler(req, res) {
   if (Number.isFinite(usageCheckExtraCreditRowId) && usageCheckExtraCreditRowId > 0) {
     consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
   }
+  const handoffAppResult = await checkHumanAgentsAppEnabled({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+  const humanHandoffAppEnabled = Boolean(handoffAppResult?.ok && handoffAppResult?.enabled);
+  let humanHandoffToolEnabled = false;
+  let activeHumanHandoffChat = null;
+  if (humanHandoffAppEnabled) {
+    const [openHandoffChatResult, availableHumanAgentsResult] = await Promise.all([
+      getOpenHumanHandoffChat({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        chatSource: "widget",
+        chatId,
+      }),
+      checkAvailableHumanAgents({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+      }),
+    ]);
+    if (openHandoffChatResult?.ok && openHandoffChatResult.chat) {
+      activeHumanHandoffChat = openHandoffChatResult.chat;
+      const saveDashboardResult = await saveHumanMessageToMessages({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        anonId,
+        chatId,
+        country: requestCountry,
+        source: "widget",
+        prompt: String(incomingMessage),
+        result: null,
+      });
+      if (!saveDashboardResult.ok) {
+        res.status(saveDashboardResult.status).json({ error: saveDashboardResult.error });
+        return;
+      }
+      const savePortalResult = await saveHumanMessageToPortalFeed({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        anonId,
+        chatId,
+        source: "Website",
+        senderType: "customer",
+        assignedHumanAgentUserId: activeHumanHandoffChat.assigned_human_agent_user_id ?? null,
+        prompt: String(incomingMessage),
+        result: null,
+      });
+      if (!savePortalResult.ok) {
+        res.status(savePortalResult.status).json({ error: savePortalResult.error });
+        return;
+      }
+      if (wantsStream) {
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache, no-transform");
+        res.setHeader("Connection", "keep-alive");
+        res.setHeader("X-Accel-Buffering", "no");
+        if (typeof res.flushHeaders === "function") res.flushHeaders();
+        sendSseEvent(res, "done", { done: true, human_handoff: true });
+        if (!res.writableEnded) res.end();
+      } else {
+        res.status(200).json({ reply: null, human_handoff: true });
+      }
+      requestSucceeded = true;
+      return;
+    }
+    humanHandoffToolEnabled = Boolean(
+      availableHumanAgentsResult?.ok && availableHumanAgentsResult?.available
+    );
+  }
 
   const normalizedMessage = String(incomingMessage)
     .trim()
@@ -1397,6 +1484,21 @@ module.exports = async function handler(req, res) {
       },
     });
   }
+  if (
+    humanHandoffToolEnabled &&
+    !effectiveTools.some((tool) => String(tool?.name || "").trim() === HUMAN_HANDOFF_TOOL_NAME)
+  ) {
+    effectiveTools.push(HUMAN_HANDOFF_TOOL);
+    effectiveActionMap.set(HUMAN_HANDOFF_TOOL_NAME, {
+      tool_name: HUMAN_HANDOFF_TOOL_NAME,
+      kind: "human_handoff",
+      id: null,
+      method: "LOCAL",
+      url: null,
+      headers: {},
+      body_template: null,
+    });
+  }
 
   const systemPrompt = typeof agentInfo.role === "string" ? agentInfo.role.trim() : "";
   const promptSections = [];
@@ -1412,6 +1514,9 @@ module.exports = async function handler(req, res) {
   promptSections.push(["CURRENT DATE", now.toISOString()].join("\n"));
   if (Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0) {
     promptSections.push(["KNOWLEDGE CHUNKS", ...vectorResult.chunks].join("\n"));
+  }
+  if (humanHandoffToolEnabled) {
+    promptSections.push(HUMAN_HANDOFF_PROMPT_BLOCK);
   }
 
   const prompt = promptSections.join("\n\n");
@@ -1514,6 +1619,8 @@ module.exports = async function handler(req, res) {
     const toolResults = [];
     let calendarContext = null;
     let customButtonPayload = null;
+    let humanHandoffActivated = false;
+    let humanHandoffReply = "";
     const toolsStartedAt = Date.now();
     for (const call of actionCalls) {
       const actionDef = effectiveActionMap.get(call.action_key);
@@ -1553,6 +1660,107 @@ module.exports = async function handler(req, res) {
       let url = actionDef.url;
       let requestBody;
       let requestPayloadForLog = variables;
+
+      if (actionDef.kind === "human_handoff") {
+        const subject = String(variables?.subject ?? "").trim() || "Human support request";
+        const summery =
+          String(variables?.summery ?? variables?.summary ?? "").trim() ||
+          `User requested human support. Last message: ${String(incomingMessage || "").trim()}`;
+        const assignResult = await assignHumanHandoffChat({
+          portalId: process.env.PORTAL_ID,
+          portalSecretKey: process.env.PORTAL_SECRET_KEY,
+          agentId,
+          chatSource: "widget",
+          source: "Website",
+          chatId,
+          anonId,
+          externalUserId: anonId,
+          country: requestCountry,
+          subject,
+          summery,
+        });
+        if (!assignResult.ok) {
+          toolResults.push({
+            call_id: call.call_id ?? null,
+            action_key: call.action_key,
+            tool_args: { subject, summery },
+            request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+            response: {
+              ok: false,
+              status: assignResult.status || 502,
+              error: assignResult.error || "Human handoff failed",
+            },
+          });
+          continue;
+        }
+        const saveDashboardResult = await saveHumanMessageToMessages({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          anonId,
+          chatId,
+          country: requestCountry,
+          source: "widget",
+          prompt: String(incomingMessage),
+          result: null,
+        });
+        if (!saveDashboardResult.ok) {
+          toolResults.push({
+            call_id: call.call_id ?? null,
+            action_key: call.action_key,
+            tool_args: { subject, summery },
+            request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+            response: {
+              ok: false,
+              status: saveDashboardResult.status || 502,
+              error: saveDashboardResult.error || "Message service unavailable",
+            },
+          });
+          continue;
+        }
+        const savePortalResult = await saveHumanMessageToPortalFeed({
+          portalId: process.env.PORTAL_ID,
+          portalSecretKey: process.env.PORTAL_SECRET_KEY,
+          agentId,
+          anonId,
+          chatId,
+          source: "Website",
+          senderType: "customer",
+          assignedHumanAgentUserId: assignResult.assignedHumanAgentUserId,
+          prompt: String(incomingMessage),
+          result: null,
+        });
+        if (!savePortalResult.ok) {
+          toolResults.push({
+            call_id: call.call_id ?? null,
+            action_key: call.action_key,
+            tool_args: { subject, summery },
+            request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+            response: {
+              ok: false,
+              status: savePortalResult.status || 502,
+              error: savePortalResult.error || "Human message service unavailable",
+            },
+          });
+          continue;
+        }
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: { subject, summery },
+          request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+          response: {
+            ok: true,
+            status: 200,
+            body: assignResult.created
+              ? "Human handoff started."
+              : "Human handoff already active.",
+          },
+        });
+        humanHandoffActivated = true;
+        humanHandoffReply = HUMAN_HANDOFF_CONFIRMATION_REPLY;
+        break;
+      }
 
       if (actionDef.kind === "custom_button") {
         customButtonPayload = actionDef.button_payload || null;
@@ -2100,6 +2308,18 @@ module.exports = async function handler(req, res) {
       });
     }
     latencyToolsMs = Date.now() - toolsStartedAt;
+    if (humanHandoffActivated) {
+      if (streamReady) {
+        sendSseEvent(res, "token", { text: humanHandoffReply });
+        sendSseEvent(res, "done", { done: true, human_handoff: true });
+        closeStream();
+        requestSucceeded = true;
+        return;
+      }
+      res.status(200).json({ reply: humanHandoffReply, human_handoff: true });
+      requestSucceeded = true;
+      return;
+    }
 
     const assistantBlocks =
       completion.output_items && Array.isArray(completion.output_items)

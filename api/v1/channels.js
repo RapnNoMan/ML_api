@@ -19,6 +19,18 @@ const {
   getLatestTicketOutcome,
   buildTicketOutcomeInstruction,
 } = require("../../scripts/internal/ticketOutcome");
+const {
+  HUMAN_HANDOFF_TOOL_NAME,
+  HUMAN_HANDOFF_TOOL,
+  HUMAN_HANDOFF_PROMPT_BLOCK,
+  HUMAN_HANDOFF_CONFIRMATION_REPLY,
+  checkHumanAgentsAppEnabled,
+  getOpenHumanHandoffChat,
+  checkAvailableHumanAgents,
+  saveHumanMessageToMessages,
+  saveHumanMessageToPortalFeed,
+  assignHumanHandoffChat,
+} = require("../../scripts/internal/humanHandoff");
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
@@ -724,18 +736,22 @@ function usageToTokens(usage) {
 }
 async function executeActionCalls({
   actionCalls,
-  toolsResult,
+  actionMap,
   agentId,
   anonId,
   chatId,
   country,
   source,
+  chatSource,
+  incomingMessage,
 }) {
   const toolResults = [];
   let calendarContext = null;
+  let humanHandoffActivated = false;
+  let humanHandoffReply = "";
 
   for (const call of actionCalls) {
-    const actionDef = toolsResult.actionMap.get(call.action_key);
+    const actionDef = actionMap.get(call.action_key);
     if (!actionDef) {
       toolResults.push({ call_id: call.call_id ?? null, ok: false, error: "Unknown action" });
       continue;
@@ -768,6 +784,105 @@ async function executeActionCalls({
     let url = actionDef.url;
     let requestBody;
     let requestPayloadForLog = variables;
+
+    if (actionDef.kind === "human_handoff") {
+      const subject = String(variables?.subject ?? "").trim() || "Human support request";
+      const summery =
+        String(variables?.summery ?? variables?.summary ?? "").trim() ||
+        `User requested human support. Last message: ${String(incomingMessage || "").trim()}`;
+      const assignResult = await assignHumanHandoffChat({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        chatSource,
+        source,
+        chatId,
+        anonId,
+        externalUserId: anonId,
+        country,
+        subject,
+        summery,
+      });
+      if (!assignResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: { subject, summery },
+          request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+          response: {
+            ok: false,
+            status: assignResult.status || 502,
+            error: assignResult.error || "Human handoff failed",
+          },
+        });
+        continue;
+      }
+      const saveDashboardResult = await saveHumanMessageToMessages({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        anonId,
+        chatId,
+        country,
+        source,
+        prompt: String(incomingMessage),
+        result: null,
+      });
+      if (!saveDashboardResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: { subject, summery },
+          request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+          response: {
+            ok: false,
+            status: saveDashboardResult.status || 502,
+            error: saveDashboardResult.error || "Message service unavailable",
+          },
+        });
+        continue;
+      }
+      const savePortalResult = await saveHumanMessageToPortalFeed({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        anonId,
+        chatId,
+        source,
+        senderType: "customer",
+        assignedHumanAgentUserId: assignResult.assignedHumanAgentUserId,
+        prompt: String(incomingMessage),
+        result: null,
+      });
+      if (!savePortalResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: { subject, summery },
+          request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+          response: {
+            ok: false,
+            status: savePortalResult.status || 502,
+            error: savePortalResult.error || "Human message service unavailable",
+          },
+        });
+        continue;
+      }
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        tool_args: { subject, summery },
+        request: { url: null, method: "LOCAL", headers: {}, body: { subject, summery } },
+        response: {
+          ok: true,
+          status: 200,
+          body: assignResult.created ? "Human handoff started." : "Human handoff already active.",
+        },
+      });
+      humanHandoffActivated = true;
+      humanHandoffReply = HUMAN_HANDOFF_CONFIRMATION_REPLY;
+      break;
+    }
 
     if (actionDef.kind === "dynamic_source_query") {
       const queryResult = executeDynamicSourceQuery(actionDef, variables);
@@ -1091,7 +1206,7 @@ async function executeActionCalls({
     });
   }
 
-  return { toolResults, calendarContext };
+  return { toolResults, calendarContext, humanHandoffActivated, humanHandoffReply };
 }
 function toWebhookEvents(payload) {
   const objectType = String(payload?.object || "").toLowerCase();
@@ -1661,7 +1776,7 @@ function startTypingHeartbeat({ pageAccessToken, recipientId, intervalMs = 3500 
   };
 }
 
-function buildChannelPrompt({ systemRole, chunks, nowIso, channel }) {
+function buildChannelPrompt({ systemRole, chunks, nowIso, channel, extraRules }) {
   const sections = [];
   if (typeof systemRole === "string" && systemRole.trim()) {
     sections.push(systemRole.trim());
@@ -1691,6 +1806,9 @@ function buildChannelPrompt({ systemRole, chunks, nowIso, channel }) {
   sections.push(["CURRENT DATE", nowIso].join("\n"));
   if (Array.isArray(chunks) && chunks.length > 0) {
     sections.push(["KNOWLEDGE CHUNKS", ...chunks].join("\n"));
+  }
+  if (typeof extraRules === "string" && extraRules.trim()) {
+    sections.push(extraRules.trim());
   }
   return sections.join("\n\n");
 }
@@ -1772,11 +1890,87 @@ async function processIncomingMessage({ event, connection, headers }) {
     return { ok: false, status: 403, error: "User is banned" };
   }
 
-  const usageCheckPromise = checkMessageCap({
+  const usageCheck = await checkMessageCap({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
   });
+  if (!usageCheck.ok) return { ok: false, status: usageCheck.status, error: usageCheck.error };
+  const usageCheckExtraCreditRowId = Number(usageCheck?.extraCreditRowId);
+  if (Number.isFinite(usageCheckExtraCreditRowId) && usageCheckExtraCreditRowId > 0) {
+    consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
+  }
+
+  const handoffAppResult = await checkHumanAgentsAppEnabled({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+  const humanHandoffAppEnabled = Boolean(handoffAppResult?.ok && handoffAppResult?.enabled);
+  let humanHandoffToolEnabled = false;
+  if (humanHandoffAppEnabled) {
+    const [openHandoffChatResult, availableHumanAgentsResult] = await Promise.all([
+      getOpenHumanHandoffChat({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        chatSource: event.channel,
+        chatId,
+      }),
+      checkAvailableHumanAgents({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+      }),
+    ]);
+    if (openHandoffChatResult?.ok && openHandoffChatResult.chat) {
+      const assignedHumanAgentUserId =
+        openHandoffChatResult.chat?.assigned_human_agent_user_id ?? null;
+      const saveDashboardResult = await saveHumanMessageToMessages({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        anonId,
+        chatId,
+        country: requestCountry,
+        source: `meta_${event.channel}`,
+        prompt: incomingText,
+        result: null,
+      });
+      if (!saveDashboardResult.ok) {
+        return {
+          ok: false,
+          status: saveDashboardResult.status,
+          error: saveDashboardResult.error,
+        };
+      }
+      const savePortalResult = await saveHumanMessageToPortalFeed({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId,
+        anonId,
+        chatId,
+        source: `meta_${event.channel}`,
+        senderType: "customer",
+        assignedHumanAgentUserId,
+        prompt: incomingText,
+        result: null,
+      });
+      if (!savePortalResult.ok) {
+        return {
+          ok: false,
+          status: savePortalResult.status,
+          error: savePortalResult.error,
+        };
+      }
+      requestSucceeded = true;
+      return { ok: true, humanHandoff: true, actionUsed: false, actionCount: 0 };
+    }
+    humanHandoffToolEnabled = Boolean(
+      availableHumanAgentsResult?.ok && availableHumanAgentsResult?.available
+    );
+  }
+
   const historyPromise = getChatHistory({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -1814,29 +2008,42 @@ async function processIncomingMessage({ event, connection, headers }) {
   let latencyNanoMs = null;
   let latencyToolsMs = null;
 
-  const [usageCheck, historyResult, ragResult, agentInfo, toolsResult] = await Promise.all([
-    usageCheckPromise,
+  const [historyResult, ragResult, agentInfo, toolsResult] = await Promise.all([
     historyPromise,
     ragPromise,
     agentInfoPromise,
     toolsResultPromise,
   ]);
 
-  if (!usageCheck.ok) return { ok: false, status: usageCheck.status, error: usageCheck.error };
-  const usageCheckExtraCreditRowId = Number(usageCheck?.extraCreditRowId);
-  if (Number.isFinite(usageCheckExtraCreditRowId) && usageCheckExtraCreditRowId > 0) {
-    consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
-  }
   if (!historyResult.ok) return { ok: false, status: historyResult.status, error: historyResult.error };
   if (!ragResult.ok) return { ok: false, status: ragResult.status, error: ragResult.error };
   if (!agentInfo.ok) return { ok: false, status: agentInfo.status, error: agentInfo.error };
   if (!toolsResult.ok) return { ok: false, status: toolsResult.status, error: toolsResult.error };
+
+  const effectiveTools = Array.isArray(toolsResult.tools) ? [...toolsResult.tools] : [];
+  const effectiveActionMap = new Map(toolsResult.actionMap || []);
+  if (
+    humanHandoffToolEnabled &&
+    !effectiveTools.some((tool) => String(tool?.name || "").trim() === HUMAN_HANDOFF_TOOL_NAME)
+  ) {
+    effectiveTools.push(HUMAN_HANDOFF_TOOL);
+    effectiveActionMap.set(HUMAN_HANDOFF_TOOL_NAME, {
+      tool_name: HUMAN_HANDOFF_TOOL_NAME,
+      kind: "human_handoff",
+      id: null,
+      method: "LOCAL",
+      url: null,
+      headers: {},
+      body_template: null,
+    });
+  }
 
   const prompt = buildChannelPrompt({
     systemRole: agentInfo.role,
     chunks: ragResult.chunks,
     nowIso: new Date().toISOString(),
     channel: event.channel,
+    extraRules: humanHandoffToolEnabled ? HUMAN_HANDOFF_PROMPT_BLOCK : "",
   });
 
   const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
@@ -1857,7 +2064,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     model: PRIMARY_MODEL,
     instructions: prompt,
     messages,
-    tools: toolsResult.tools,
+    tools: effectiveTools,
   });
   latencyMiniMs = Date.now() - completionStartedAt;
   if (!completion.ok) return { ok: false, status: completion.status, error: completion.error };
@@ -1870,22 +2077,35 @@ async function processIncomingMessage({ event, connection, headers }) {
     actionCount = actionCalls.length;
 
     const toolsStartedAt = Date.now();
-    const { toolResults, calendarContext } = await executeActionCalls({
+    const { toolResults, calendarContext, humanHandoffActivated, humanHandoffReply } =
+      await executeActionCalls({
       actionCalls,
-      toolsResult,
+      actionMap: effectiveActionMap,
       agentId,
       anonId,
       chatId,
       country: requestCountry,
       source: `meta_${event.channel}`,
+      chatSource: event.channel,
+      incomingMessage: incomingText,
     });
     latencyToolsMs = Date.now() - toolsStartedAt;
+    if (humanHandoffActivated) {
+      requestSucceeded = true;
+      return {
+        ok: true,
+        reply: humanHandoffReply,
+        humanHandoff: true,
+        actionUsed: true,
+        actionCount,
+      };
+    }
 
     const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
     const followupInputItems = toXAiInputItems(messages, assistantBlocks, toolResults);
     const ticketOutcome = getLatestTicketOutcome({
       toolResults,
-      actionMap: toolsResult.actionMap,
+      actionMap: effectiveActionMap,
     });
     const followupPrompt = [
       prompt,
@@ -2390,6 +2610,43 @@ module.exports = async function handler(req, res) {
             });
           }
         }
+        continue;
+      }
+      if (handled.humanHandoff && !handled.reply) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event,
+          raw: {
+            stage: "human_handoff_active",
+            channel: event.channel,
+            chat_id: `${event.channel}:${connectionResult.connection.thread_id}:${event.senderId}`,
+          },
+        });
+        if (typeof stopTypingHeartbeat === "function") {
+          await stopTypingHeartbeat();
+        } else if (shouldUseMetaTyping) {
+          const typingOffResult = await sendMetaSenderAction({
+            pageAccessToken: connectionResult.connection.access_token,
+            recipientId: event.senderId,
+            action: "typing_off",
+          });
+          if (!typingOffResult.ok) {
+            await insertMetaWebhookDebugMessage({
+              supId: process.env.SUP_ID,
+              supKey: process.env.SUP_KEY,
+              event,
+              raw: {
+                stage: "typing_off_failed",
+                channel: event.channel,
+                recipient_id: event.senderId,
+                status: typingOffResult?.status ?? null,
+                error: typingOffResult?.error ?? "Unknown typing_off error",
+              },
+            });
+          }
+        }
+        processedCount += 1;
         continue;
       }
 
