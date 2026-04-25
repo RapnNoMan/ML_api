@@ -3,6 +3,7 @@ const {
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
 } = require("../../scripts/internal/humanHandoff");
+const { randomUUID, createHash } = require("node:crypto");
 
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 
@@ -29,6 +30,29 @@ function sanitizeOutgoingText(value) {
   const maxLen = 3500;
   if (trimmed.length <= maxLen) return trimmed;
   return `${trimmed.slice(0, maxLen - 3).trimEnd()}...`;
+}
+
+function makeRequestId() {
+  try {
+    return randomUUID();
+  } catch (_) {
+    return `req_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+
+function fingerprintHumanSend({ agentId, chatId, chatSource, userId, message }) {
+  const raw = [
+    String(agentId || ""),
+    String(chatId || ""),
+    String(chatSource || ""),
+    String(userId || ""),
+    String(message || ""),
+  ].join("|");
+  try {
+    return createHash("sha256").update(raw).digest("hex").slice(0, 20);
+  } catch (_) {
+    return "fingerprint_unavailable";
+  }
 }
 
 function parseChannelChatId(chatId) {
@@ -389,6 +413,7 @@ async function sendTelegramTextReply({ botToken, chatId, text }) {
 
 module.exports = async function handler(req, res) {
   setCorsHeaders(req, res);
+  const requestId = makeRequestId();
   if (req.method === "OPTIONS") {
     res.status(204).end();
     return;
@@ -436,6 +461,33 @@ module.exports = async function handler(req, res) {
     res.status(authUser.status).json({ error: authUser.error });
     return;
   }
+
+  const sendFingerprint = fingerprintHumanSend({
+    agentId,
+    chatId,
+    chatSource,
+    userId: authUser.userId,
+    message,
+  });
+  console.log(
+    JSON.stringify({
+      scope: "channels_human_send",
+      stage: "request_received",
+      request_id: requestId,
+      fingerprint: sendFingerprint,
+      method: req.method,
+      url: req.url || "",
+      chat_source: chatSource,
+      agent_id: agentId,
+      chat_id: chatId,
+      user_id: authUser.userId,
+      vercel_id: String(req?.headers?.["x-vercel-id"] || ""),
+      user_agent: String(req?.headers?.["user-agent"] || ""),
+      origin: String(req?.headers?.origin || ""),
+      referer: String(req?.headers?.referer || ""),
+      content_length: String(req?.headers?.["content-length"] || ""),
+    })
+  );
 
   const accessCheck = await validatePortalHumanAgentAccess({
     portalId: process.env.PORTAL_ID,
@@ -523,6 +575,16 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  console.log(
+    JSON.stringify({
+      scope: "channels_human_send",
+      stage: "channel_send_ok",
+      request_id: requestId,
+      fingerprint: sendFingerprint,
+      chat_source: chatSource,
+    })
+  );
+
   const messageSource = mapChatSourceToMessageSource(chatSource);
   const workspaceLookup = await fetchDashboardAgentWorkspaceId({
     supId: process.env.SUP_ID,
@@ -567,5 +629,14 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  res.status(200).json({ ok: true, sent: true });
+  console.log(
+    JSON.stringify({
+      scope: "channels_human_send",
+      stage: "portal_write_ok",
+      request_id: requestId,
+      fingerprint: sendFingerprint,
+    })
+  );
+
+  res.status(200).json({ ok: true, sent: true, request_id: requestId });
 };
