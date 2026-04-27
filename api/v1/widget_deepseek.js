@@ -33,8 +33,17 @@ const {
 
 const DEEPSEEK_CHAT_COMPLETIONS_API_URL =
   process.env.DEEPSEEK_CHAT_COMPLETIONS_API_URL || "https://api.deepseek.com/chat/completions";
+const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.DEEPSEEK_PRIMARY_MODEL || "deepseek-v4-flash";
 const FOLLOWUP_MODEL = process.env.DEEPSEEK_FOLLOWUP_MODEL || "deepseek-v4-flash";
+const GROK_FALLBACK_PRIMARY_MODEL =
+  process.env.DEEPSEEK_GROK_FALLBACK_PRIMARY_MODEL ||
+  process.env.XAI_PRIMARY_MODEL ||
+  "grok-4-1-fast-non-reasoning";
+const GROK_FALLBACK_FOLLOWUP_MODEL =
+  process.env.DEEPSEEK_GROK_FALLBACK_FOLLOWUP_MODEL ||
+  process.env.XAI_FOLLOWUP_MODEL ||
+  "grok-4-1-fast-non-reasoning";
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -846,6 +855,8 @@ function toXAiInputItems(messages, assistantBlocks, toolResults) {
 async function getChatCompletionStream({
   apiKey,
   model,
+  fallbackApiKey,
+  fallbackModel,
   instructions,
   messages,
   tools,
@@ -857,6 +868,8 @@ async function getChatCompletionStream({
   return getXAiChatCompletionStream({
     apiKey,
     model,
+    fallbackApiKey,
+    fallbackModel,
     instructions,
     tools,
     inputItems: toXAiInputItems(messages, assistantBlocks, toolResults),
@@ -868,6 +881,8 @@ async function getChatCompletionStream({
 async function getChatCompletion({
   apiKey,
   model,
+  fallbackApiKey,
+  fallbackModel,
   instructions,
   messages,
   tools,
@@ -877,6 +892,8 @@ async function getChatCompletion({
   return getXAiChatCompletion({
     apiKey,
     model,
+    fallbackApiKey,
+    fallbackModel,
     instructions,
     tools,
     inputItems: toXAiInputItems(messages, assistantBlocks, toolResults),
@@ -1098,7 +1115,7 @@ function parseOpenAiSseEventBlock(block) {
   }
 }
 
-async function getXAiChatCompletionStream({
+async function getGrokChatCompletionStream({
   apiKey,
   model,
   reasoning,
@@ -1108,8 +1125,279 @@ async function getXAiChatCompletionStream({
   inputItems,
   signal,
   onTextDelta,
+  fallbackReason,
 }) {
-  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+  if (!apiKey) {
+    return {
+      ok: false,
+      status: 500,
+      error: fallbackReason
+        ? `DeepSeek failed and Grok fallback is not configured: ${fallbackReason}`
+        : "Server configuration error",
+    };
+  }
+
+  const requestBody = createOpenAiCompletionRequestBody({
+    model,
+    reasoning,
+    instructions,
+    messages,
+    tools,
+    inputItems,
+  });
+
+  let response;
+  try {
+    response = await fetch(XAI_RESPONSES_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+      signal,
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling Grok fallback" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "Grok fallback request failed",
+    };
+  }
+
+  if (!response.body) {
+    return { ok: false, status: 502, error: "Missing stream body from Grok fallback" };
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let assembledText = "";
+  let finalResponse = null;
+  const outputItems = [];
+  let upstreamError = null;
+  let done = false;
+
+  while (!done) {
+    let chunk;
+    try {
+      chunk = await reader.read();
+    } catch (_) {
+      return { ok: false, status: 502, error: "Stream read error from Grok fallback" };
+    }
+    done = Boolean(chunk?.done);
+    if (chunk?.value) {
+      buffer += decoder.decode(chunk.value, { stream: true }).replace(/\r\n/g, "\n");
+      let delimiterIdx = buffer.indexOf("\n\n");
+      while (delimiterIdx !== -1) {
+        const block = buffer.slice(0, delimiterIdx);
+        buffer = buffer.slice(delimiterIdx + 2);
+        const evt = parseOpenAiSseEventBlock(block);
+        if (evt?.done) {
+          done = true;
+          break;
+        }
+        if (!evt?.payload) {
+          delimiterIdx = buffer.indexOf("\n\n");
+          continue;
+        }
+
+        const payload = evt.payload;
+        if (payload?.type === "response.output_text.delta" && typeof payload?.delta === "string") {
+          assembledText += payload.delta;
+          if (typeof onTextDelta === "function") {
+            await onTextDelta(payload.delta);
+          }
+        } else if (payload?.type === "response.output_item.done" && payload?.item) {
+          outputItems.push(payload.item);
+        } else if (payload?.type === "response.completed" && payload?.response) {
+          finalResponse = payload.response;
+        } else if (payload?.type === "response.failed") {
+          upstreamError =
+            payload?.response?.error?.message ||
+            payload?.error?.message ||
+            "Grok fallback streaming failed";
+        }
+
+        delimiterIdx = buffer.indexOf("\n\n");
+      }
+    }
+  }
+
+  if (upstreamError) {
+    return { ok: false, status: 502, error: upstreamError };
+  }
+
+  const payload = finalResponse || { output: outputItems };
+  const finalOutputItems = Array.isArray(payload?.output) ? payload.output : outputItems;
+  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
+  const assistantBlocks = extractAssistantBlocks(payload, finalOutputItems);
+  const rawText =
+    typeof payload?.output_text === "string" && payload.output_text.trim()
+      ? payload.output_text
+      : (extractResponseText(payload) || assembledText);
+
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: assistantBlocks,
+    };
+  }
+
+  if (!rawText) {
+    return { ok: false, status: 502, error: "Empty Grok fallback output" };
+  }
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: assistantBlocks,
+  };
+}
+
+async function getGrokChatCompletion({
+  apiKey,
+  model,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+  fallbackReason,
+}) {
+  if (!apiKey) {
+    return {
+      ok: false,
+      status: 500,
+      error: fallbackReason
+        ? `DeepSeek failed and Grok fallback is not configured: ${fallbackReason}`
+        : "Server configuration error",
+    };
+  }
+
+  const requestBody = createOpenAiCompletionRequestBody({
+    model,
+    reasoning,
+    instructions,
+    messages,
+    tools,
+    inputItems,
+  });
+  requestBody.stream = false;
+
+  let response;
+  try {
+    response = await fetch(XAI_RESPONSES_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Network error calling Grok fallback" };
+  }
+
+  if (!response.ok) {
+    let errText = "";
+    try {
+      errText = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: errText || "Grok fallback request failed",
+    };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Invalid JSON from Grok fallback" };
+  }
+
+  const toolCalls = extractFunctionCalls(payload);
+  const assistantBlocks = extractAssistantBlocks(payload);
+  if (toolCalls.length > 0) {
+    return {
+      ok: true,
+      data: {
+        mode: "actions_needed",
+        reply: "",
+        action_calls: toolCalls,
+      },
+      usage: payload?.usage ?? null,
+      raw: "",
+      output_items: assistantBlocks,
+    };
+  }
+
+  const rawText = extractResponseText(payload);
+  if (!rawText) return { ok: false, status: 502, error: "Empty Grok fallback output" };
+
+  return {
+    ok: true,
+    data: {
+      mode: "reply",
+      reply: rawText,
+      action_calls: [],
+    },
+    usage: payload?.usage ?? null,
+    raw: rawText,
+    output_items: assistantBlocks,
+  };
+}
+
+async function getXAiChatCompletionStream({
+  apiKey,
+  model,
+  fallbackApiKey,
+  fallbackModel,
+  reasoning,
+  instructions,
+  messages,
+  tools,
+  inputItems,
+  signal,
+  onTextDelta,
+}) {
+  if (!apiKey) {
+    return getGrokChatCompletionStream({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      signal,
+      onTextDelta,
+      fallbackReason: "Missing DEEPSEEK_API_KEY",
+    });
+  }
 
   const requestBody = createDeepSeekCompletionRequestBody({
     model,
@@ -1132,7 +1420,17 @@ async function getXAiChatCompletionStream({
       signal,
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling DeepSeek" };
+    return getGrokChatCompletionStream({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      signal,
+      onTextDelta,
+    });
   }
 
   if (!response.ok) {
@@ -1140,15 +1438,33 @@ async function getXAiChatCompletionStream({
     try {
       errText = await response.text();
     } catch (_) {}
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: errText || "DeepSeek request failed",
-    };
+    return getGrokChatCompletionStream({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      signal,
+      onTextDelta,
+      fallbackReason: errText || "DeepSeek request failed",
+    });
   }
 
   if (!response.body) {
-    return { ok: false, status: 502, error: "Missing stream body from DeepSeek" };
+    return getGrokChatCompletionStream({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      signal,
+      onTextDelta,
+      fallbackReason: "Missing stream body from DeepSeek",
+    });
   }
 
   const reader = response.body.getReader();
@@ -1166,7 +1482,21 @@ async function getXAiChatCompletionStream({
     try {
       chunk = await reader.read();
     } catch (_) {
-      return { ok: false, status: 502, error: "Stream read error from DeepSeek" };
+      if (assembledText) {
+        return { ok: false, status: 502, error: "Stream read error from DeepSeek" };
+      }
+      return getGrokChatCompletionStream({
+        apiKey: fallbackApiKey,
+        model: fallbackModel,
+        reasoning,
+        instructions,
+        messages,
+        tools,
+        inputItems,
+        signal,
+        onTextDelta,
+        fallbackReason: "Stream read error from DeepSeek",
+      });
     }
     done = Boolean(chunk?.done);
     if (chunk?.value) {
@@ -1225,7 +1555,21 @@ async function getXAiChatCompletionStream({
   }
 
   if (upstreamError) {
-    return { ok: false, status: 502, error: upstreamError };
+    if (assembledText) {
+      return { ok: false, status: 502, error: upstreamError };
+    }
+    return getGrokChatCompletionStream({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      signal,
+      onTextDelta,
+      fallbackReason: upstreamError,
+    });
   }
 
   const message = {
@@ -1254,7 +1598,18 @@ async function getXAiChatCompletionStream({
   }
 
   if (!rawText) {
-    return { ok: false, status: 502, error: "Empty model output" };
+    return getGrokChatCompletionStream({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      signal,
+      onTextDelta,
+      fallbackReason: "Empty model output from DeepSeek",
+    });
   }
 
   return {
@@ -1273,13 +1628,26 @@ async function getXAiChatCompletionStream({
 async function getXAiChatCompletion({
   apiKey,
   model,
+  fallbackApiKey,
+  fallbackModel,
   reasoning,
   instructions,
   messages,
   tools,
   inputItems,
 }) {
-  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+  if (!apiKey) {
+    return getGrokChatCompletion({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      fallbackReason: "Missing DEEPSEEK_API_KEY",
+    });
+  }
 
   const requestBody = createDeepSeekCompletionRequestBody({
     model,
@@ -1301,7 +1669,15 @@ async function getXAiChatCompletion({
       body: JSON.stringify(requestBody),
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling DeepSeek" };
+    return getGrokChatCompletion({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+    });
   }
 
   if (!response.ok) {
@@ -1309,18 +1685,32 @@ async function getXAiChatCompletion({
     try {
       errText = await response.text();
     } catch (_) {}
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: errText || "DeepSeek request failed",
-    };
+    return getGrokChatCompletion({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      fallbackReason: errText || "DeepSeek request failed",
+    });
   }
 
   let payload;
   try {
     payload = await response.json();
   } catch (_) {
-    return { ok: false, status: 502, error: "Invalid JSON from DeepSeek" };
+    return getGrokChatCompletion({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      fallbackReason: "Invalid JSON from DeepSeek",
+    });
   }
 
   const message = extractDeepSeekMessage(payload);
@@ -1341,7 +1731,18 @@ async function getXAiChatCompletion({
   }
 
   const rawText = typeof message?.content === "string" ? message.content.trim() : "";
-  if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
+  if (!rawText) {
+    return getGrokChatCompletion({
+      apiKey: fallbackApiKey,
+      model: fallbackModel,
+      reasoning,
+      instructions,
+      messages,
+      tools,
+      inputItems,
+      fallbackReason: "Empty model output from DeepSeek",
+    });
+  }
 
   return {
     ok: true,
@@ -1762,9 +2163,11 @@ module.exports = async function handler(req, res) {
 
   const completionStartedAt = Date.now();
   const completion = wantsStream
-    ? await getChatCompletionStream({
+      ? await getChatCompletionStream({
         apiKey: process.env.DEEPSEEK_API_KEY,
         model: PRIMARY_MODEL,
+        fallbackApiKey: process.env.XAI_API_KEY,
+        fallbackModel: GROK_FALLBACK_PRIMARY_MODEL,
         instructions: prompt,
         messages,
         tools: effectiveTools,
@@ -1776,6 +2179,8 @@ module.exports = async function handler(req, res) {
     : await getChatCompletion({
         apiKey: process.env.DEEPSEEK_API_KEY,
         model: PRIMARY_MODEL,
+        fallbackApiKey: process.env.XAI_API_KEY,
+        fallbackModel: GROK_FALLBACK_PRIMARY_MODEL,
         instructions: prompt,
         messages,
         tools: effectiveTools,
@@ -2550,6 +2955,8 @@ module.exports = async function handler(req, res) {
       ? await getXAiChatCompletionStream({
           apiKey: process.env.DEEPSEEK_API_KEY,
           model: FOLLOWUP_MODEL,
+          fallbackApiKey: process.env.XAI_API_KEY,
+          fallbackModel: GROK_FALLBACK_FOLLOWUP_MODEL,
           instructions: followupInstructions,
           messages,
           inputItems: followupInputItems,
@@ -2564,6 +2971,8 @@ module.exports = async function handler(req, res) {
       : await getXAiChatCompletion({
           apiKey: process.env.DEEPSEEK_API_KEY,
           model: FOLLOWUP_MODEL,
+          fallbackApiKey: process.env.XAI_API_KEY,
+          fallbackModel: GROK_FALLBACK_FOLLOWUP_MODEL,
           instructions: followupInstructions,
           messages,
           inputItems: followupInputItems,
