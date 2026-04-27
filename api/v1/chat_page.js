@@ -22,7 +22,7 @@ const {
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
-const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
+const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || "grok-4-1-fast-non-reasoning";
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
