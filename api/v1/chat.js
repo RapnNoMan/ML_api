@@ -9,7 +9,7 @@ const { getAgentAllActions } = require("../../scripts/internal/getAgentAllAction
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getRelevantKnowledgeChunks");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
-const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
+const { trackMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 const { createPortalTicket } = require("../../scripts/internal/ticketsPortal");
@@ -1722,7 +1722,7 @@ module.exports = async function handler(req, res) {
 
     const miniTokens = usageToTokens(completion.usage);
     const nanoTokens = usageToTokens(followup.usage);
-    void saveMessageAnalytics({
+    trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
       agentId: body.agent_id,
@@ -1748,7 +1748,7 @@ module.exports = async function handler(req, res) {
       latencyNanoMs,
       latencyToolsMs,
       errorCode: null,
-    }).catch(() => {});
+    });
 
     res.status(200).json({
       reply: finalFollowupReply,
@@ -1777,7 +1777,7 @@ module.exports = async function handler(req, res) {
   }
 
   const miniTokens = usageToTokens(completion.usage);
-  void saveMessageAnalytics({
+  trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId: body.agent_id,
@@ -1803,7 +1803,7 @@ module.exports = async function handler(req, res) {
     latencyNanoMs: null,
     latencyToolsMs: null,
     errorCode: null,
-  }).catch(() => {});
+  });
 
     res.status(200).json({
       reply: completionReply,

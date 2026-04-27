@@ -9,7 +9,7 @@ const { getAgentAllActions } = require("../../scripts/internal/getAgentAllAction
 const { getChatHistory } = require("../../scripts/internal/getChatHistory");
 const { getRelevantKnowledgeChunks } = require("../../scripts/internal/getRelevantKnowledgeChunks");
 const { saveMessage } = require("../../scripts/internal/saveMessage");
-const { saveMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
+const { trackMessageAnalytics } = require("../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../scripts/internal/googleCalendar");
 const { createPortalTicket } = require("../../scripts/internal/ticketsPortal");
@@ -2404,7 +2404,7 @@ async function processIncomingMessage({ event, connection, headers }) {
 
     const miniTokens = usageToTokens(completion.usage);
     const nanoTokens = usageToTokens(followup.usage);
-    void saveMessageAnalytics({
+    trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
       agentId,
@@ -2430,7 +2430,7 @@ async function processIncomingMessage({ event, connection, headers }) {
       latencyNanoMs,
       latencyToolsMs,
       errorCode: null,
-    }).catch(() => {});
+    });
 
     requestSucceeded = true;
     return { ok: true, reply: finalReply, humanHandoff: humanHandoffActivated, actionUsed: true, actionCount };
@@ -2460,7 +2460,7 @@ async function processIncomingMessage({ event, connection, headers }) {
   if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
   const miniTokens = usageToTokens(completion.usage);
-  void saveMessageAnalytics({
+  trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
@@ -2486,7 +2486,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     latencyNanoMs: null,
     latencyToolsMs: null,
     errorCode: null,
-  }).catch(() => {});
+  });
 
   requestSucceeded = true;
   return { ok: true, reply, actionUsed: false, actionCount: 0 };

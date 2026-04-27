@@ -11,7 +11,7 @@ const { getAgentAllActions } = require("../../../scripts/internal/getAgentAllAct
 const { getChatHistory } = require("../../../scripts/internal/getChatHistory");
 const { getChatCompletion } = require("../../../scripts/internal/getChatCompletion");
 const { saveMessage } = require("../../../scripts/internal/saveMessage");
-const { saveMessageAnalytics } = require("../../../scripts/internal/saveMessageAnalytics");
+const { trackMessageAnalytics } = require("../../../scripts/internal/saveMessageAnalytics");
 const { ensureAccessToken, buildRawEmail } = require("../../../scripts/internal/googleGmail");
 const { ensureAccessToken: ensureCalendarAccessToken } = require("../../../scripts/internal/googleCalendar");
 const { executeDynamicSourceQuery } = require("../../../scripts/internal/queryDynamicSource");
@@ -908,7 +908,7 @@ module.exports = async function handler(req, res) {
 
     const miniTokens = usageToTokens(completion.usage);
     const nanoTokens = usageToTokens(followup.usage);
-    await saveMessageAnalytics({
+    trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
       agentId,
@@ -963,7 +963,7 @@ module.exports = async function handler(req, res) {
   }
 
   const miniTokens = usageToTokens(completion.usage);
-  await saveMessageAnalytics({
+  trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,

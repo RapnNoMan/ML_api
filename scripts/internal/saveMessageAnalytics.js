@@ -89,6 +89,30 @@ async function saveMessageAnalytics({
   return { ok: true };
 }
 
+function trackMessageAnalytics(payload) {
+  const promise = saveMessageAnalytics(payload).catch(() => {});
+
+  const waitUntilCandidates = [
+    globalThis?.waitUntil,
+    globalThis?.EdgeRuntime?.waitUntil,
+  ];
+  try {
+    const vercelFunctions = require("@vercel/functions");
+    waitUntilCandidates.push(vercelFunctions?.waitUntil);
+  } catch (_) {}
+
+  for (const waitUntil of waitUntilCandidates) {
+    if (typeof waitUntil !== "function") continue;
+    try {
+      waitUntil(promise);
+      return;
+    } catch (_) {}
+  }
+
+  void promise;
+}
+
 module.exports = {
   saveMessageAnalytics,
+  trackMessageAnalytics,
 };
