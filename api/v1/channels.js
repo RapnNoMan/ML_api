@@ -33,7 +33,7 @@ const {
 
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
-const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
+const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || "grok-4-1-fast-non-reasoning";
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 const SONIOX_API_BASE_URL = String(process.env.SONIOX_API_BASE_URL || "https://api.soniox.com").replace(/\/+$/, "");
 const SONIOX_STT_MODEL = process.env.SONIOX_STT_MODEL || "stt-async-v4";
