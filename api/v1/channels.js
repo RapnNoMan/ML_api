@@ -35,6 +35,20 @@ const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
 const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
+const SONIOX_API_BASE_URL = String(process.env.SONIOX_API_BASE_URL || "https://api.soniox.com").replace(/\/+$/, "");
+const SONIOX_STT_MODEL = process.env.SONIOX_STT_MODEL || "stt-async-v4";
+const TELEGRAM_VOICE_MAX_BYTES = Math.max(
+  1,
+  Number.isFinite(Number(process.env.TELEGRAM_VOICE_MAX_BYTES))
+    ? Math.floor(Number(process.env.TELEGRAM_VOICE_MAX_BYTES))
+    : 20 * 1024 * 1024
+);
+const SONIOX_TRANSCRIPTION_TIMEOUT_MS = Math.max(
+  1000,
+  Number.isFinite(Number(process.env.SONIOX_TRANSCRIPTION_TIMEOUT_MS))
+    ? Math.floor(Number(process.env.SONIOX_TRANSCRIPTION_TIMEOUT_MS))
+    : 60 * 1000
+);
 const META_MIN_TYPING_MS = Math.max(
   0,
   Number.isFinite(Number(process.env.META_MIN_TYPING_MS))
@@ -150,6 +164,29 @@ function extractTelegramStartIdentifier(text) {
   const match = value.match(/^\/start(?:@\w+)?(?:\s+(.+))?$/i);
   if (!match) return "";
   return String(match[1] || "").trim();
+}
+
+function extractTelegramAudioPayload(message) {
+  if (!message || typeof message !== "object") return null;
+  const candidates = [
+    { kind: "voice", value: message.voice },
+    { kind: "audio", value: message.audio },
+  ];
+  for (const candidate of candidates) {
+    const value = candidate.value && typeof candidate.value === "object" ? candidate.value : null;
+    const fileId = String(value?.file_id || "").trim();
+    if (!fileId) continue;
+    return {
+      kind: candidate.kind,
+      fileId,
+      fileUniqueId: String(value?.file_unique_id || "").trim(),
+      mimeType: String(value?.mime_type || "").trim(),
+      fileName: String(value?.file_name || "").trim(),
+      duration: Number.isFinite(Number(value?.duration)) ? Math.floor(Number(value.duration)) : null,
+      fileSize: Number.isFinite(Number(value?.file_size)) ? Math.floor(Number(value.file_size)) : null,
+    };
+  }
+  return null;
 }
 
 function normalizeJsonArray(value) {
@@ -1219,6 +1256,7 @@ function toWebhookEvents(payload) {
     const message = payload?.message || payload?.edited_message || payload?.callback_query?.message;
     const from = payload?.message?.from || payload?.edited_message?.from || payload?.callback_query?.from;
     const chat = message?.chat;
+    const telegramAudio = extractTelegramAudioPayload(message);
     const text =
       typeof payload?.message?.text === "string"
         ? payload.message.text.trim()
@@ -1229,10 +1267,9 @@ function toWebhookEvents(payload) {
             : "";
     const hasAttachment =
       Array.isArray(payload?.message?.photo) ||
-      Array.isArray(payload?.message?.document) ||
-      Array.isArray(payload?.message?.video) ||
-      Array.isArray(payload?.message?.audio) ||
-      Array.isArray(payload?.message?.voice);
+      Boolean(payload?.message?.document) ||
+      Boolean(payload?.message?.video) ||
+      Boolean(telegramAudio);
 
     if (chat?.id) {
       events.push({
@@ -1245,6 +1282,7 @@ function toWebhookEvents(payload) {
         recipientId: String(chat?.id || "").trim(),
         messageId: String(message?.message_id || payload?.update_id || "").trim(),
         text: text || (hasAttachment ? "[User sent an attachment]" : ""),
+        telegramAudio,
         rawItem: payload,
       });
     }
@@ -1667,6 +1705,211 @@ async function sendWhatsAppReadStatus({ accessToken, phoneNumberId, messageId })
     };
   }
   return { ok: true };
+}
+
+async function getTelegramFileInfo({ botToken, fileId }) {
+  if (!botToken || !fileId) return { ok: false, status: 400, error: "missing telegram file inputs" };
+  const endpoint = `https://api.telegram.org/bot${botToken}/getFile?file_id=${encodeURIComponent(fileId)}`;
+  let response;
+  try {
+    response = await fetch(endpoint);
+  } catch (_) {
+    return { ok: false, status: 502, error: "Telegram getFile unavailable" };
+  }
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (_) {}
+  if (!response.ok || !payload?.ok) {
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: payload?.description || "Telegram getFile error",
+    };
+  }
+  const filePath = String(payload?.result?.file_path || "").trim();
+  if (!filePath) return { ok: false, status: 502, error: "Telegram file path missing" };
+  const fileSize = Number.isFinite(Number(payload?.result?.file_size))
+    ? Math.floor(Number(payload.result.file_size))
+    : null;
+  return { ok: true, filePath, fileSize };
+}
+
+async function downloadTelegramFile({ botToken, filePath, expectedSize }) {
+  if (!botToken || !filePath) return { ok: false, status: 400, error: "missing telegram download inputs" };
+  const size = Number(expectedSize);
+  if (Number.isFinite(size) && size > TELEGRAM_VOICE_MAX_BYTES) {
+    return { ok: false, status: 413, error: "Telegram voice message is too large" };
+  }
+  const endpoint = `https://api.telegram.org/file/bot${botToken}/${filePath}`;
+  let response;
+  try {
+    response = await fetch(endpoint);
+  } catch (_) {
+    return { ok: false, status: 502, error: "Telegram file download unavailable" };
+  }
+  if (!response.ok) {
+    let body = "";
+    try {
+      body = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: body || "Telegram file download error",
+    };
+  }
+  const contentLength = Number(response.headers.get("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > TELEGRAM_VOICE_MAX_BYTES) {
+    return { ok: false, status: 413, error: "Telegram voice message is too large" };
+  }
+  let arrayBuffer;
+  try {
+    arrayBuffer = await response.arrayBuffer();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Telegram file download failed" };
+  }
+  const buffer = Buffer.from(arrayBuffer);
+  if (buffer.length > TELEGRAM_VOICE_MAX_BYTES) {
+    return { ok: false, status: 413, error: "Telegram voice message is too large" };
+  }
+  return {
+    ok: true,
+    buffer,
+    contentType: response.headers.get("content-type") || "",
+  };
+}
+
+async function sonioxApiFetch(endpoint, { method = "GET", body, headers = {} } = {}) {
+  const apiKey = String(process.env.SONIOX_API_KEY || "").trim();
+  if (!apiKey) return { ok: false, status: 500, error: "Missing SONIOX_API_KEY" };
+  let response;
+  try {
+    response = await fetch(`${SONIOX_API_BASE_URL}${endpoint}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        ...headers,
+      },
+      body,
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Soniox API unavailable" };
+  }
+  if (method === "DELETE") {
+    if (response.ok) return { ok: true, payload: null };
+  } else if (response.ok) {
+    try {
+      return { ok: true, payload: await response.json() };
+    } catch (_) {
+      return { ok: false, status: 502, error: "Invalid Soniox API response" };
+    }
+  }
+  let bodyText = "";
+  try {
+    bodyText = await response.text();
+  } catch (_) {}
+  return {
+    ok: false,
+    status: response.status || 502,
+    error: bodyText || "Soniox API error",
+  };
+}
+
+function renderSonioxTranscriptText(transcript) {
+  if (typeof transcript?.text === "string" && transcript.text.trim()) return transcript.text.trim();
+  const tokens = Array.isArray(transcript?.tokens) ? transcript.tokens : [];
+  return tokens
+    .map((token) => String(token?.text || ""))
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function transcribeAudioBufferWithSoniox({ buffer, filename, mimeType, clientReferenceId }) {
+  let fileId = "";
+  let transcriptionId = "";
+  try {
+    const form = new FormData();
+    const blob = new Blob([buffer], { type: mimeType || "application/octet-stream" });
+    form.append("file", blob, filename || "telegram-voice.ogg");
+    const uploadResult = await sonioxApiFetch("/v1/files", { method: "POST", body: form });
+    if (!uploadResult.ok) return uploadResult;
+    fileId = String(uploadResult.payload?.id || "").trim();
+    if (!fileId) return { ok: false, status: 502, error: "Soniox file upload did not return an id" };
+
+    const config = {
+      model: SONIOX_STT_MODEL,
+      file_id: fileId,
+      client_reference_id: clientReferenceId,
+    };
+    const languageHints = String(process.env.SONIOX_LANGUAGE_HINTS || "")
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (languageHints.length > 0) config.language_hints = languageHints;
+
+    const createResult = await sonioxApiFetch("/v1/transcriptions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(config),
+    });
+    if (!createResult.ok) return createResult;
+    transcriptionId = String(createResult.payload?.id || "").trim();
+    if (!transcriptionId) {
+      return { ok: false, status: 502, error: "Soniox transcription did not return an id" };
+    }
+
+    const deadline = Date.now() + SONIOX_TRANSCRIPTION_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      const statusResult = await sonioxApiFetch(`/v1/transcriptions/${encodeURIComponent(transcriptionId)}`);
+      if (!statusResult.ok) return statusResult;
+      const status = String(statusResult.payload?.status || "").toLowerCase();
+      if (status === "completed") {
+        const transcriptResult = await sonioxApiFetch(
+          `/v1/transcriptions/${encodeURIComponent(transcriptionId)}/transcript`
+        );
+        if (!transcriptResult.ok) return transcriptResult;
+        const text = renderSonioxTranscriptText(transcriptResult.payload);
+        if (!text) return { ok: false, status: 422, error: "Soniox returned an empty transcript" };
+        return { ok: true, text };
+      }
+      if (status === "error") {
+        return {
+          ok: false,
+          status: 502,
+          error: statusResult.payload?.error_message || "Soniox transcription failed",
+        };
+      }
+      await sleep(1000);
+    }
+    return { ok: false, status: 504, error: "Soniox transcription timed out" };
+  } finally {
+    if (transcriptionId) {
+      await sonioxApiFetch(`/v1/transcriptions/${encodeURIComponent(transcriptionId)}`, { method: "DELETE" });
+    }
+    if (fileId) {
+      await sonioxApiFetch(`/v1/files/${encodeURIComponent(fileId)}`, { method: "DELETE" });
+    }
+  }
+}
+
+async function transcribeTelegramAudioMessage({ botToken, audio, event }) {
+  const fileInfo = await getTelegramFileInfo({ botToken, fileId: audio?.fileId });
+  if (!fileInfo.ok) return fileInfo;
+  const download = await downloadTelegramFile({
+    botToken,
+    filePath: fileInfo.filePath,
+    expectedSize: audio?.fileSize || fileInfo.fileSize,
+  });
+  if (!download.ok) return download;
+  const fallbackName = fileInfo.filePath.split("/").pop() || `${audio?.kind || "telegram-audio"}.ogg`;
+  return transcribeAudioBufferWithSoniox({
+    buffer: download.buffer,
+    filename: audio?.fileName || fallbackName,
+    mimeType: audio?.mimeType || download.contentType,
+    clientReferenceId: `telegram:${event?.messageId || event?.eventId || Date.now()}`,
+  });
 }
 
 async function sendTelegramChatAction({ botToken, chatId, action = "typing" }) {
@@ -2515,6 +2758,51 @@ module.exports = async function handler(req, res) {
               error: tgTypingResult?.error ?? "Unknown telegram typing error",
             },
           });
+        }
+      }
+      if (connectionResult.connection?.kind === "telegram" && event.telegramAudio?.fileId) {
+        const transcriptionResult = await transcribeTelegramAudioMessage({
+          botToken: connectionResult.connection.bot_token,
+          audio: event.telegramAudio,
+          event,
+        });
+        if (transcriptionResult.ok) {
+          event.text = transcriptionResult.text;
+          await insertMetaWebhookDebugMessage({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            event,
+            raw: {
+              stage: "telegram_voice_transcribed",
+              channel: event.channel,
+              audio_kind: event.telegramAudio.kind,
+              duration: event.telegramAudio.duration,
+              file_size: event.telegramAudio.fileSize,
+              transcript_length: String(transcriptionResult.text || "").length,
+            },
+          });
+        } else {
+          await insertMetaWebhookDebugMessage({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            event,
+            raw: {
+              stage: "telegram_voice_transcription_failed",
+              channel: event.channel,
+              audio_kind: event.telegramAudio.kind,
+              duration: event.telegramAudio.duration,
+              file_size: event.telegramAudio.fileSize,
+              status: transcriptionResult?.status ?? null,
+              error: transcriptionResult?.error ?? "Unknown Telegram voice transcription error",
+            },
+          });
+          const tgVoiceFailureSend = await sendTelegramTextReply({
+            botToken: connectionResult.connection.bot_token,
+            chatId: event.recipientId,
+            text: "I couldn't transcribe that voice message. Please send it as text.",
+          });
+          if (tgVoiceFailureSend.ok) processedCount += 1;
+          continue;
         }
       }
       if (connectionResult.connection?.kind === "whatsapp") {
