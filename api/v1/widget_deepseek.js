@@ -1021,6 +1021,7 @@ TOOL RULES (MUST FOLLOW):
       messages,
       inputItems,
     }),
+    thinking: { type: "disabled" },
     stream,
   };
 
