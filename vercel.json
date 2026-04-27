@@ -74,6 +74,8 @@
     { "source": "/secret", "destination": "/api/deadend_probe" },
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
     { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
+    { "source": "/v1/widget_deepseek/:agent_id", "destination": "/api/v1/widget_deepseek?agent_id=:agent_id" },
+    { "source": "/v1/widget-deepseek/:agent_id", "destination": "/api/v1/widget_deepseek?agent_id=:agent_id" },
     { "source": "/v1/widget_checker/:agent_id", "destination": "/api/v1/widget_checker?agent_id=:agent_id" },
     { "source": "/v1/widget_dashboard/:agent_id", "destination": "/api/v1/widget_dashboard?agent_id=:agent_id" },
     { "source": "/v1/widget-dashboard/:agent_id", "destination": "/api/v1/widget_dashboard?agent_id=:agent_id" },
