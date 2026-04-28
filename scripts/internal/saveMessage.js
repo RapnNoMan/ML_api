@@ -27,7 +27,7 @@ async function saveMessage({
         apikey: supKey,
         Authorization: `Bearer ${supKey}`,
         "Content-Type": "application/json",
-        Prefer: "return=minimal",
+        Prefer: "return=representation",
       },
       body: JSON.stringify({
         agent_id: agentId,
@@ -50,7 +50,15 @@ async function saveMessage({
     return { ok: false, status: 502, error: "Message service unavailable" };
   }
 
-  return { ok: true };
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    return { ok: false, status: 502, error: "Message service unavailable" };
+  }
+
+  const row = Array.isArray(payload) ? payload[0] : payload;
+  return { ok: true, row: row || null, messageId: row?.id ?? null };
 }
 
 module.exports = {

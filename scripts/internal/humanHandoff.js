@@ -31,6 +31,12 @@ const HUMAN_HANDOFF_PROMPT_BLOCK = [
   "Do not ask the user to provide subject or summery.",
   "If context is limited but user asks for a human, still call the tool with best-effort values.",
 ].join("\n");
+const HUMAN_HANDOFF_CONVERSATION_GAP_MINUTES = Math.max(
+  1,
+  Number.isFinite(Number(process.env.HUMAN_HANDOFF_CONVERSATION_GAP_MINUTES))
+    ? Math.floor(Number(process.env.HUMAN_HANDOFF_CONVERSATION_GAP_MINUTES))
+    : 240
+);
 
 function buildRestUrl(baseUrl, table, searchParams) {
   const url = new URL(`${baseUrl}/${table}`);
@@ -163,14 +169,130 @@ async function saveHumanMessageToMessages({
       method: "POST",
       headers: authHeaders(supKey, {
         "Content-Type": "application/json",
-        Prefer: "return=minimal",
+        Prefer: "return=representation",
       }),
       body: JSON.stringify(payload),
     });
     if (!response.ok) return { ok: false, status: 502, error: "Message service unavailable" };
-    return { ok: true };
+    const responsePayload = await response.json();
+    const row = Array.isArray(responsePayload) ? responsePayload[0] : responsePayload;
+    return { ok: true, row: row || null, messageId: row?.id ?? null };
   } catch (_) {
     return { ok: false, status: 502, error: "Message service unavailable" };
+  }
+}
+
+async function resolveConversationStartMessageId({
+  supId,
+  supKey,
+  agentId,
+  anonId,
+  chatId,
+  latestMessageId = null,
+  gapMinutes = HUMAN_HANDOFF_CONVERSATION_GAP_MINUTES,
+}) {
+  if (!supId || !supKey || !agentId || !anonId || !chatId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = buildRestUrl(baseUrl, "messages", {
+    select: "id,created_at",
+    agent_id: `eq.${agentId}`,
+    annon: `eq.${anonId}`,
+    chat_id: `eq.${chatId}`,
+    order: "created_at.desc,id.desc",
+    limit: "200",
+  });
+
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: authHeaders(supKey, { Accept: "application/json" }),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Message service unavailable" };
+  }
+
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Message service unavailable" };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Message service unavailable" };
+  }
+
+  const rowsDesc = Array.isArray(payload) ? payload : [];
+  if (rowsDesc.length === 0) return { ok: true, messageStartId: null };
+
+  const latestIndex =
+    latestMessageId === null || latestMessageId === undefined
+      ? 0
+      : rowsDesc.findIndex((row) => Number(row?.id) === Number(latestMessageId));
+  const startIndex = latestIndex >= 0 ? latestIndex : 0;
+  let messageStartId = Number(rowsDesc[startIndex]?.id) || null;
+  let newerCreatedAt = Date.parse(String(rowsDesc[startIndex]?.created_at || ""));
+  const maxGapMs = Math.max(1, Number(gapMinutes) || 1) * 60 * 1000;
+
+  for (let index = startIndex + 1; index < rowsDesc.length; index += 1) {
+    const row = rowsDesc[index];
+    const olderCreatedAt = Date.parse(String(row?.created_at || ""));
+    const rowId = Number(row?.id);
+    if (!Number.isFinite(olderCreatedAt) || !Number.isFinite(newerCreatedAt) || !Number.isFinite(rowId)) {
+      break;
+    }
+    if (newerCreatedAt - olderCreatedAt > maxGapMs) {
+      break;
+    }
+    messageStartId = Math.floor(rowId);
+    newerCreatedAt = olderCreatedAt;
+  }
+
+  return {
+    ok: true,
+    messageStartId: Number.isFinite(Number(messageStartId)) ? Math.floor(Number(messageStartId)) : null,
+  };
+}
+
+async function updateHumanHandoffChatMessageStart({
+  portalId,
+  portalSecretKey,
+  handoffChatId,
+  messageStartId,
+}) {
+  const numericHandoffChatId = Number(handoffChatId);
+  const numericMessageStartId = Number(messageStartId);
+  if (!portalId || !portalSecretKey || !Number.isFinite(numericHandoffChatId) || numericHandoffChatId <= 0) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+  if (!Number.isFinite(numericMessageStartId) || numericMessageStartId <= 0) {
+    return { ok: true, skipped: true };
+  }
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = buildRestUrl(baseUrl, "human_handoff_chats", {
+    id: `eq.${Math.floor(numericHandoffChatId)}`,
+  });
+
+  try {
+    const response = await fetch(url, {
+      method: "PATCH",
+      headers: authHeaders(portalSecretKey, {
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      }),
+      body: JSON.stringify({
+        message_start_id: Math.floor(numericMessageStartId),
+        updated_at: new Date().toISOString(),
+      }),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Human handoff service unavailable" };
+    return { ok: true };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Human handoff service unavailable" };
   }
 }
 
@@ -230,6 +352,7 @@ async function assignHumanHandoffChat({
   externalUserId = null,
   country = null,
   customerName = null,
+  messageStartId = null,
   subject = null,
   summery = null,
 }) {
@@ -248,6 +371,7 @@ async function assignHumanHandoffChat({
     p_external_user_id: externalUserId ?? null,
     p_country: country ?? null,
     p_customer_name: customerName ?? null,
+    p_message_start_id: messageStartId ?? null,
     p_subject: subject ?? null,
     p_summery: summery ?? null,
   };
@@ -321,5 +445,7 @@ module.exports = {
   checkAvailableHumanAgents,
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
+  resolveConversationStartMessageId,
+  updateHumanHandoffChatMessageStart,
   assignHumanHandoffChat,
 };

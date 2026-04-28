@@ -5,6 +5,8 @@ const {
   assignHumanHandoffChat,
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
+  resolveConversationStartMessageId,
+  updateHumanHandoffChatMessageStart,
 } = require("../../scripts/internal/humanHandoff");
 
 function normalize(value) {
@@ -226,6 +228,32 @@ module.exports = async function handler(req, res) {
           source: dashboardSource,
         },
       });
+      if (assignment.created && dashboardSave.ok && dashboardSave.messageId) {
+        const startMessageResult = await resolveConversationStartMessageId({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          anonId,
+          chatId,
+          latestMessageId: dashboardSave.messageId,
+        });
+        trace.push({
+          step: "tool_flow_resolve_start_message",
+          result: startMessageResult,
+        });
+        if (startMessageResult.ok && startMessageResult.messageStartId) {
+          const startMessageUpdate = await updateHumanHandoffChatMessageStart({
+            portalId: process.env.PORTAL_ID,
+            portalSecretKey: process.env.PORTAL_SECRET_KEY,
+            handoffChatId: assignment.handoffChatId,
+            messageStartId: startMessageResult.messageStartId,
+          });
+          trace.push({
+            step: "tool_flow_update_start_message",
+            result: startMessageUpdate,
+          });
+        }
+      }
 
       const portalSource = chatSource === "widget" ? "Website" : `meta_${chatSource}`;
       const portalSave =

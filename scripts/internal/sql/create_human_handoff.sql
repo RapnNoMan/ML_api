@@ -56,6 +56,8 @@ create table if not exists public.human_handoff_chats (
   external_user_id text null,
   country text null,
   customer_name text null,
+  message_start_id bigint null,
+  message_end_id bigint null,
   subject text null,
   summery text null,
   shift_id bigint null,

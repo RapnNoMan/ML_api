@@ -1,6 +1,12 @@
 alter table if exists public.human_handoff_chats
   add column if not exists customer_name text null;
 
+alter table if exists public.human_handoff_chats
+  add column if not exists message_start_id bigint null;
+
+alter table if exists public.human_handoff_chats
+  add column if not exists message_end_id bigint null;
+
 create or replace function public.assign_human_handoff_chat(
   p_agent_id uuid,
   p_chat_source text,
@@ -10,6 +16,7 @@ create or replace function public.assign_human_handoff_chat(
   p_external_user_id text default null,
   p_country text default null,
   p_customer_name text default null,
+  p_message_start_id bigint default null,
   p_subject text default null,
   p_summery text default null
 )
@@ -145,6 +152,7 @@ begin
     external_user_id,
     country,
     customer_name,
+    message_start_id,
     subject,
     summery,
     assigned_human_agent_user_id,
@@ -160,6 +168,7 @@ begin
     p_external_user_id,
     p_country,
     nullif(btrim(coalesce(p_customer_name, '')), ''),
+    p_message_start_id,
     v_subject,
     v_summery,
     v_assigned_user_id,

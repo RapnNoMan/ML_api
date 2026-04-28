@@ -28,6 +28,8 @@ const {
   checkAvailableHumanAgents,
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
+  resolveConversationStartMessageId,
+  updateHumanHandoffChatMessageStart,
   assignHumanHandoffChat,
 } = require("../../scripts/internal/humanHandoff");
 
@@ -902,6 +904,24 @@ async function executeActionCalls({
           },
         });
         continue;
+      }
+      if (assignResult.created && saveDashboardResult.messageId) {
+        const startMessageResult = await resolveConversationStartMessageId({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          anonId,
+          chatId,
+          latestMessageId: saveDashboardResult.messageId,
+        });
+        if (startMessageResult.ok && startMessageResult.messageStartId) {
+          await updateHumanHandoffChatMessageStart({
+            portalId: process.env.PORTAL_ID,
+            portalSecretKey: process.env.PORTAL_SECRET_KEY,
+            handoffChatId: assignResult.handoffChatId,
+            messageStartId: startMessageResult.messageStartId,
+          });
+        }
       }
       const savePortalResult = await saveHumanMessageToPortalFeed({
         portalId: process.env.PORTAL_ID,
