@@ -1,4 +1,5 @@
--- Portal DB: transactional assignment + chat creation for human handoff
+alter table if exists public.human_handoff_chats
+  add column if not exists customer_name text null;
 
 create or replace function public.assign_human_handoff_chat(
   p_agent_id uuid,
@@ -48,10 +49,8 @@ begin
     v_summery := 'User requested human support.';
   end if;
 
-  -- Lock by agent to keep round-robin deterministic under concurrency.
   perform pg_advisory_xact_lock(hashtextextended('human_handoff_agent:' || p_agent_id::text, 0));
 
-  -- Idempotency: if chat already in handoff and not closed, return it.
   select *
   into v_existing
   from public.human_handoff_chats h

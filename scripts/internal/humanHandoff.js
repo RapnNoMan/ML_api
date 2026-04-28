@@ -134,6 +134,7 @@ async function saveHumanMessageToMessages({
   anonId,
   chatId,
   country,
+  customerName = null,
   source,
   prompt,
   result = null,
@@ -149,6 +150,7 @@ async function saveHumanMessageToMessages({
     annon: anonId ?? null,
     chat_id: chatId,
     country: country ?? null,
+    customer_name: customerName === null || customerName === undefined ? null : String(customerName),
     prompt: prompt === null || prompt === undefined ? null : String(prompt),
     result: result === null || result === undefined ? null : String(result),
     source: source || "api",
@@ -227,6 +229,7 @@ async function assignHumanHandoffChat({
   anonId = null,
   externalUserId = null,
   country = null,
+  customerName = null,
   subject = null,
   summery = null,
 }) {
@@ -244,6 +247,7 @@ async function assignHumanHandoffChat({
     p_annon: anonId ?? null,
     p_external_user_id: externalUserId ?? null,
     p_country: country ?? null,
+    p_customer_name: customerName ?? null,
     p_subject: subject ?? null,
     p_summery: summery ?? null,
   };

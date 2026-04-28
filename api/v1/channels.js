@@ -72,6 +72,29 @@ function normalizeCountry(value) {
   return text || null;
 }
 
+function normalizeCustomerName(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function buildTelegramCustomerName(from) {
+  const firstName = normalizeCustomerName(from?.first_name);
+  const lastName = normalizeCustomerName(from?.last_name);
+  const fullName = normalizeCustomerName([firstName, lastName].filter(Boolean).join(" "));
+  if (fullName) return fullName;
+  return normalizeCustomerName(from?.username);
+}
+
+function getWhatsAppContactName(value, senderId) {
+  const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
+  const matchingContact =
+    contacts.find((item) => String(item?.wa_id || "").trim() === String(senderId || "").trim()) ||
+    contacts[0] ||
+    null;
+  return normalizeCustomerName(matchingContact?.profile?.name || matchingContact?.name);
+}
+
 function getRequestCountry(headers) {
   if (!headers || typeof headers !== "object") return null;
   return (
@@ -777,6 +800,7 @@ async function executeActionCalls({
   anonId,
   chatId,
   country,
+  customerName,
   source,
   chatSource,
   incomingMessage,
@@ -835,6 +859,7 @@ async function executeActionCalls({
         anonId,
         externalUserId: anonId,
         country,
+        customerName,
         subject,
         summery,
       });
@@ -859,6 +884,7 @@ async function executeActionCalls({
         anonId,
         chatId,
         country,
+        customerName,
         source,
         prompt: String(incomingMessage),
         result: null,
@@ -984,7 +1010,7 @@ async function executeActionCalls({
     if (actionDef.kind === "ticket_create") {
       const normalizedSubject = String(variables?.subject ?? "").trim();
       const normalizedSummary = String(variables?.summary ?? variables?.summery ?? "").trim();
-      const normalizedCustomerName = String(variables?.customer_name ?? "").trim();
+      const normalizedCustomerName = String(variables?.customer_name ?? customerName ?? "").trim();
       const normalizedCustomerEmail = String(variables?.customer_email ?? variables?.email ?? "").trim();
       const normalizedCustomerPhone = String(variables?.customer_phone ?? variables?.phone ?? "").trim();
       const missingTicketFields = [];
@@ -1281,6 +1307,7 @@ function toWebhookEvents(payload) {
         senderId: String(from?.id || "").trim(),
         recipientId: String(chat?.id || "").trim(),
         messageId: String(message?.message_id || payload?.update_id || "").trim(),
+        customerName: buildTelegramCustomerName(from),
         text: text || (hasAttachment ? "[User sent an attachment]" : ""),
         telegramAudio,
         rawItem: payload,
@@ -1321,6 +1348,7 @@ function toWebhookEvents(payload) {
             senderId,
             recipientId: phoneNumberId || "",
             messageId: String(message?.id || "").trim(),
+            customerName: getWhatsAppContactName(value, senderId),
             text: textBody || "[User sent an attachment]",
             rawItem: change,
           });
@@ -1353,6 +1381,7 @@ function toWebhookEvents(payload) {
         senderId,
         recipientId: String(item?.recipient?.id || "").trim(),
         messageId: String(item?.message?.mid || "").trim(),
+        customerName: normalizeCustomerName(item?.sender?.name || item?.sender?.username),
         text: text || "[User sent an attachment]",
         rawItem: item,
       });
@@ -1389,13 +1418,28 @@ async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
   } catch (_) {}
 }
 
-async function updateTelegramPendingRequests({ supId, supKey, agentId, pendingAccessRequests }) {
+async function updateTelegramPendingRequests({
+  supId,
+  supKey,
+  agentId,
+  pendingAccessRequests,
+  customerName,
+}) {
   if (!supId || !supKey || !agentId) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = new URL(`${baseUrl}/telegram_channel_connections`);
   url.searchParams.set("agent_id", `eq.${agentId}`);
+  const payload = {
+    updated_at: new Date().toISOString(),
+  };
+  if (pendingAccessRequests !== undefined) {
+    payload.pending_access_requests = normalizeJsonArray(pendingAccessRequests);
+  }
+  if (normalizeCustomerName(customerName)) {
+    payload.customer_name = normalizeCustomerName(customerName);
+  }
 
   let response;
   try {
@@ -1407,10 +1451,7 @@ async function updateTelegramPendingRequests({ supId, supKey, agentId, pendingAc
         "Content-Type": "application/json",
         Prefer: "return=minimal",
       },
-      body: JSON.stringify({
-        pending_access_requests: normalizeJsonArray(pendingAccessRequests),
-        updated_at: new Date().toISOString(),
-      }),
+      body: JSON.stringify(payload),
     });
   } catch (_) {
     return { ok: false, status: 502, error: "Telegram channel update unavailable" };
@@ -2109,6 +2150,7 @@ async function processIncomingMessage({ event, connection, headers }) {
   const anonId = `${event.channel}:${event.senderId}`;
   const chatId = `${event.channel}:${connection.thread_id}:${event.senderId}`;
   const requestCountry = getRequestCountry(headers);
+  const customerName = normalizeCustomerName(event.customerName);
   const incomingText = sanitizeIncomingUserText(event.text);
   const normalizedMessage = normalizeIncomingMessage(incomingText);
   let consumedExtraCreditRowId = null;
@@ -2173,6 +2215,7 @@ async function processIncomingMessage({ event, connection, headers }) {
         anonId,
         chatId,
         country: requestCountry,
+        customerName,
         source: `meta_${event.channel}`,
         prompt: incomingText,
         result: null,
@@ -2325,6 +2368,7 @@ async function processIncomingMessage({ event, connection, headers }) {
       anonId,
       chatId,
       country: requestCountry,
+      customerName,
       source: `meta_${event.channel}`,
       chatSource: event.channel,
       incomingMessage: incomingText,
@@ -2383,6 +2427,7 @@ async function processIncomingMessage({ event, connection, headers }) {
           anonId,
           chatId,
           country: requestCountry,
+          customerName,
           source: `meta_${event.channel}`,
           prompt: null,
           result: finalReply,
@@ -2395,6 +2440,7 @@ async function processIncomingMessage({ event, connection, headers }) {
           anonId,
           chatId,
           country: requestCountry,
+          customerName,
           prompt: incomingText,
           result: finalReply,
           source: `meta_${event.channel}`,
@@ -2452,6 +2498,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     anonId,
     chatId,
     country: requestCountry,
+    customerName,
     prompt: incomingText,
     result: reply,
     source: `meta_${event.channel}`,
@@ -2654,6 +2701,14 @@ module.exports = async function handler(req, res) {
       });
 
       if (connectionResult.connection?.kind === "telegram") {
+        if (event.customerName) {
+          await updateTelegramPendingRequests({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            agentId: connectionResult.connection.agent_id,
+            customerName: event.customerName,
+          });
+        }
         const securityEnabled = Boolean(connectionResult.connection.security_enabled);
         if (securityEnabled) {
           const chatIdStr = String(event.recipientId || "").trim();
@@ -2690,6 +2745,7 @@ module.exports = async function handler(req, res) {
               supKey: process.env.SUP_KEY,
               agentId: connectionResult.connection.agent_id,
               pendingAccessRequests: nextPending,
+              customerName: event.customerName,
             });
             connectionResult.connection.pending_access_requests = nextPending;
           }
