@@ -7,6 +7,29 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
+function duplicateTrailingArabicLetter(text) {
+  const source = String(text || "");
+  if (!source) return source;
+
+  let end = source.length - 1;
+  while (end >= 0 && /\s/.test(source[end])) end -= 1;
+  if (end < 0) return source;
+
+  const lastChar = source[end];
+  if (!/[\u0600-\u06FF]/.test(lastChar)) return source;
+
+  let hasArabic = false;
+  for (const ch of source) {
+    if (/[\u0600-\u06FF]/.test(ch)) {
+      hasArabic = true;
+      break;
+    }
+  }
+  if (!hasArabic) return source;
+
+  return source.slice(0, end + 1) + lastChar + source.slice(end + 1);
+}
+
 function getBaseUrl(req) {
   const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").trim();
   const host = String(req?.headers?.host || "").trim();
@@ -129,7 +152,7 @@ async function requestHamsaTts({ text, speaker = "Hady", dialect = "jor" }) {
   if (!process.env.HAMSA_API_KEY) {
     return { ok: false, status: 500, error: "Missing HAMSA_API_KEY" };
   }
-  const trimmedText = String(text || "").trim();
+  const trimmedText = duplicateTrailingArabicLetter(String(text || "").trim());
   if (!trimmedText) return { ok: false, status: 400, error: "Missing text" };
 
   async function doRequest(speakerName) {
@@ -376,7 +399,7 @@ function renderPage(agentId) {
         <div class="chat" id="chat"></div>
         <div class="livebox">
           <div class="label">Debug</div>
-          <div class="debugbox" id="debugLog">Ready.\nAgent ID: ${safeAgentId || "(missing)"}</div>
+          <div class="debugbox" id="debugLog">Ready.&#10;Agent ID: ${safeAgentId || "(missing)"}</div>
         </div>
       </section>
     </main>
@@ -406,7 +429,7 @@ function renderPage(agentId) {
                 : " | " + JSON.stringify(extra);
           const line = "[" + stamp + "] " + message + suffix;
           if (debugLog) {
-            debugLog.textContent = line + "\n" + debugLog.textContent;
+            debugLog.textContent = line + "\\n" + debugLog.textContent;
           }
           console.log(line);
         } catch (error) {
