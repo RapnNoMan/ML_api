@@ -478,8 +478,9 @@ function renderPage(agentId) {
       });
 
       let recording = null;
-      let finalizedText = "";
       let latestTranscript = "";
+      let lastNonEmptyTranscript = "";
+      let pendingTranscript = "";
       let lastSubmittedTranscript = "";
       let activeAudio = null;
       let activeTurnController = null;
@@ -624,8 +625,9 @@ function renderPage(agentId) {
         setStatus("Starting", "Opening microphone and Soniox session.", "...");
         if (debugLog) debugLog.classList.remove("error");
         debug("Starting Soniox recording session");
-        finalizedText = "";
         latestTranscript = "";
+        lastNonEmptyTranscript = "";
+        pendingTranscript = "";
         pendingFinalize = false;
 
         recording = sonioxClient.realtime.record({
@@ -650,6 +652,7 @@ function renderPage(agentId) {
           const tokens = Array.isArray(result?.tokens) ? result.tokens : [];
           latestTranscript = tokens.map((token) => String(token?.text || "")).join("").trim();
           if (latestTranscript) {
+            lastNonEmptyTranscript = latestTranscript;
             liveTranscript.textContent = latestTranscript;
             voiceMeter.textContent = "hearing";
             if (isAssistantSpeaking || isProcessingTurn) {
@@ -661,6 +664,7 @@ function renderPage(agentId) {
         recording.on("endpoint", async () => {
           if (!recording) return;
           pendingFinalize = true;
+          pendingTranscript = latestTranscript || lastNonEmptyTranscript || "";
           debug("Endpoint detected");
           setStatus("Endpoint", "You paused. Finalizing the utterance.", "...");
           try {
@@ -671,9 +675,9 @@ function renderPage(agentId) {
         recording.on("finalized", async () => {
           if (!pendingFinalize) return;
           pendingFinalize = false;
-          const transcript = latestTranscript;
+          const transcript = pendingTranscript || latestTranscript || lastNonEmptyTranscript || "";
+          pendingTranscript = "";
           latestTranscript = "";
-          finalizedText = "";
           debug("Transcript finalized", transcript || "(empty)");
           await submitTurn(transcript);
         });
