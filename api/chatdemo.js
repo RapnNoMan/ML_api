@@ -395,16 +395,23 @@ function renderPage(agentId) {
       const stopBtn = document.getElementById("stopBtn");
 
       function debug(message, extra = null) {
-        const now = new Date();
-        const stamp = now.toLocaleTimeString("en-GB", { hour12: false });
-        const suffix =
-          extra === null || extra === undefined
-            ? ""
-            : typeof extra === "string"
-              ? " | " + extra
-              : " | " + JSON.stringify(extra);
-        const line = "[" + stamp + "] " + message + suffix;
-        debugLog.textContent = line + "\n" + debugLog.textContent;
+        try {
+          const now = new Date();
+          const stamp = now.toLocaleTimeString("en-GB", { hour12: false });
+          const suffix =
+            extra === null || extra === undefined
+              ? ""
+              : typeof extra === "string"
+                ? " | " + extra
+                : " | " + JSON.stringify(extra);
+          const line = "[" + stamp + "] " + message + suffix;
+          if (debugLog) {
+            debugLog.textContent = line + "\n" + debugLog.textContent;
+          }
+          console.log(line);
+        } catch (error) {
+          console.error("debug log failed", error);
+        }
       }
 
       if (!agentId) {
@@ -427,22 +434,24 @@ function renderPage(agentId) {
         localStorage.setItem(chatStorageKey, chatId);
       }
 
+      async function fetchSonioxTemporaryKey() {
+        debug("Requesting Soniox temporary key");
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "soniox_temp_key" }),
+        });
+        const payload = await response.json();
+        if (!response.ok || !payload?.api_key) {
+          debug("Soniox key request failed", payload?.error || response.status);
+          throw new Error(payload?.error || "Failed to obtain Soniox key");
+        }
+        debug("Soniox temporary key received");
+        return payload.api_key;
+      }
+
       const sonioxClient = new SonioxClient({
-        config: async () => {
-          debug("Requesting Soniox temporary key");
-          const response = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "soniox_temp_key" }),
-          });
-          const payload = await response.json();
-          if (!response.ok || !payload?.api_key) {
-            debug("Soniox key request failed", payload?.error || response.status);
-            throw new Error(payload?.error || "Failed to obtain Soniox key");
-          }
-          debug("Soniox temporary key received");
-          return { api_key: payload.api_key };
-        },
+        api_key: fetchSonioxTemporaryKey,
       });
 
       let recording = null;
@@ -579,7 +588,7 @@ function renderPage(agentId) {
           }
           debug("Turn error", String(error?.message || error || "Unknown error"));
           setStatus("Error", String(error?.message || error || "Unknown error"), "retry");
-          debugLog.classList.add("error");
+          if (debugLog) debugLog.classList.add("error");
         } finally {
           isProcessingTurn = false;
           activeTurnController = null;
@@ -589,9 +598,9 @@ function renderPage(agentId) {
 
       async function startRecording() {
         if (!agentId || recording) return;
-        debugLog.classList.remove("error");
-        debug("Starting Soniox recording session");
         setStatus("Starting", "Opening microphone and Soniox session.", "...");
+        if (debugLog) debugLog.classList.remove("error");
+        debug("Starting Soniox recording session");
         finalizedText = "";
         latestTranscript = "";
         pendingFinalize = false;
@@ -649,7 +658,7 @@ function renderPage(agentId) {
         recording.on("error", (error) => {
           debug("Soniox recording error", String(error?.message || error || "Unknown error"));
           setStatus("Error", String(error?.message || error || "Recording error"), "!");
-          debugLog.classList.add("error");
+          if (debugLog) debugLog.classList.add("error");
           recording = null;
           startBtn.disabled = false;
           stopBtn.disabled = true;
@@ -689,7 +698,7 @@ function renderPage(agentId) {
       startBtn.addEventListener("click", () => {
         startRecording().catch((error) => {
           debug("Start failed", String(error?.message || error || "Failed to start"));
-          debugLog.classList.add("error");
+          if (debugLog) debugLog.classList.add("error");
           setStatus("Error", String(error?.message || error || "Failed to start"), "!");
         });
       });
