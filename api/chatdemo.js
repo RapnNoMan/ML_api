@@ -1,97 +1,10 @@
-const { getChatCompletion } = require("../scripts/internal/getChatCompletion");
-
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
+    .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
-}
-
-function duplicateTrailingArabicLetter(text) {
-  const source = String(text || "");
-  if (!source) return source;
-
-  let end = source.length - 1;
-  while (end >= 0 && /\s/.test(source[end])) end -= 1;
-  if (end < 0) return source;
-
-  const lastChar = source[end];
-  if (!/[\u0600-\u06FF]/.test(lastChar)) return source;
-
-  let hasArabic = false;
-  for (const ch of source) {
-    if (/[\u0600-\u06FF]/.test(ch)) {
-      hasArabic = true;
-      break;
-    }
-  }
-  if (!hasArabic) return source;
-
-  return source.slice(0, end + 1) + lastChar + source.slice(end + 1);
-}
-
-const VOICE_MODE_INSTRUCTION =
-  "VOICE MODE INSTRUCTION: Reply in plain spoken language only. Keep the answer as short as possible. Use 1 to 2 short sentences maximum. Do not use markdown, bullet points, numbered lists, bold text, headings, or formatting. Do not sound like a written LLM response. Speak naturally like a person on a call.";
-
-const FAST_VOICE_TURN_INSTRUCTION =
-  "You are in real-time phone-call mode. Reply immediately and naturally. Keep it extremely short. One short sentence is preferred. Two short sentences maximum. No lists, no formatting, no explanations unless the user explicitly asks. Keep the tone natural and conversational.";
-
-function buildVoiceModeMessage(transcript) {
-  const userText = String(transcript || "").trim();
-  if (!userText) return userText;
-  return `${VOICE_MODE_INSTRUCTION}\n\nUser said: ${userText}`;
-}
-
-function sanitizeHistoryMessages(history) {
-  if (!Array.isArray(history)) return [];
-  return history
-    .filter((item) => item && (item.role === "user" || item.role === "assistant"))
-    .map((item) => ({
-      role: item.role,
-      content: String(item.content || "").trim(),
-    }))
-    .filter((item) => item.content)
-    .slice(-6);
-}
-
-function stripFormatting(text) {
-  return String(text || "")
-    .replace(/\*\*(.*?)\*\*/g, "$1")
-    .replace(/\*(.*?)\*/g, "$1")
-    .replace(/__(.*?)__/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/^\s*[-*•]\s+/gm, "")
-    .replace(/^\s*\d+\.\s+/gm, "")
-    .replace(/^#+\s+/gm, "")
-    .trim();
-}
-
-function limitToTwoSentences(text) {
-  const source = stripFormatting(text)
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!source) return source;
-
-  const matches = source.match(/[^.!?؟]+[.!?؟]?/g);
-  if (!Array.isArray(matches) || matches.length === 0) return source;
-
-  const firstTwo = matches
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .slice(0, 2)
-    .join(" ")
-    .trim();
-
-  return firstTwo || source;
-}
-
-function getBaseUrl(req) {
-  const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").trim();
-  const host = String(req?.headers?.host || "").trim();
-  const proto = forwardedProto || (host.startsWith("localhost") ? "http" : "https");
-  return `${proto}://${host}`;
 }
 
 async function readJsonBody(req) {
@@ -117,27 +30,41 @@ async function readJsonBody(req) {
   }
 }
 
-async function createSonioxTemporaryKey() {
-  if (!process.env.SONIOX_API_KEY) {
-    return { ok: false, status: 500, error: "Missing SONIOX_API_KEY" };
+function getGeminiApiKey() {
+  return (
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    process.env.GOOGLE_GENAI_API_KEY ||
+    ""
+  ).trim();
+}
+
+async function createGeminiEphemeralToken() {
+  const apiKey = getGeminiApiKey();
+  if (!apiKey) {
+    return { ok: false, status: 500, error: "Missing GEMINI_API_KEY or GOOGLE_API_KEY" };
   }
+
+  const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
+  const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
 
   let response;
   try {
-    response = await fetch("https://api.soniox.com/v1/auth/temporary-api-key", {
+    response = await fetch(`https://generativelanguage.googleapis.com/v1alpha/authTokens?key=${encodeURIComponent(apiKey)}`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${process.env.SONIOX_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        usage_type: "transcribe_websocket",
-        expires_in_seconds: 300,
-        client_reference_id: "chatdemo",
+        authToken: {
+          uses: 1,
+          expireTime,
+          newSessionExpireTime,
+        },
       }),
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Soniox temporary key request failed" };
+    return { ok: false, status: 502, error: "Gemini ephemeral token request failed" };
   }
 
   let payload = null;
@@ -149,120 +76,16 @@ async function createSonioxTemporaryKey() {
     return {
       ok: false,
       status: response.status || 502,
-      error: payload?.message || payload?.error || "Soniox temporary key request failed",
+      error: payload?.error?.message || payload?.message || "Gemini ephemeral token request failed",
+      details: payload || null,
     };
   }
 
   return {
     ok: true,
-    api_key: payload?.api_key || null,
-    expires_at: payload?.expires_at || null,
-  };
-}
-
-async function proxyWidgetTurn({ transcript, history }) {
-  return runFastVoiceTurn({ transcript, history });
-}
-
-async function runFastVoiceTurn({ transcript, history }) {
-  if (!transcript) return { ok: false, status: 400, error: "Missing transcript" };
-  if (!process.env.OPENAI_API_KEY) {
-    return { ok: false, status: 500, error: "Missing OPENAI_API_KEY" };
-  }
-
-  const historyMessages = sanitizeHistoryMessages(history);
-  const messages = [
-    ...historyMessages,
-    { role: "user", content: String(transcript || "").trim() },
-  ];
-
-  const completion = await getChatCompletion({
-    apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5-nano",
-    reasoning: { effort: "low" },
-    instructions: `${VOICE_MODE_INSTRUCTION}\n\n${FAST_VOICE_TURN_INSTRUCTION}`,
-    messages,
-    tools: [],
-  });
-
-  if (!completion.ok) {
-    return { ok: false, status: completion.status, error: completion.error };
-  }
-
-  const reply = limitToTwoSentences(String(completion?.data?.reply || "").trim());
-  if (!reply) {
-    return { ok: false, status: 502, error: "Empty voice reply" };
-  }
-
-  return {
-    ok: true,
-    reply,
-    raw: { mode: "voice_session" },
-  };
-}
-
-async function requestHamsaTts({ text, speaker = "Hady", dialect = "jor" }) {
-  if (!process.env.HAMSA_API_KEY) {
-    return { ok: false, status: 500, error: "Missing HAMSA_API_KEY" };
-  }
-  const trimmedText = duplicateTrailingArabicLetter(String(text || "").trim());
-  if (!trimmedText) return { ok: false, status: 400, error: "Missing text" };
-
-  async function doRequest(speakerName) {
-    try {
-      return await fetch("https://api.tryhamsa.com/v1/realtime/tts", {
-        method: "POST",
-        headers: {
-          Authorization: `Token ${process.env.HAMSA_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          text: trimmedText,
-          speaker: speakerName,
-          dialect,
-          mulaw: false,
-        }),
-      });
-    } catch (_) {
-      return null;
-    }
-  }
-
-  let response = await doRequest(speaker);
-  let usedSpeaker = speaker;
-  if (!response || !response.ok) {
-    response = await doRequest("Jasem");
-    usedSpeaker = "Jasem";
-  }
-
-  if (!response) {
-    return { ok: false, status: 502, error: "Hamsa TTS request failed" };
-  }
-
-  if (!response.ok) {
-    let errText = "";
-    try {
-      errText = await response.text();
-    } catch (_) {}
-    return {
-      ok: false,
-      status: response.status || 502,
-      error: errText || "Hamsa TTS request failed",
-    };
-  }
-
-  let arrayBuffer;
-  try {
-    arrayBuffer = await response.arrayBuffer();
-  } catch (_) {
-    return { ok: false, status: 502, error: "Failed to read Hamsa audio response" };
-  }
-
-  return {
-    ok: true,
-    audio: Buffer.from(arrayBuffer),
-    contentType: String(response.headers.get("content-type") || "audio/wav"),
-    speaker: usedSpeaker,
+    token: String(payload?.name || "").trim(),
+    expireTime: payload?.expireTime || expireTime,
+    newSessionExpireTime: payload?.newSessionExpireTime || newSessionExpireTime,
   };
 }
 
@@ -273,19 +96,17 @@ function renderPage(agentId) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Call Demo</title>
+    <title>Gemini Live Demo</title>
     <style>
       :root {
-        --bg: #08131a;
+        --bg: #071018;
         --panel: rgba(10, 24, 32, 0.92);
-        --panel-border: rgba(108, 214, 255, 0.16);
+        --panel-border: rgba(90, 196, 255, 0.16);
         --ink: #eef7fb;
-        --muted: #92a9b5;
+        --muted: #91a8b6;
         --line: rgba(255,255,255,0.08);
-        --accent: #68d7ff;
-        --accent-2: #16b9b2;
-        --user: #113649;
-        --assistant: #16242f;
+        --accent: #6bd5ff;
+        --accent-2: #18b5b4;
         --danger: #ff7b7b;
       }
       * { box-sizing: border-box; }
@@ -295,8 +116,8 @@ function renderPage(agentId) {
         color: var(--ink);
         font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
         background:
-          radial-gradient(circle at top, rgba(22, 185, 178, 0.18), transparent 36%),
-          radial-gradient(circle at bottom, rgba(104, 215, 255, 0.18), transparent 30%),
+          radial-gradient(circle at top, rgba(24, 181, 180, 0.18), transparent 36%),
+          radial-gradient(circle at bottom, rgba(107, 213, 255, 0.18), transparent 30%),
           linear-gradient(180deg, #061018 0%, #08131a 100%);
       }
       .shell {
@@ -310,8 +131,6 @@ function renderPage(agentId) {
         border-radius: 24px;
         box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
         backdrop-filter: blur(18px);
-      }
-      .panel {
         padding: 14px;
       }
       .stage {
@@ -389,35 +208,9 @@ function renderPage(agentId) {
         line-height: 1.45;
         min-height: 44px;
       }
-      .chat {
-        display: grid;
-        gap: 10px;
-        max-height: 44vh;
-        overflow: auto;
-        padding-right: 2px;
-      }
-      .msg {
-        border-radius: 18px;
-        padding: 12px 14px;
-        border: 1px solid var(--line);
-      }
-      .msg.user { background: var(--user); }
-      .msg.assistant { background: var(--assistant); }
-      .msg .who {
-        font-size: 11px;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        color: var(--muted);
-        margin-bottom: 6px;
-      }
-      .msg .text {
-        white-space: pre-wrap;
-        line-height: 1.55;
-        font-size: 15px;
-      }
       .debugbox {
-        min-height: 120px;
-        max-height: 24vh;
+        min-height: 140px;
+        max-height: 32vh;
         overflow: auto;
         padding: 14px;
         border-radius: 18px;
@@ -437,43 +230,57 @@ function renderPage(agentId) {
         <div class="status">
           <div>
             <strong id="statusTitle">Idle</strong>
-            <span id="statusDetail">Tap start, allow microphone access, and speak in Arabic or English.</span>
+            <span id="statusDetail">Gemini Live audio in and audio out test.</span>
           </div>
-          <div class="meter" id="voiceMeter">quiet</div>
+          <div class="meter" id="voiceMeter">off</div>
         </div>
         <div class="controls">
           <button class="primary" id="startBtn">Start Listening</button>
           <button class="secondary" id="stopBtn" disabled>Stop</button>
         </div>
         <div class="livebox">
-          <div class="label">Live Transcript</div>
-          <div class="livetext" id="liveTranscript">...</div>
+          <div class="label">Input Transcript</div>
+          <div class="livetext" id="inputTranscript">...</div>
         </div>
-        <div class="chat" id="chat"></div>
+        <div class="livebox">
+          <div class="label">Output Transcript</div>
+          <div class="livetext" id="outputTranscript">...</div>
+        </div>
         <div class="livebox">
           <div class="label">Debug</div>
-          <div class="debugbox" id="debugLog">Ready.&#10;Agent ID: ${safeAgentId || "(missing)"}</div>
+          <div class="debugbox" id="debugLog">Ready.&#10;Agent ID param (ignored): ${safeAgentId || "(none)"}</div>
         </div>
       </section>
     </main>
     <script type="module">
-      import { SonioxClient } from "https://esm.sh/@soniox/client?bundle";
+      import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from "https://esm.sh/@google/genai?bundle";
 
-      const agentId = new URLSearchParams(window.location.search).get("agent_id") || "${safeAgentId}";
       const endpoint = "/api/chatdemo";
       const statusTitle = document.getElementById("statusTitle");
       const statusDetail = document.getElementById("statusDetail");
       const voiceMeter = document.getElementById("voiceMeter");
-      const liveTranscript = document.getElementById("liveTranscript");
-      const chat = document.getElementById("chat");
+      const inputTranscript = document.getElementById("inputTranscript");
+      const outputTranscript = document.getElementById("outputTranscript");
       const debugLog = document.getElementById("debugLog");
       const startBtn = document.getElementById("startBtn");
       const stopBtn = document.getElementById("stopBtn");
 
+      let ai = null;
+      let session = null;
+      let micStream = null;
+      let micContext = null;
+      let micSource = null;
+      let micProcessor = null;
+      let speakerContext = null;
+      let speakerPlaybackCursor = 0;
+      let isRunning = false;
+      let suppressMic = false;
+      let pendingStop = false;
+      let chunkCount = 0;
+
       function debug(message, extra = null) {
         try {
-          const now = new Date();
-          const stamp = now.toLocaleTimeString("en-GB", { hour12: false });
+          const stamp = new Date().toLocaleTimeString("en-GB", { hour12: false });
           const suffix =
             extra === null || extra === undefined
               ? ""
@@ -481,80 +288,12 @@ function renderPage(agentId) {
                 ? " | " + extra
                 : " | " + JSON.stringify(extra);
           const line = "[" + stamp + "] " + message + suffix;
-          if (debugLog) {
-            debugLog.textContent = line + "\\n" + debugLog.textContent;
-          }
+          debugLog.textContent = line + "\\n" + debugLog.textContent;
           console.log(line);
         } catch (error) {
           console.error("debug log failed", error);
         }
       }
-
-      if (!agentId) {
-        statusTitle.textContent = "Missing agent";
-        statusDetail.textContent = "Open /chatdemo?agent_id=YOUR_AGENT_ID";
-        startBtn.disabled = true;
-        debug("Missing agent_id in URL");
-      }
-
-      const historyStorageKey = "chatdemo:history:" + (agentId || "default");
-      let sessionHistory = [];
-      try {
-        const storedHistory = sessionStorage.getItem(historyStorageKey);
-        const parsedHistory = storedHistory ? JSON.parse(storedHistory) : [];
-        sessionHistory = Array.isArray(parsedHistory) ? parsedHistory : [];
-      } catch (_) {
-        sessionHistory = [];
-      }
-
-      function persistSessionHistory() {
-        try {
-          sessionStorage.setItem(historyStorageKey, JSON.stringify(sessionHistory.slice(-6)));
-        } catch (_) {}
-      }
-
-      for (const item of sessionHistory) {
-        if (item?.role === "user" || item?.role === "assistant") {
-          pushMessage(item.role, item.content || "");
-        }
-      }
-
-      async function fetchSonioxTemporaryKey() {
-        debug("Requesting Soniox temporary key");
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "soniox_temp_key" }),
-        });
-        const payload = await response.json();
-        if (!response.ok || !payload?.api_key) {
-          debug("Soniox key request failed", payload?.error || response.status);
-          throw new Error(payload?.error || "Failed to obtain Soniox key");
-        }
-        debug("Soniox temporary key received");
-        return payload.api_key;
-      }
-
-      const sonioxClient = new SonioxClient({
-        api_key: fetchSonioxTemporaryKey,
-      });
-
-      let recording = null;
-      let latestTranscript = "";
-      let lastNonEmptyTranscript = "";
-      let pendingTranscript = "";
-      let queuedTranscript = "";
-      let lastSubmittedTranscript = "";
-      let activeAudio = null;
-      let activeTurnController = null;
-      let ttsController = null;
-      let isAssistantSpeaking = false;
-      let isProcessingTurn = false;
-      let pendingFinalize = false;
-      let hasBargedInCurrentUtterance = false;
-      let isMicPausedForPlayback = false;
-      let restartRecordingAfterPlayback = false;
-      let ignoreRecognitionUntil = 0;
 
       function setStatus(title, detail, meter = "") {
         statusTitle.textContent = title;
@@ -562,336 +301,308 @@ function renderPage(agentId) {
         voiceMeter.textContent = meter || "";
       }
 
-      function pushMessage(role, text) {
-        const item = document.createElement("article");
-        item.className = "msg " + role;
-        item.innerHTML = '<div class="who">' + (role === "user" ? "You" : "Agent") + '</div><div class="text"></div>';
-        item.querySelector(".text").textContent = text;
-        chat.appendChild(item);
-        chat.scrollTop = chat.scrollHeight;
+      function base64FromBytes(bytes) {
+        let binary = "";
+        const chunkSize = 0x8000;
+        for (let i = 0; i < bytes.length; i += chunkSize) {
+          const sub = bytes.subarray(i, i + chunkSize);
+          binary += String.fromCharCode(...sub);
+        }
+        return btoa(binary);
       }
 
-      function stopPlayback() {
-        isAssistantSpeaking = false;
-        if (activeAudio) {
-          try { activeAudio.pause(); } catch {}
-          if (activeAudio.src && activeAudio.src.startsWith("blob:")) {
-            URL.revokeObjectURL(activeAudio.src);
+      function bytesFromBase64(base64) {
+        const binary = atob(base64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return bytes;
+      }
+
+      function downsampleTo16k(input, inputSampleRate) {
+        if (inputSampleRate === 16000) return input;
+        const ratio = inputSampleRate / 16000;
+        const newLength = Math.max(1, Math.round(input.length / ratio));
+        const output = new Float32Array(newLength);
+        let offsetResult = 0;
+        let offsetBuffer = 0;
+        while (offsetResult < output.length) {
+          const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+          let accum = 0;
+          let count = 0;
+          for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i += 1) {
+            accum += input[i];
+            count += 1;
           }
-          activeAudio = null;
+          output[offsetResult] = count > 0 ? accum / count : 0;
+          offsetResult += 1;
+          offsetBuffer = nextOffsetBuffer;
         }
+        return output;
       }
 
-      async function suspendRecognitionForPlayback() {
-        if (!recording || isMicPausedForPlayback) return;
-        try {
-          isMicPausedForPlayback = true;
-          restartRecordingAfterPlayback = true;
-          ignoreRecognitionUntil = Date.now() + 2500;
-          latestTranscript = "";
-          lastNonEmptyTranscript = "";
-          pendingTranscript = "";
-          queuedTranscript = "";
-          pendingFinalize = false;
-          hasBargedInCurrentUtterance = false;
-          await recording.stop();
-          recording = null;
-          startBtn.disabled = true;
-          stopBtn.disabled = false;
-          debug("Stopped Soniox recording during assistant playback");
-        } catch (error) {
-          debug("Failed to stop Soniox mic", String(error?.message || error || "Unknown error"));
+      function floatTo16BitPCM(float32) {
+        const buffer = new ArrayBuffer(float32.length * 2);
+        const view = new DataView(buffer);
+        for (let i = 0; i < float32.length; i += 1) {
+          let sample = Math.max(-1, Math.min(1, float32[i]));
+          view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
         }
+        return new Uint8Array(buffer);
       }
 
-      async function resumeRecognitionAfterPlayback() {
-        if (!isMicPausedForPlayback) return;
-        isMicPausedForPlayback = false;
-        ignoreRecognitionUntil = Date.now() + 1200;
-        debug("Playback finished, restarting Soniox recording");
-        if (restartRecordingAfterPlayback) {
-          restartRecordingAfterPlayback = false;
-          try {
-            await startRecording({ preserveStatus: true, silentRestart: true });
-          } catch (error) {
-            debug("Failed to restart Soniox recording", String(error?.message || error || "Unknown error"));
-            setStatus("Error", "Failed to restart listening after playback.", "retry");
-            if (debugLog) debugLog.classList.add("error");
-            return;
-          }
-        }
-        setStatus("Listening", "Speak again whenever you want.", "ready");
-      }
-
-      function interruptAssistant(reason = "Interrupted") {
-        if (hasBargedInCurrentUtterance) return;
-        hasBargedInCurrentUtterance = true;
-        debug("Assistant interrupted", reason);
-        stopPlayback();
-        if (activeTurnController) {
-          try { activeTurnController.abort(); } catch {}
-          activeTurnController = null;
-        }
-        if (ttsController) {
-          try { ttsController.abort(); } catch {}
-          ttsController = null;
-        }
-        if (!isProcessingTurn) {
-          setStatus("Listening", reason, "barge-in");
-        }
-      }
-
-      async function synthesizeAndPlay(text) {
-        ttsController = new AbortController();
-        debug("Sending text to Hamsa TTS", text.slice(0, 120));
+      async function fetchGeminiToken() {
+        debug("Requesting Gemini ephemeral token");
         const response = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "tts", text }),
-          signal: ttsController.signal,
+          body: JSON.stringify({ action: "gemini_ephemeral_token" }),
         });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          debug("Hamsa TTS failed", payload?.error || response.status);
-          throw new Error(payload?.error || "TTS failed");
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload?.token) {
+          debug("Gemini token request failed", payload?.error || response.status);
+          throw new Error(payload?.error || "Failed to obtain Gemini token");
         }
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        activeAudio = audio;
-        isAssistantSpeaking = true;
-        await suspendRecognitionForPlayback();
-        debug("Playing Hamsa audio", response.headers.get("content-type") || "audio/wav");
-        setStatus("Speaking", "Playing Hamsa voice reply.", "voice");
-        await new Promise((resolve, reject) => {
-          audio.onended = () => {
-            isAssistantSpeaking = false;
-            URL.revokeObjectURL(url);
-            activeAudio = null;
-            debug("Audio playback finished");
-            resumeRecognitionAfterPlayback().then(resolve).catch(reject);
-          };
-          audio.onerror = () => {
-            isAssistantSpeaking = false;
-            URL.revokeObjectURL(url);
-            activeAudio = null;
-            debug("Audio playback error");
-            resumeRecognitionAfterPlayback()
-              .catch(() => {})
-              .finally(() => reject(new Error("Audio playback failed")));
-          };
-          audio.play().catch((error) => {
-            resumeRecognitionAfterPlayback()
-              .catch(() => {})
-              .finally(() => reject(error));
-          });
-        });
+        debug("Gemini ephemeral token received");
+        return payload.token;
       }
 
-      async function submitTurn(text) {
-        const transcript = String(text || "").trim();
-        if (!transcript) return;
-        if (transcript === lastSubmittedTranscript) {
-          debug("Skipping duplicate transcript", transcript);
-          return;
+      async function setupSpeaker() {
+        if (!speakerContext) {
+          speakerContext = new AudioContext({ sampleRate: 24000 });
+          speakerPlaybackCursor = speakerContext.currentTime;
         }
-        if (isProcessingTurn) {
-          queuedTranscript = transcript;
-          debug("Queued transcript while previous turn is still closing", transcript);
-          return;
-        }
-        lastSubmittedTranscript = transcript;
-        isProcessingTurn = true;
-        queuedTranscript = "";
-        activeTurnController = new AbortController();
-        pushMessage("user", transcript);
-        sessionHistory.push({ role: "user", content: transcript });
-        persistSessionHistory();
-        debug("Submitting transcript", transcript);
-        liveTranscript.textContent = "...";
-        setStatus("Thinking", "Sending transcript to the backend agent flow.", "llm");
-
-        try {
-          const response = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              action: "turn",
-              transcript,
-              history: sessionHistory,
-            }),
-            signal: activeTurnController.signal,
-          });
-          const payload = await response.json().catch(() => ({}));
-          if (!response.ok || !payload?.reply) {
-            debug("Agent turn failed", payload?.error || response.status);
-            throw new Error(payload?.error || "Agent turn failed");
-          }
-          debug("Agent reply received", payload.reply.slice(0, 160));
-          pushMessage("assistant", payload.reply);
-          sessionHistory.push({ role: "assistant", content: payload.reply });
-          persistSessionHistory();
-          await synthesizeAndPlay(payload.reply);
-          setStatus("Listening", "Speak again whenever you want.", "ready");
-        } catch (error) {
-          if (error?.name === "AbortError") {
-            debug("Turn aborted");
-            setStatus("Listening", "Interrupted. Speak again.", "ready");
-            return;
-          }
-          debug("Turn error", String(error?.message || error || "Unknown error"));
-          setStatus("Error", String(error?.message || error || "Unknown error"), "retry");
-          if (debugLog) debugLog.classList.add("error");
-        } finally {
-          isProcessingTurn = false;
-          activeTurnController = null;
-          ttsController = null;
-          const nextTranscript = queuedTranscript;
-          queuedTranscript = "";
-          if (nextTranscript && nextTranscript !== lastSubmittedTranscript) {
-            debug("Flushing queued transcript", nextTranscript);
-            setTimeout(() => {
-              submitTurn(nextTranscript).catch((error) => {
-                debug("Queued transcript failed", String(error?.message || error || "Unknown error"));
-              });
-            }, 0);
-          }
+        if (speakerContext.state === "suspended") {
+          await speakerContext.resume();
         }
       }
 
-      async function startRecording(options = {}) {
-        const preserveStatus = Boolean(options?.preserveStatus);
-        const silentRestart = Boolean(options?.silentRestart);
-        if (!agentId || recording) return;
-        if (!preserveStatus) {
-          setStatus("Starting", "Opening microphone and Soniox session.", "...");
+      async function playPcm24kBase64(base64) {
+        await setupSpeaker();
+        const bytes = bytesFromBase64(base64);
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        const sampleCount = Math.floor(bytes.byteLength / 2);
+        const audioBuffer = speakerContext.createBuffer(1, sampleCount, 24000);
+        const channel = audioBuffer.getChannelData(0);
+        for (let i = 0; i < sampleCount; i += 1) {
+          channel[i] = view.getInt16(i * 2, true) / 32768;
         }
-        if (debugLog) debugLog.classList.remove("error");
-        debug(silentRestart ? "Restarting Soniox recording session" : "Starting Soniox recording session");
-        latestTranscript = "";
-        lastNonEmptyTranscript = "";
-        pendingTranscript = "";
-        queuedTranscript = "";
-        pendingFinalize = false;
-        hasBargedInCurrentUtterance = false;
-        if (!silentRestart) {
-          isMicPausedForPlayback = false;
-          restartRecordingAfterPlayback = false;
+        const source = speakerContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(speakerContext.destination);
+        const startAt = Math.max(speakerPlaybackCursor, speakerContext.currentTime + 0.02);
+        source.start(startAt);
+        speakerPlaybackCursor = startAt + audioBuffer.duration;
+      }
+
+      async function processServerMessage(message) {
+        const content = message?.serverContent;
+        if (content?.inputTranscription?.text) {
+          inputTranscript.textContent = content.inputTranscription.text;
         }
-
-        recording = sonioxClient.realtime.record({
-          model: "stt-rt-v4",
-          language_hints: ["ar", "en"],
-          enable_language_identification: true,
-          enable_endpoint_detection: true,
-          max_endpoint_delay_ms: 600,
-          auto_reconnect: true,
-          max_reconnect_attempts: 3,
-          reconnect_base_delay_ms: 1000,
-        });
-
-        recording.on("connected", () => {
-          startBtn.disabled = true;
-          stopBtn.disabled = false;
-          debug("Soniox connected");
-          if (!isMicPausedForPlayback) {
-            setStatus("Listening", "Speak in Arabic or English. Pause to send your turn.", "live");
-          }
-        });
-
-        recording.on("result", (result) => {
-          if (Date.now() < ignoreRecognitionUntil) return;
-          if (isMicPausedForPlayback) return;
-          const tokens = Array.isArray(result?.tokens) ? result.tokens : [];
-          latestTranscript = tokens.map((token) => String(token?.text || "")).join("").trim();
-          if (latestTranscript) {
-            lastNonEmptyTranscript = latestTranscript;
-            liveTranscript.textContent = latestTranscript;
-            voiceMeter.textContent = "hearing";
-            if (isAssistantSpeaking || isProcessingTurn) {
-              interruptAssistant("You started talking, so I stopped the reply.");
+        if (content?.outputTranscription?.text) {
+          outputTranscript.textContent = content.outputTranscription.text;
+        }
+        if (content?.modelTurn?.parts) {
+          suppressMic = true;
+          for (const part of content.modelTurn.parts) {
+            if (part.inlineData?.data) {
+              await playPcm24kBase64(part.inlineData.data);
             }
           }
+        }
+        if (content?.turnComplete) {
+          debug("Gemini turn complete");
+          suppressMic = false;
+          setStatus("Listening", "Gemini is ready for the next utterance.", "live");
+        }
+        if (message?.usageMetadata?.totalTokenCount) {
+          debug("Usage update", message.usageMetadata.totalTokenCount + " total tokens");
+        }
+      }
+
+      async function openGeminiSession() {
+        const token = await fetchGeminiToken();
+        ai = new GoogleGenAI({
+          apiKey: token,
+          httpOptions: { apiVersion: "v1alpha" },
         });
 
-        recording.on("endpoint", async () => {
-          if (Date.now() < ignoreRecognitionUntil) return;
-          if (!recording || isMicPausedForPlayback) return;
-          pendingFinalize = true;
-          pendingTranscript = latestTranscript || lastNonEmptyTranscript || "";
-          hasBargedInCurrentUtterance = false;
-          debug("Endpoint detected");
-          setStatus("Endpoint", "You paused. Finalizing the utterance.", "...");
-          try {
-            await recording.finalize();
-          } catch (_) {}
-        });
-
-        recording.on("finalized", async () => {
-          if (Date.now() < ignoreRecognitionUntil) return;
-          if (!pendingFinalize || isMicPausedForPlayback) return;
-          pendingFinalize = false;
-          const transcript = pendingTranscript || latestTranscript || lastNonEmptyTranscript || "";
-          pendingTranscript = "";
-          latestTranscript = "";
-          lastNonEmptyTranscript = "";
-          debug("Transcript finalized", transcript || "(empty)");
-          await submitTurn(transcript);
-        });
-
-        recording.on("error", (error) => {
-          debug("Soniox recording error", String(error?.message || error || "Unknown error"));
-          setStatus("Error", String(error?.message || error || "Recording error"), "!");
-          if (debugLog) debugLog.classList.add("error");
-          recording = null;
-          isMicPausedForPlayback = false;
-          startBtn.disabled = false;
-          stopBtn.disabled = true;
-        });
-
-        recording.on("reconnecting", ({ attempt, max_attempts, delay_ms }) => {
-          debug("Soniox reconnecting", { attempt, max_attempts, delay_ms });
-        });
-
-        recording.on("reconnected", (event) => {
-          debug("Soniox reconnected", event || "ok");
-        });
-
-        recording.on("state_change", ({ new_state }) => {
-          debug("State changed", new_state);
-          if (new_state === "recording") {
-            voiceMeter.textContent = "live";
-          } else if (new_state === "reconnecting") {
-            setStatus("Reconnecting", "Soniox connection dropped. Recovering.", "...");
-          }
+        session = await ai.live.connect({
+          model: "gemini-3.1-flash-live-preview",
+          config: {
+            responseModalities: [Modality.AUDIO],
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+            thinkingConfig: {
+              thinkingLevel: "minimal",
+            },
+            realtimeInputConfig: {
+              automaticActivityDetection: {
+                disabled: false,
+                startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_LOW,
+                endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_LOW,
+                prefixPaddingMs: 20,
+                silenceDurationMs: 120,
+              },
+            },
+          },
+          callbacks: {
+            onopen: function () {
+              debug("Gemini Live session opened");
+              setStatus("Listening", "Gemini Live is connected. Speak naturally.", "live");
+            },
+            onmessage: function (message) {
+              processServerMessage(message).catch((error) => {
+                debug("Gemini message processing failed", String(error?.message || error || "Unknown error"));
+              });
+            },
+            onerror: function (e) {
+              debug("Gemini Live error", e?.message || "Unknown error");
+              setStatus("Error", e?.message || "Gemini Live error", "retry");
+              debugLog.classList.add("error");
+            },
+            onclose: function (e) {
+              debug("Gemini Live closed", e?.reason || "closed");
+              if (!pendingStop) {
+                setStatus("Closed", e?.reason || "Gemini session closed.", "off");
+              }
+            },
+          },
         });
       }
 
-      async function stopRecording() {
-        if (!recording) return;
-        debug("Stopping recording");
+      async function startMicrophonePipeline() {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            channelCount: 1,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        });
+
+        micContext = new AudioContext();
+        if (micContext.state === "suspended") {
+          await micContext.resume();
+        }
+        micSource = micContext.createMediaStreamSource(micStream);
+        micProcessor = micContext.createScriptProcessor(4096, 1, 1);
+
+        micProcessor.onaudioprocess = (event) => {
+          if (!session || !isRunning || suppressMic) return;
+          const input = event.inputBuffer.getChannelData(0);
+          const downsampled = downsampleTo16k(input, micContext.sampleRate);
+          const pcmBytes = floatTo16BitPCM(downsampled);
+          const base64Audio = base64FromBytes(pcmBytes);
+          chunkCount += 1;
+          session.sendRealtimeInput({
+            audio: {
+              data: base64Audio,
+              mimeType: "audio/pcm;rate=16000",
+            },
+          });
+        };
+
+        micSource.connect(micProcessor);
+        micProcessor.connect(micContext.destination);
+      }
+
+      async function cleanupAudio() {
+        if (micProcessor) {
+          try { micProcessor.disconnect(); } catch (_) {}
+          micProcessor.onaudioprocess = null;
+          micProcessor = null;
+        }
+        if (micSource) {
+          try { micSource.disconnect(); } catch (_) {}
+          micSource = null;
+        }
+        if (micContext) {
+          try { await micContext.close(); } catch (_) {}
+          micContext = null;
+        }
+        if (micStream) {
+          for (const track of micStream.getTracks()) {
+            try { track.stop(); } catch (_) {}
+          }
+          micStream = null;
+        }
+      }
+
+      async function startDemo() {
+        if (isRunning) return;
+        debugLog.classList.remove("error");
+        inputTranscript.textContent = "...";
+        outputTranscript.textContent = "...";
+        chunkCount = 0;
+        suppressMic = false;
+        pendingStop = false;
+        isRunning = true;
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        setStatus("Starting", "Opening Gemini Live session and microphone.", "...");
+        debug("Starting Gemini Live demo");
+
         try {
-          await recording.stop();
-        } catch (_) {}
-        recording = null;
-        isMicPausedForPlayback = false;
-        restartRecordingAfterPlayback = false;
+          await setupSpeaker();
+          await openGeminiSession();
+          await startMicrophonePipeline();
+          debug("Microphone pipeline started");
+          setStatus("Listening", "Gemini Live is connected. Speak naturally.", "live");
+        } catch (error) {
+          debug("Start failed", String(error?.message || error || "Unknown error"));
+          debugLog.classList.add("error");
+          setStatus("Error", String(error?.message || error || "Failed to start"), "!");
+          await stopDemo();
+        }
+      }
+
+      async function stopDemo() {
+        pendingStop = true;
+        isRunning = false;
+        suppressMic = false;
+
+        if (session) {
+          try {
+            session.sendRealtimeInput({ audioStreamEnd: true });
+          } catch (_) {}
+          try {
+            session.close();
+          } catch (_) {}
+          session = null;
+        }
+
+        await cleanupAudio();
+
+        if (speakerContext) {
+          try {
+            await speakerContext.close();
+          } catch (_) {}
+          speakerContext = null;
+          speakerPlaybackCursor = 0;
+        }
+
+        ai = null;
         startBtn.disabled = false;
         stopBtn.disabled = true;
-        stopPlayback();
-        setStatus("Stopped", "Microphone closed.", "off");
+        setStatus("Stopped", "Gemini Live session closed.", "off");
+        debug("Stopped Gemini Live demo", chunkCount + " audio chunks sent");
       }
 
       startBtn.addEventListener("click", () => {
-        startRecording().catch((error) => {
-          debug("Start failed", String(error?.message || error || "Failed to start"));
-          if (debugLog) debugLog.classList.add("error");
+        startDemo().catch((error) => {
+          debug("Unhandled start error", String(error?.message || error || "Unknown error"));
+          debugLog.classList.add("error");
           setStatus("Error", String(error?.message || error || "Failed to start"), "!");
         });
       });
 
       stopBtn.addEventListener("click", () => {
-        stopRecording().catch(() => {});
+        stopDemo().catch((error) => {
+          debug("Stop failed", String(error?.message || error || "Unknown error"));
+        });
       });
     </script>
   </body>
@@ -915,34 +626,9 @@ module.exports = async function handler(req, res) {
   const body = await readJsonBody(req);
   const action = String(body?.action || "").trim();
 
-  if (action === "soniox_temp_key") {
-    const result = await createSonioxTemporaryKey();
+  if (action === "gemini_ephemeral_token") {
+    const result = await createGeminiEphemeralToken();
     res.status(result.status || (result.ok ? 200 : 500)).json(result);
-    return;
-  }
-
-  if (action === "turn") {
-    const result = await proxyWidgetTurn({
-      transcript: String(body?.transcript || "").trim(),
-      history: body?.history,
-    });
-    res.status(result.status || (result.ok ? 200 : 500)).json(result);
-    return;
-  }
-
-  if (action === "tts") {
-    const result = await requestHamsaTts({
-      text: String(body?.text || ""),
-      speaker: "Hady",
-      dialect: "jor",
-    });
-    if (!result.ok) {
-      res.status(result.status || 500).json({ error: result.error });
-      return;
-    }
-    res.setHeader("Content-Type", result.contentType || "audio/wav");
-    res.setHeader("Cache-Control", "no-store");
-    res.status(200).send(result.audio);
     return;
   }
 
