@@ -57,10 +57,24 @@ async function createGeminiEphemeralToken() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        authToken: {
+        config: {
           uses: 1,
           expireTime,
           newSessionExpireTime,
+          liveConnectConstraints: {
+            model: "gemini-3.1-flash-live-preview",
+            config: {
+              responseModalities: ["AUDIO"],
+              inputAudioTranscription: {},
+              outputAudioTranscription: {},
+              thinkingConfig: {
+                thinkingLevel: "minimal",
+              },
+            },
+          },
+          httpOptions: {
+            apiVersion: "v1alpha",
+          },
         },
       }),
     });
@@ -69,16 +83,22 @@ async function createGeminiEphemeralToken() {
   }
 
   let payload = null;
+  let rawText = "";
   try {
-    payload = await response.json();
+    rawText = await response.text();
+    payload = rawText ? JSON.parse(rawText) : null;
   } catch (_) {}
 
   if (!response.ok) {
     return {
       ok: false,
       status: response.status || 502,
-      error: payload?.error?.message || payload?.message || "Gemini ephemeral token request failed",
-      details: payload || null,
+      error:
+        payload?.error?.message ||
+        payload?.message ||
+        rawText ||
+        `Gemini ephemeral token request failed (${response.status || 502})`,
+      details: payload || rawText || null,
     };
   }
 
