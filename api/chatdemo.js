@@ -50,9 +50,10 @@ async function createGeminiEphemeralToken() {
 
   let response;
   try {
-    response = await fetch(`https://generativelanguage.googleapis.com/v1alpha/authTokens?key=${encodeURIComponent(apiKey)}`, {
+    response = await fetch("https://generativelanguage.googleapis.com/v1alpha/authTokens:create", {
       method: "POST",
       headers: {
+        "x-goog-api-key": apiKey,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
