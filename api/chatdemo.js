@@ -228,54 +228,12 @@ function renderPage(agentId) {
         margin: 0 auto;
         padding: 16px 16px 28px;
       }
-      .hero, .panel {
+      .panel {
         background: var(--panel);
         border: 1px solid var(--panel-border);
         border-radius: 24px;
         box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
         backdrop-filter: blur(18px);
-      }
-      .hero {
-        padding: 18px 18px 16px;
-        margin-bottom: 14px;
-      }
-      .eyebrow {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        font-size: 12px;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-        color: var(--accent);
-      }
-      .pulse {
-        width: 10px;
-        height: 10px;
-        border-radius: 999px;
-        background: var(--accent);
-        box-shadow: 0 0 0 0 rgba(104, 215, 255, 0.6);
-        animation: pulse 1.8s infinite;
-      }
-      @keyframes pulse {
-        0% { box-shadow: 0 0 0 0 rgba(104, 215, 255, 0.55); }
-        70% { box-shadow: 0 0 0 14px rgba(104, 215, 255, 0); }
-        100% { box-shadow: 0 0 0 0 rgba(104, 215, 255, 0); }
-      }
-      h1 {
-        margin: 10px 0 8px;
-        font-size: 28px;
-        line-height: 1.04;
-      }
-      .sub {
-        margin: 0;
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.55;
-      }
-      .agent {
-        margin-top: 12px;
-        color: var(--muted);
-        font-size: 12px;
       }
       .panel {
         padding: 14px;
@@ -381,23 +339,24 @@ function renderPage(agentId) {
         line-height: 1.55;
         font-size: 15px;
       }
-      .foot {
-        margin-top: 8px;
-        color: var(--muted);
+      .debugbox {
+        min-height: 120px;
+        max-height: 24vh;
+        overflow: auto;
+        padding: 14px;
+        border-radius: 18px;
+        background: rgba(255,255,255,0.03);
+        border: 1px solid var(--line);
         font-size: 12px;
         line-height: 1.5;
+        color: var(--muted);
+        white-space: pre-wrap;
       }
       .error { color: var(--danger); }
     </style>
   </head>
   <body>
     <main class="shell">
-      <section class="hero">
-        <div class="eyebrow"><span class="pulse"></span> Voice Call Demo</div>
-        <h1>Talk, pause, get an answer.</h1>
-        <p class="sub">Real-time Soniox transcription in the browser, OpenAI tool-capable chat turns on the backend, and Hamsa Jordanian Arabic voice playback.</p>
-        <div class="agent">Agent ID: <code id="agentId">${safeAgentId}</code></div>
-      </section>
       <section class="panel stage">
         <div class="status">
           <div>
@@ -415,7 +374,10 @@ function renderPage(agentId) {
           <div class="livetext" id="liveTranscript">...</div>
         </div>
         <div class="chat" id="chat"></div>
-        <div class="foot" id="footnote">Hamsa documented Jordanian voices include Jasem, Nada, Sarah, and Lana. This demo tries <code>Hady</code> first and falls back to <code>Jasem</code> if needed.</div>
+        <div class="livebox">
+          <div class="label">Debug</div>
+          <div class="debugbox" id="debugLog">Ready.\nAgent ID: ${safeAgentId || "(missing)"}</div>
+        </div>
       </section>
     </main>
     <script type="module">
@@ -428,13 +390,28 @@ function renderPage(agentId) {
       const voiceMeter = document.getElementById("voiceMeter");
       const liveTranscript = document.getElementById("liveTranscript");
       const chat = document.getElementById("chat");
+      const debugLog = document.getElementById("debugLog");
       const startBtn = document.getElementById("startBtn");
       const stopBtn = document.getElementById("stopBtn");
+
+      function debug(message, extra = null) {
+        const now = new Date();
+        const stamp = now.toLocaleTimeString("en-GB", { hour12: false });
+        const suffix =
+          extra === null || extra === undefined
+            ? ""
+            : typeof extra === "string"
+              ? " | " + extra
+              : " | " + JSON.stringify(extra);
+        const line = "[" + stamp + "] " + message + suffix;
+        debugLog.textContent = line + "\n" + debugLog.textContent;
+      }
 
       if (!agentId) {
         statusTitle.textContent = "Missing agent";
         statusDetail.textContent = "Open /chatdemo?agent_id=YOUR_AGENT_ID";
         startBtn.disabled = true;
+        debug("Missing agent_id in URL");
       }
 
       const anonStorageKey = "chatdemo:anon:" + agentId;
@@ -452,6 +429,7 @@ function renderPage(agentId) {
 
       const sonioxClient = new SonioxClient({
         config: async () => {
+          debug("Requesting Soniox temporary key");
           const response = await fetch(endpoint, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -459,8 +437,10 @@ function renderPage(agentId) {
           });
           const payload = await response.json();
           if (!response.ok || !payload?.api_key) {
+            debug("Soniox key request failed", payload?.error || response.status);
             throw new Error(payload?.error || "Failed to obtain Soniox key");
           }
+          debug("Soniox temporary key received");
           return { api_key: payload.api_key };
         },
       });
@@ -503,6 +483,7 @@ function renderPage(agentId) {
       }
 
       function interruptAssistant(reason = "Interrupted") {
+        debug("Assistant interrupted", reason);
         stopPlayback();
         if (activeTurnController) {
           try { activeTurnController.abort(); } catch {}
@@ -519,6 +500,7 @@ function renderPage(agentId) {
 
       async function synthesizeAndPlay(text) {
         ttsController = new AbortController();
+        debug("Sending text to Hamsa TTS", text.slice(0, 120));
         const response = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -527,6 +509,7 @@ function renderPage(agentId) {
         });
         if (!response.ok) {
           const payload = await response.json().catch(() => ({}));
+          debug("Hamsa TTS failed", payload?.error || response.status);
           throw new Error(payload?.error || "TTS failed");
         }
         const blob = await response.blob();
@@ -534,18 +517,21 @@ function renderPage(agentId) {
         const audio = new Audio(url);
         activeAudio = audio;
         isAssistantSpeaking = true;
+        debug("Playing Hamsa audio", response.headers.get("content-type") || "audio/wav");
         setStatus("Speaking", "Playing Hamsa voice reply.", "voice");
         await new Promise((resolve, reject) => {
           audio.onended = () => {
             isAssistantSpeaking = false;
             URL.revokeObjectURL(url);
             activeAudio = null;
+            debug("Audio playback finished");
             resolve();
           };
           audio.onerror = () => {
             isAssistantSpeaking = false;
             URL.revokeObjectURL(url);
             activeAudio = null;
+            debug("Audio playback error");
             reject(new Error("Audio playback failed"));
           };
           audio.play().catch(reject);
@@ -559,6 +545,7 @@ function renderPage(agentId) {
         isProcessingTurn = true;
         activeTurnController = new AbortController();
         pushMessage("user", transcript);
+        debug("Submitting transcript", transcript);
         liveTranscript.textContent = "...";
         setStatus("Thinking", "Sending transcript to the backend agent flow.", "llm");
 
@@ -577,20 +564,22 @@ function renderPage(agentId) {
           });
           const payload = await response.json().catch(() => ({}));
           if (!response.ok || !payload?.reply) {
+            debug("Agent turn failed", payload?.error || response.status);
             throw new Error(payload?.error || "Agent turn failed");
           }
+          debug("Agent reply received", payload.reply.slice(0, 160));
           pushMessage("assistant", payload.reply);
           await synthesizeAndPlay(payload.reply);
           setStatus("Listening", "Speak again whenever you want.", "ready");
         } catch (error) {
           if (error?.name === "AbortError") {
+            debug("Turn aborted");
             setStatus("Listening", "Interrupted. Speak again.", "ready");
             return;
           }
+          debug("Turn error", String(error?.message || error || "Unknown error"));
           setStatus("Error", String(error?.message || error || "Unknown error"), "retry");
-          const foot = document.getElementById("footnote");
-          foot.classList.add("error");
-          foot.textContent = String(error?.message || error || "Unknown error");
+          debugLog.classList.add("error");
         } finally {
           isProcessingTurn = false;
           activeTurnController = null;
@@ -600,6 +589,8 @@ function renderPage(agentId) {
 
       async function startRecording() {
         if (!agentId || recording) return;
+        debugLog.classList.remove("error");
+        debug("Starting Soniox recording session");
         setStatus("Starting", "Opening microphone and Soniox session.", "...");
         finalizedText = "";
         latestTranscript = "";
@@ -619,6 +610,7 @@ function renderPage(agentId) {
         recording.on("connected", () => {
           startBtn.disabled = true;
           stopBtn.disabled = false;
+          debug("Soniox connected");
           setStatus("Listening", "Speak in Arabic or English. Pause to send your turn.", "live");
         });
 
@@ -637,6 +629,7 @@ function renderPage(agentId) {
         recording.on("endpoint", async () => {
           if (!recording) return;
           pendingFinalize = true;
+          debug("Endpoint detected");
           setStatus("Endpoint", "You paused. Finalizing the utterance.", "...");
           try {
             await recording.finalize();
@@ -649,17 +642,29 @@ function renderPage(agentId) {
           const transcript = latestTranscript;
           latestTranscript = "";
           finalizedText = "";
+          debug("Transcript finalized", transcript || "(empty)");
           await submitTurn(transcript);
         });
 
         recording.on("error", (error) => {
+          debug("Soniox recording error", String(error?.message || error || "Unknown error"));
           setStatus("Error", String(error?.message || error || "Recording error"), "!");
+          debugLog.classList.add("error");
           recording = null;
           startBtn.disabled = false;
           stopBtn.disabled = true;
         });
 
+        recording.on("reconnecting", ({ attempt, max_attempts, delay_ms }) => {
+          debug("Soniox reconnecting", { attempt, max_attempts, delay_ms });
+        });
+
+        recording.on("reconnected", (event) => {
+          debug("Soniox reconnected", event || "ok");
+        });
+
         recording.on("state_change", ({ new_state }) => {
+          debug("State changed", new_state);
           if (new_state === "recording") {
             voiceMeter.textContent = "live";
           } else if (new_state === "reconnecting") {
@@ -670,6 +675,7 @@ function renderPage(agentId) {
 
       async function stopRecording() {
         if (!recording) return;
+        debug("Stopping recording");
         try {
           await recording.stop();
         } catch (_) {}
@@ -682,6 +688,8 @@ function renderPage(agentId) {
 
       startBtn.addEventListener("click", () => {
         startRecording().catch((error) => {
+          debug("Start failed", String(error?.message || error || "Failed to start"));
+          debugLog.classList.add("error");
           setStatus("Error", String(error?.message || error || "Failed to start"), "!");
         });
       });
