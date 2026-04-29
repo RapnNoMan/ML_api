@@ -480,10 +480,16 @@ function renderPage(agentId) {
         outputTranscript.textContent = "...";
         debug("Submitting transcript to Gemini", transcript);
         setStatus("Thinking", "Sending text turn to Gemini Live.", "llm");
-        session.sendClientContent({
-          turns: transcript,
+        await session.sendClientContent({
+          turns: [
+            {
+              role: "user",
+              parts: [{ text: transcript }],
+            },
+          ],
           turnComplete: true,
         });
+        debug("Gemini text turn sent");
       }
 
       async function startSonioxRecording() {
