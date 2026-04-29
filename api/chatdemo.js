@@ -490,6 +490,7 @@ function renderPage(agentId) {
       let isProcessingTurn = false;
       let pendingFinalize = false;
       let hasBargedInCurrentUtterance = false;
+      let isMicPausedForPlayback = false;
 
       function setStatus(title, detail, meter = "") {
         statusTitle.textContent = title;
@@ -514,6 +515,33 @@ function renderPage(agentId) {
             URL.revokeObjectURL(activeAudio.src);
           }
           activeAudio = null;
+        }
+      }
+
+      function pauseMicForPlayback() {
+        if (!recording || isMicPausedForPlayback) return;
+        try {
+          recording.pause();
+          isMicPausedForPlayback = true;
+          latestTranscript = "";
+          lastNonEmptyTranscript = "";
+          pendingTranscript = "";
+          pendingFinalize = false;
+          debug("Paused Soniox mic during assistant playback");
+        } catch (error) {
+          debug("Failed to pause Soniox mic", String(error?.message || error || "Unknown error"));
+        }
+      }
+
+      function resumeMicAfterPlayback() {
+        if (!recording || !isMicPausedForPlayback) return;
+        try {
+          recording.resume();
+          isMicPausedForPlayback = false;
+          debug("Resumed Soniox mic after assistant playback");
+          setStatus("Listening", "Speak again whenever you want.", "ready");
+        } catch (error) {
+          debug("Failed to resume Soniox mic", String(error?.message || error || "Unknown error"));
         }
       }
 
@@ -554,6 +582,7 @@ function renderPage(agentId) {
         const audio = new Audio(url);
         activeAudio = audio;
         isAssistantSpeaking = true;
+        pauseMicForPlayback();
         debug("Playing Hamsa audio", response.headers.get("content-type") || "audio/wav");
         setStatus("Speaking", "Playing Hamsa voice reply.", "voice");
         await new Promise((resolve, reject) => {
@@ -562,6 +591,7 @@ function renderPage(agentId) {
             URL.revokeObjectURL(url);
             activeAudio = null;
             debug("Audio playback finished");
+            resumeMicAfterPlayback();
             resolve();
           };
           audio.onerror = () => {
@@ -569,9 +599,13 @@ function renderPage(agentId) {
             URL.revokeObjectURL(url);
             activeAudio = null;
             debug("Audio playback error");
+            resumeMicAfterPlayback();
             reject(new Error("Audio playback failed"));
           };
-          audio.play().catch(reject);
+          audio.play().catch((error) => {
+            resumeMicAfterPlayback();
+            reject(error);
+          });
         });
       }
 
@@ -655,6 +689,7 @@ function renderPage(agentId) {
         queuedTranscript = "";
         pendingFinalize = false;
         hasBargedInCurrentUtterance = false;
+        isMicPausedForPlayback = false;
 
         recording = sonioxClient.realtime.record({
           model: "stt-rt-v4",
@@ -675,6 +710,7 @@ function renderPage(agentId) {
         });
 
         recording.on("result", (result) => {
+          if (isMicPausedForPlayback) return;
           const tokens = Array.isArray(result?.tokens) ? result.tokens : [];
           latestTranscript = tokens.map((token) => String(token?.text || "")).join("").trim();
           if (latestTranscript) {
@@ -688,7 +724,7 @@ function renderPage(agentId) {
         });
 
         recording.on("endpoint", async () => {
-          if (!recording) return;
+          if (!recording || isMicPausedForPlayback) return;
           pendingFinalize = true;
           pendingTranscript = latestTranscript || lastNonEmptyTranscript || "";
           hasBargedInCurrentUtterance = false;
@@ -700,7 +736,7 @@ function renderPage(agentId) {
         });
 
         recording.on("finalized", async () => {
-          if (!pendingFinalize) return;
+          if (!pendingFinalize || isMicPausedForPlayback) return;
           pendingFinalize = false;
           const transcript = pendingTranscript || latestTranscript || lastNonEmptyTranscript || "";
           pendingTranscript = "";
@@ -744,6 +780,7 @@ function renderPage(agentId) {
           await recording.stop();
         } catch (_) {}
         recording = null;
+        isMicPausedForPlayback = false;
         startBtn.disabled = false;
         stopBtn.disabled = true;
         stopPlayback();
