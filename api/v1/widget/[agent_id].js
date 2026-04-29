@@ -312,8 +312,12 @@ module.exports = async function handler(req, res) {
       embedding: embeddingResult.embedding,
     });
     if (!vectorResult.ok) {
-      res.status(vectorResult.status).json({ error: vectorResult.error });
-      return;
+      if (String(vectorResult.error || "") === "Vector search unavailable") {
+        vectorResult = { ok: true, chunks: [] };
+      } else {
+        res.status(vectorResult.status).json({ error: vectorResult.error });
+        return;
+      }
     }
   }
 
