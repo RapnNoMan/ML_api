@@ -112,6 +112,7 @@ async function createGeminiEphemeralToken() {
 
 function renderPage(agentId) {
   const safeAgentId = escapeHtml(agentId || "");
+  const browserGeminiApiKey = escapeHtml(getGeminiApiKey());
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -276,7 +277,7 @@ function renderPage(agentId) {
     <script type="module">
       import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from "https://esm.sh/@google/genai?bundle";
 
-      const endpoint = "/api/chatdemo";
+      const browserGeminiApiKey = "${browserGeminiApiKey}";
       const statusTitle = document.getElementById("statusTitle");
       const statusDetail = document.getElementById("statusDetail");
       const voiceMeter = document.getElementById("voiceMeter");
@@ -373,20 +374,13 @@ function renderPage(agentId) {
         return new Uint8Array(buffer);
       }
 
-      async function fetchGeminiToken() {
-        debug("Requesting Gemini ephemeral token");
-        const response = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "gemini_ephemeral_token" }),
-        });
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok || !payload?.token) {
-          debug("Gemini token request failed", payload?.error || response.status);
-          throw new Error(payload?.error || "Failed to obtain Gemini token");
+      function getBrowserGeminiApiKey() {
+        const key = String(browserGeminiApiKey || "").trim();
+        if (!key) {
+          throw new Error("Missing GEMINI_API_KEY in server env");
         }
-        debug("Gemini ephemeral token received");
-        return payload.token;
+        debug("Using server-rendered Gemini API key");
+        return key;
       }
 
       async function setupSpeaker() {
@@ -444,7 +438,7 @@ function renderPage(agentId) {
       }
 
       async function openGeminiSession() {
-        const token = await fetchGeminiToken();
+        const token = getBrowserGeminiApiKey();
         ai = new GoogleGenAI({
           apiKey: token,
           httpOptions: { apiVersion: "v1alpha" },
