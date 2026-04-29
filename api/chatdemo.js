@@ -39,74 +39,47 @@ function getGeminiApiKey() {
   ).trim();
 }
 
-async function createGeminiEphemeralToken() {
-  const apiKey = getGeminiApiKey();
-  if (!apiKey) {
-    return { ok: false, status: 500, error: "Missing GEMINI_API_KEY or GOOGLE_API_KEY" };
+async function createSonioxTemporaryKey() {
+  if (!process.env.SONIOX_API_KEY) {
+    return { ok: false, status: 500, error: "Missing SONIOX_API_KEY" };
   }
-
-  const expireTime = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-  const newSessionExpireTime = new Date(Date.now() + 60 * 1000).toISOString();
 
   let response;
   try {
-    response = await fetch("https://generativelanguage.googleapis.com/v1alpha/authTokens:create", {
+    response = await fetch("https://api.soniox.com/v1/auth/temporary-api-key", {
       method: "POST",
       headers: {
-        "x-goog-api-key": apiKey,
+        Authorization: `Bearer ${process.env.SONIOX_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        config: {
-          uses: 1,
-          expireTime,
-          newSessionExpireTime,
-          liveConnectConstraints: {
-            model: "gemini-3.1-flash-live-preview",
-            config: {
-              responseModalities: ["AUDIO"],
-              inputAudioTranscription: {},
-              outputAudioTranscription: {},
-              thinkingConfig: {
-                thinkingLevel: "minimal",
-              },
-            },
-          },
-          httpOptions: {
-            apiVersion: "v1alpha",
-          },
-        },
+        usage_type: "transcribe_websocket",
+        expires_in_seconds: 1800,
+        client_reference_id: "chatdemo-soniox-gemini",
       }),
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Gemini ephemeral token request failed" };
+    return { ok: false, status: 502, error: "Soniox temporary key request failed" };
   }
 
   let payload = null;
-  let rawText = "";
   try {
-    rawText = await response.text();
-    payload = rawText ? JSON.parse(rawText) : null;
+    payload = await response.json();
   } catch (_) {}
 
   if (!response.ok) {
     return {
       ok: false,
       status: response.status || 502,
-      error:
-        payload?.error?.message ||
-        payload?.message ||
-        rawText ||
-        `Gemini ephemeral token request failed (${response.status || 502})`,
-      details: payload || rawText || null,
+      error: payload?.message || payload?.error || "Soniox temporary key request failed",
+      details: payload || null,
     };
   }
 
   return {
     ok: true,
-    token: String(payload?.name || "").trim(),
-    expireTime: payload?.expireTime || expireTime,
-    newSessionExpireTime: payload?.newSessionExpireTime || newSessionExpireTime,
+    api_key: payload?.api_key || null,
+    expires_at: payload?.expires_at || null,
   };
 }
 
@@ -118,7 +91,7 @@ function renderPage(agentId) {
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Gemini Live Demo</title>
+    <title>Soniox + Gemini Live Demo</title>
     <style>
       :root {
         --bg: #071018;
@@ -229,10 +202,11 @@ function renderPage(agentId) {
         font-size: 18px;
         line-height: 1.45;
         min-height: 44px;
+        white-space: pre-wrap;
       }
       .debugbox {
-        min-height: 140px;
-        max-height: 32vh;
+        min-height: 160px;
+        max-height: 34vh;
         overflow: auto;
         padding: 14px;
         border-radius: 18px;
@@ -252,7 +226,7 @@ function renderPage(agentId) {
         <div class="status">
           <div>
             <strong id="statusTitle">Idle</strong>
-            <span id="statusDetail">Gemini Live audio in and audio out test.</span>
+            <span id="statusDetail">Soniox STT into Gemini Live audio output.</span>
           </div>
           <div class="meter" id="voiceMeter">off</div>
         </div>
@@ -261,11 +235,11 @@ function renderPage(agentId) {
           <button class="secondary" id="stopBtn" disabled>Stop</button>
         </div>
         <div class="livebox">
-          <div class="label">Input Transcript</div>
-          <div class="livetext" id="inputTranscript">...</div>
+          <div class="label">Live Transcript</div>
+          <div class="livetext" id="liveTranscript">...</div>
         </div>
         <div class="livebox">
-          <div class="label">Output Transcript</div>
+          <div class="label">Gemini Output Transcript</div>
           <div class="livetext" id="outputTranscript">...</div>
         </div>
         <div class="livebox">
@@ -275,13 +249,15 @@ function renderPage(agentId) {
       </section>
     </main>
     <script type="module">
+      import { SonioxClient } from "https://esm.sh/@soniox/client?bundle";
       import { GoogleGenAI, Modality, StartSensitivity, EndSensitivity } from "https://esm.sh/@google/genai?bundle";
 
       const browserGeminiApiKey = "${browserGeminiApiKey}";
+      const endpoint = "/api/chatdemo";
       const statusTitle = document.getElementById("statusTitle");
       const statusDetail = document.getElementById("statusDetail");
       const voiceMeter = document.getElementById("voiceMeter");
-      const inputTranscript = document.getElementById("inputTranscript");
+      const liveTranscript = document.getElementById("liveTranscript");
       const outputTranscript = document.getElementById("outputTranscript");
       const debugLog = document.getElementById("debugLog");
       const startBtn = document.getElementById("startBtn");
@@ -289,16 +265,17 @@ function renderPage(agentId) {
 
       let ai = null;
       let session = null;
-      let micStream = null;
-      let micContext = null;
-      let micSource = null;
-      let micProcessor = null;
+      let recording = null;
       let speakerContext = null;
       let speakerPlaybackCursor = 0;
       let isRunning = false;
-      let suppressMic = false;
-      let pendingStop = false;
-      let chunkCount = 0;
+      let latestTranscript = "";
+      let lastNonEmptyTranscript = "";
+      let pendingTranscript = "";
+      let lastSubmittedTranscript = "";
+      let isGeminiSpeaking = false;
+      let pendingFinalize = false;
+      let isPausedForOutput = false;
 
       function debug(message, extra = null) {
         try {
@@ -323,16 +300,6 @@ function renderPage(agentId) {
         voiceMeter.textContent = meter || "";
       }
 
-      function base64FromBytes(bytes) {
-        let binary = "";
-        const chunkSize = 0x8000;
-        for (let i = 0; i < bytes.length; i += chunkSize) {
-          const sub = bytes.subarray(i, i + chunkSize);
-          binary += String.fromCharCode(...sub);
-        }
-        return btoa(binary);
-      }
-
       function bytesFromBase64(base64) {
         const binary = atob(base64);
         const bytes = new Uint8Array(binary.length);
@@ -342,36 +309,20 @@ function renderPage(agentId) {
         return bytes;
       }
 
-      function downsampleTo16k(input, inputSampleRate) {
-        if (inputSampleRate === 16000) return input;
-        const ratio = inputSampleRate / 16000;
-        const newLength = Math.max(1, Math.round(input.length / ratio));
-        const output = new Float32Array(newLength);
-        let offsetResult = 0;
-        let offsetBuffer = 0;
-        while (offsetResult < output.length) {
-          const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
-          let accum = 0;
-          let count = 0;
-          for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i += 1) {
-            accum += input[i];
-            count += 1;
-          }
-          output[offsetResult] = count > 0 ? accum / count : 0;
-          offsetResult += 1;
-          offsetBuffer = nextOffsetBuffer;
+      async function fetchSonioxTempKey() {
+        debug("Requesting Soniox temporary key");
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "soniox_temp_key" }),
+        });
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok || !payload?.api_key) {
+          debug("Soniox key request failed", payload?.error || response.status);
+          throw new Error(payload?.error || "Failed to obtain Soniox key");
         }
-        return output;
-      }
-
-      function floatTo16BitPCM(float32) {
-        const buffer = new ArrayBuffer(float32.length * 2);
-        const view = new DataView(buffer);
-        for (let i = 0; i < float32.length; i += 1) {
-          let sample = Math.max(-1, Math.min(1, float32[i]));
-          view.setInt16(i * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-        }
-        return new Uint8Array(buffer);
+        debug("Soniox temporary key received");
+        return payload.api_key;
       }
 
       function getBrowserGeminiApiKey() {
@@ -411,16 +362,45 @@ function renderPage(agentId) {
         speakerPlaybackCursor = startAt + audioBuffer.duration;
       }
 
-      async function processServerMessage(message) {
-        const content = message?.serverContent;
-        if (content?.inputTranscription?.text) {
-          inputTranscript.textContent = content.inputTranscription.text;
+      async function pauseRecognitionForOutput() {
+        if (!recording || isPausedForOutput) return;
+        try {
+          await recording.pause();
+          isPausedForOutput = true;
+          latestTranscript = "";
+          lastNonEmptyTranscript = "";
+          pendingTranscript = "";
+          pendingFinalize = false;
+          debug("Paused Soniox during Gemini output");
+        } catch (error) {
+          debug("Failed to pause Soniox", String(error?.message || error || "Unknown error"));
         }
+      }
+
+      async function resumeRecognitionAfterOutput() {
+        if (!recording || !isPausedForOutput) return;
+        try {
+          await recording.resume();
+          isPausedForOutput = false;
+          latestTranscript = "";
+          lastNonEmptyTranscript = "";
+          pendingTranscript = "";
+          pendingFinalize = false;
+          debug("Resumed Soniox after Gemini output");
+          setStatus("Listening", "Speak again whenever you want.", "live");
+        } catch (error) {
+          debug("Failed to resume Soniox", String(error?.message || error || "Unknown error"));
+        }
+      }
+
+      async function processGeminiMessage(message) {
+        const content = message?.serverContent;
         if (content?.outputTranscription?.text) {
           outputTranscript.textContent = content.outputTranscription.text;
         }
         if (content?.modelTurn?.parts) {
-          suppressMic = true;
+          isGeminiSpeaking = true;
+          await pauseRecognitionForOutput();
           for (const part of content.modelTurn.parts) {
             if (part.inlineData?.data) {
               await playPcm24kBase64(part.inlineData.data);
@@ -429,8 +409,8 @@ function renderPage(agentId) {
         }
         if (content?.turnComplete) {
           debug("Gemini turn complete");
-          suppressMic = false;
-          setStatus("Listening", "Gemini is ready for the next utterance.", "live");
+          isGeminiSpeaking = false;
+          await resumeRecognitionAfterOutput();
         }
         if (message?.usageMetadata?.totalTokenCount) {
           debug("Usage update", message.usageMetadata.totalTokenCount + " total tokens");
@@ -438,9 +418,9 @@ function renderPage(agentId) {
       }
 
       async function openGeminiSession() {
-        const token = getBrowserGeminiApiKey();
+        const apiKey = getBrowserGeminiApiKey();
         ai = new GoogleGenAI({
-          apiKey: token,
+          apiKey,
           httpOptions: { apiVersion: "v1alpha" },
         });
 
@@ -448,7 +428,6 @@ function renderPage(agentId) {
           model: "gemini-3.1-flash-live-preview",
           config: {
             responseModalities: [Modality.AUDIO],
-            inputAudioTranscription: {},
             outputAudioTranscription: {},
             thinkingConfig: {
               thinkingLevel: "minimal",
@@ -466,10 +445,10 @@ function renderPage(agentId) {
           callbacks: {
             onopen: function () {
               debug("Gemini Live session opened");
-              setStatus("Listening", "Gemini Live is connected. Speak naturally.", "live");
+              setStatus("Listening", "Soniox STT and Gemini audio output are connected.", "live");
             },
             onmessage: function (message) {
-              processServerMessage(message).catch((error) => {
+              processGeminiMessage(message).catch((error) => {
                 debug("Gemini message processing failed", String(error?.message || error || "Unknown error"));
               });
             },
@@ -480,7 +459,7 @@ function renderPage(agentId) {
             },
             onclose: function (e) {
               debug("Gemini Live closed", e?.reason || "closed");
-              if (!pendingStop) {
+              if (isRunning) {
                 setStatus("Closed", e?.reason || "Gemini session closed.", "off");
               }
             },
@@ -488,84 +467,118 @@ function renderPage(agentId) {
         });
       }
 
-      async function startMicrophonePipeline() {
-        micStream = await navigator.mediaDevices.getUserMedia({
-          audio: {
-            channelCount: 1,
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
-          },
-        });
-
-        micContext = new AudioContext();
-        if (micContext.state === "suspended") {
-          await micContext.resume();
+      async function submitTranscript(text) {
+        const transcript = String(text || "").trim();
+        if (!transcript) return;
+        if (!session) return;
+        if (transcript === lastSubmittedTranscript) {
+          debug("Skipping duplicate transcript", transcript);
+          return;
         }
-        micSource = micContext.createMediaStreamSource(micStream);
-        micProcessor = micContext.createScriptProcessor(4096, 1, 1);
-
-        micProcessor.onaudioprocess = (event) => {
-          if (!session || !isRunning || suppressMic) return;
-          const input = event.inputBuffer.getChannelData(0);
-          const downsampled = downsampleTo16k(input, micContext.sampleRate);
-          const pcmBytes = floatTo16BitPCM(downsampled);
-          const base64Audio = base64FromBytes(pcmBytes);
-          chunkCount += 1;
-          session.sendRealtimeInput({
-            audio: {
-              data: base64Audio,
-              mimeType: "audio/pcm;rate=16000",
-            },
-          });
-        };
-
-        micSource.connect(micProcessor);
-        micProcessor.connect(micContext.destination);
+        lastSubmittedTranscript = transcript;
+        liveTranscript.textContent = transcript;
+        outputTranscript.textContent = "...";
+        debug("Submitting transcript to Gemini", transcript);
+        setStatus("Thinking", "Sending text turn to Gemini Live.", "llm");
+        session.sendClientContent({
+          turns: transcript,
+          turnComplete: true,
+        });
       }
 
-      async function cleanupAudio() {
-        if (micProcessor) {
-          try { micProcessor.disconnect(); } catch (_) {}
-          micProcessor.onaudioprocess = null;
-          micProcessor = null;
-        }
-        if (micSource) {
-          try { micSource.disconnect(); } catch (_) {}
-          micSource = null;
-        }
-        if (micContext) {
-          try { await micContext.close(); } catch (_) {}
-          micContext = null;
-        }
-        if (micStream) {
-          for (const track of micStream.getTracks()) {
-            try { track.stop(); } catch (_) {}
+      async function startSonioxRecording() {
+        const sonioxClient = new SonioxClient({
+          api_key: fetchSonioxTempKey,
+        });
+
+        recording = sonioxClient.realtime.record({
+          model: "stt-rt-v4",
+          language_hints: ["ar", "en"],
+          enable_language_identification: true,
+          enable_endpoint_detection: true,
+          max_endpoint_delay_ms: 500,
+          auto_reconnect: true,
+          max_reconnect_attempts: 3,
+          reconnect_base_delay_ms: 1000,
+        });
+
+        recording.on("connected", () => {
+          debug("Soniox connected");
+          setStatus("Listening", "Soniox STT and Gemini audio output are connected.", "live");
+        });
+
+        recording.on("result", (result) => {
+          if (isPausedForOutput || isGeminiSpeaking) return;
+          const tokens = Array.isArray(result?.tokens) ? result.tokens : [];
+          latestTranscript = tokens.map((token) => String(token?.text || "")).join("").trim();
+          if (latestTranscript) {
+            lastNonEmptyTranscript = latestTranscript;
+            liveTranscript.textContent = latestTranscript;
+            voiceMeter.textContent = "hearing";
           }
-          micStream = null;
-        }
+        });
+
+        recording.on("endpoint", async () => {
+          if (!recording || isPausedForOutput || isGeminiSpeaking) return;
+          pendingFinalize = true;
+          pendingTranscript = latestTranscript || lastNonEmptyTranscript || "";
+          debug("Soniox endpoint detected");
+          setStatus("Endpoint", "Finalizing spoken turn.", "...");
+          try {
+            await recording.finalize();
+          } catch (_) {}
+        });
+
+        recording.on("finalized", async () => {
+          if (!pendingFinalize || isPausedForOutput || isGeminiSpeaking) return;
+          pendingFinalize = false;
+          const transcript = pendingTranscript || latestTranscript || lastNonEmptyTranscript || "";
+          pendingTranscript = "";
+          latestTranscript = "";
+          lastNonEmptyTranscript = "";
+          debug("Soniox transcript finalized", transcript || "(empty)");
+          await submitTranscript(transcript);
+        });
+
+        recording.on("error", (error) => {
+          debug("Soniox error", String(error?.message || error || "Unknown error"));
+          setStatus("Error", String(error?.message || error || "Soniox error"), "retry");
+          debugLog.classList.add("error");
+        });
+
+        recording.on("state_change", ({ new_state }) => {
+          debug("Soniox state changed", new_state);
+          if (new_state === "recording") {
+            voiceMeter.textContent = "live";
+          } else if (new_state === "paused") {
+            voiceMeter.textContent = "paused";
+          }
+        });
       }
 
       async function startDemo() {
         if (isRunning) return;
         debugLog.classList.remove("error");
-        inputTranscript.textContent = "...";
+        liveTranscript.textContent = "...";
         outputTranscript.textContent = "...";
-        chunkCount = 0;
-        suppressMic = false;
-        pendingStop = false;
+        latestTranscript = "";
+        lastNonEmptyTranscript = "";
+        pendingTranscript = "";
+        lastSubmittedTranscript = "";
+        pendingFinalize = false;
+        isPausedForOutput = false;
+        isGeminiSpeaking = false;
         isRunning = true;
         startBtn.disabled = true;
         stopBtn.disabled = false;
-        setStatus("Starting", "Opening Gemini Live session and microphone.", "...");
-        debug("Starting Gemini Live demo");
+        setStatus("Starting", "Opening Gemini Live and Soniox STT.", "...");
+        debug("Starting Soniox + Gemini demo");
 
         try {
           await setupSpeaker();
           await openGeminiSession();
-          await startMicrophonePipeline();
-          debug("Microphone pipeline started");
-          setStatus("Listening", "Gemini Live is connected. Speak naturally.", "live");
+          await startSonioxRecording();
+          debug("Hybrid voice pipeline started");
         } catch (error) {
           debug("Start failed", String(error?.message || error || "Unknown error"));
           debugLog.classList.add("error");
@@ -575,26 +588,23 @@ function renderPage(agentId) {
       }
 
       async function stopDemo() {
-        pendingStop = true;
         isRunning = false;
-        suppressMic = false;
+        isPausedForOutput = false;
+        isGeminiSpeaking = false;
+        pendingFinalize = false;
+
+        if (recording) {
+          try { await recording.stop(); } catch (_) {}
+          recording = null;
+        }
 
         if (session) {
-          try {
-            session.sendRealtimeInput({ audioStreamEnd: true });
-          } catch (_) {}
-          try {
-            session.close();
-          } catch (_) {}
+          try { session.close(); } catch (_) {}
           session = null;
         }
 
-        await cleanupAudio();
-
         if (speakerContext) {
-          try {
-            await speakerContext.close();
-          } catch (_) {}
+          try { await speakerContext.close(); } catch (_) {}
           speakerContext = null;
           speakerPlaybackCursor = 0;
         }
@@ -602,8 +612,8 @@ function renderPage(agentId) {
         ai = null;
         startBtn.disabled = false;
         stopBtn.disabled = true;
-        setStatus("Stopped", "Gemini Live session closed.", "off");
-        debug("Stopped Gemini Live demo", chunkCount + " audio chunks sent");
+        setStatus("Stopped", "Soniox and Gemini session closed.", "off");
+        debug("Stopped Soniox + Gemini demo");
       }
 
       startBtn.addEventListener("click", () => {
@@ -641,8 +651,8 @@ module.exports = async function handler(req, res) {
   const body = await readJsonBody(req);
   const action = String(body?.action || "").trim();
 
-  if (action === "gemini_ephemeral_token") {
-    const result = await createGeminiEphemeralToken();
+  if (action === "soniox_temp_key") {
+    const result = await createSonioxTemporaryKey();
     res.status(result.status || (result.ok ? 200 : 500)).json(result);
     return;
   }
