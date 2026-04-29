@@ -30,6 +30,46 @@ function duplicateTrailingArabicLetter(text) {
   return source.slice(0, end + 1) + lastChar + source.slice(end + 1);
 }
 
+const VOICE_MODE_INSTRUCTION =
+  "VOICE MODE INSTRUCTION: Reply in plain spoken language only. Keep the answer as short as possible. Use 1 to 2 short sentences maximum. Do not use markdown, bullet points, numbered lists, bold text, headings, or formatting. Do not sound like a written LLM response. Speak naturally like a person on a call.";
+
+function buildVoiceModeMessage(transcript) {
+  const userText = String(transcript || "").trim();
+  if (!userText) return userText;
+  return `${VOICE_MODE_INSTRUCTION}\n\nUser said: ${userText}`;
+}
+
+function stripFormatting(text) {
+  return String(text || "")
+    .replace(/\*\*(.*?)\*\*/g, "$1")
+    .replace(/\*(.*?)\*/g, "$1")
+    .replace(/__(.*?)__/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s*[-*•]\s+/gm, "")
+    .replace(/^\s*\d+\.\s+/gm, "")
+    .replace(/^#+\s+/gm, "")
+    .trim();
+}
+
+function limitToTwoSentences(text) {
+  const source = stripFormatting(text)
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!source) return source;
+
+  const matches = source.match(/[^.!?؟]+[.!?؟]?/g);
+  if (!Array.isArray(matches) || matches.length === 0) return source;
+
+  const firstTwo = matches
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" ")
+    .trim();
+
+  return firstTwo || source;
+}
+
 function getBaseUrl(req) {
   const forwardedProto = String(req?.headers?.["x-forwarded-proto"] || "").trim();
   const host = String(req?.headers?.host || "").trim();
@@ -118,7 +158,7 @@ async function proxyWidgetTurn({ baseUrl, agentId, transcript, anonId, chatId })
         Referer: "https://app.mitsolab.com/widget",
       },
       body: JSON.stringify({
-        message: transcript,
+        message: buildVoiceModeMessage(transcript),
         anon_id: anonId,
         chat_id: chatId,
       }),
@@ -143,7 +183,7 @@ async function proxyWidgetTurn({ baseUrl, agentId, transcript, anonId, chatId })
 
   return {
     ok: true,
-    reply: String(payload?.reply || "").trim(),
+    reply: limitToTwoSentences(String(payload?.reply || "").trim()),
     raw: payload || null,
   };
 }
@@ -491,6 +531,8 @@ function renderPage(agentId) {
       let pendingFinalize = false;
       let hasBargedInCurrentUtterance = false;
       let isMicPausedForPlayback = false;
+      let restartRecordingAfterPlayback = false;
+      let ignoreRecognitionUntil = 0;
 
       function setStatus(title, detail, meter = "") {
         statusTitle.textContent = title;
@@ -518,31 +560,45 @@ function renderPage(agentId) {
         }
       }
 
-      function pauseMicForPlayback() {
+      async function suspendRecognitionForPlayback() {
         if (!recording || isMicPausedForPlayback) return;
         try {
-          recording.pause();
           isMicPausedForPlayback = true;
+          restartRecordingAfterPlayback = true;
+          ignoreRecognitionUntil = Date.now() + 2500;
           latestTranscript = "";
           lastNonEmptyTranscript = "";
           pendingTranscript = "";
+          queuedTranscript = "";
           pendingFinalize = false;
-          debug("Paused Soniox mic during assistant playback");
+          hasBargedInCurrentUtterance = false;
+          await recording.stop();
+          recording = null;
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          debug("Stopped Soniox recording during assistant playback");
         } catch (error) {
-          debug("Failed to pause Soniox mic", String(error?.message || error || "Unknown error"));
+          debug("Failed to stop Soniox mic", String(error?.message || error || "Unknown error"));
         }
       }
 
-      function resumeMicAfterPlayback() {
-        if (!recording || !isMicPausedForPlayback) return;
-        try {
-          recording.resume();
-          isMicPausedForPlayback = false;
-          debug("Resumed Soniox mic after assistant playback");
-          setStatus("Listening", "Speak again whenever you want.", "ready");
-        } catch (error) {
-          debug("Failed to resume Soniox mic", String(error?.message || error || "Unknown error"));
+      async function resumeRecognitionAfterPlayback() {
+        if (!isMicPausedForPlayback) return;
+        isMicPausedForPlayback = false;
+        ignoreRecognitionUntil = Date.now() + 1200;
+        debug("Playback finished, restarting Soniox recording");
+        if (restartRecordingAfterPlayback) {
+          restartRecordingAfterPlayback = false;
+          try {
+            await startRecording({ preserveStatus: true, silentRestart: true });
+          } catch (error) {
+            debug("Failed to restart Soniox recording", String(error?.message || error || "Unknown error"));
+            setStatus("Error", "Failed to restart listening after playback.", "retry");
+            if (debugLog) debugLog.classList.add("error");
+            return;
+          }
         }
+        setStatus("Listening", "Speak again whenever you want.", "ready");
       }
 
       function interruptAssistant(reason = "Interrupted") {
@@ -582,7 +638,7 @@ function renderPage(agentId) {
         const audio = new Audio(url);
         activeAudio = audio;
         isAssistantSpeaking = true;
-        pauseMicForPlayback();
+        await suspendRecognitionForPlayback();
         debug("Playing Hamsa audio", response.headers.get("content-type") || "audio/wav");
         setStatus("Speaking", "Playing Hamsa voice reply.", "voice");
         await new Promise((resolve, reject) => {
@@ -591,20 +647,21 @@ function renderPage(agentId) {
             URL.revokeObjectURL(url);
             activeAudio = null;
             debug("Audio playback finished");
-            resumeMicAfterPlayback();
-            resolve();
+            resumeRecognitionAfterPlayback().then(resolve).catch(reject);
           };
           audio.onerror = () => {
             isAssistantSpeaking = false;
             URL.revokeObjectURL(url);
             activeAudio = null;
             debug("Audio playback error");
-            resumeMicAfterPlayback();
-            reject(new Error("Audio playback failed"));
+            resumeRecognitionAfterPlayback()
+              .catch(() => {})
+              .finally(() => reject(new Error("Audio playback failed")));
           };
           audio.play().catch((error) => {
-            resumeMicAfterPlayback();
-            reject(error);
+            resumeRecognitionAfterPlayback()
+              .catch(() => {})
+              .finally(() => reject(error));
           });
         });
       }
@@ -678,18 +735,25 @@ function renderPage(agentId) {
         }
       }
 
-      async function startRecording() {
+      async function startRecording(options = {}) {
+        const preserveStatus = Boolean(options?.preserveStatus);
+        const silentRestart = Boolean(options?.silentRestart);
         if (!agentId || recording) return;
-        setStatus("Starting", "Opening microphone and Soniox session.", "...");
+        if (!preserveStatus) {
+          setStatus("Starting", "Opening microphone and Soniox session.", "...");
+        }
         if (debugLog) debugLog.classList.remove("error");
-        debug("Starting Soniox recording session");
+        debug(silentRestart ? "Restarting Soniox recording session" : "Starting Soniox recording session");
         latestTranscript = "";
         lastNonEmptyTranscript = "";
         pendingTranscript = "";
         queuedTranscript = "";
         pendingFinalize = false;
         hasBargedInCurrentUtterance = false;
-        isMicPausedForPlayback = false;
+        if (!silentRestart) {
+          isMicPausedForPlayback = false;
+          restartRecordingAfterPlayback = false;
+        }
 
         recording = sonioxClient.realtime.record({
           model: "stt-rt-v4",
@@ -706,10 +770,13 @@ function renderPage(agentId) {
           startBtn.disabled = true;
           stopBtn.disabled = false;
           debug("Soniox connected");
-          setStatus("Listening", "Speak in Arabic or English. Pause to send your turn.", "live");
+          if (!isMicPausedForPlayback) {
+            setStatus("Listening", "Speak in Arabic or English. Pause to send your turn.", "live");
+          }
         });
 
         recording.on("result", (result) => {
+          if (Date.now() < ignoreRecognitionUntil) return;
           if (isMicPausedForPlayback) return;
           const tokens = Array.isArray(result?.tokens) ? result.tokens : [];
           latestTranscript = tokens.map((token) => String(token?.text || "")).join("").trim();
@@ -724,6 +791,7 @@ function renderPage(agentId) {
         });
 
         recording.on("endpoint", async () => {
+          if (Date.now() < ignoreRecognitionUntil) return;
           if (!recording || isMicPausedForPlayback) return;
           pendingFinalize = true;
           pendingTranscript = latestTranscript || lastNonEmptyTranscript || "";
@@ -736,6 +804,7 @@ function renderPage(agentId) {
         });
 
         recording.on("finalized", async () => {
+          if (Date.now() < ignoreRecognitionUntil) return;
           if (!pendingFinalize || isMicPausedForPlayback) return;
           pendingFinalize = false;
           const transcript = pendingTranscript || latestTranscript || lastNonEmptyTranscript || "";
@@ -751,6 +820,7 @@ function renderPage(agentId) {
           setStatus("Error", String(error?.message || error || "Recording error"), "!");
           if (debugLog) debugLog.classList.add("error");
           recording = null;
+          isMicPausedForPlayback = false;
           startBtn.disabled = false;
           stopBtn.disabled = true;
         });
@@ -781,6 +851,7 @@ function renderPage(agentId) {
         } catch (_) {}
         recording = null;
         isMicPausedForPlayback = false;
+        restartRecordingAfterPlayback = false;
         startBtn.disabled = false;
         stopBtn.disabled = true;
         stopPlayback();
