@@ -481,6 +481,7 @@ function renderPage(agentId) {
       let latestTranscript = "";
       let lastNonEmptyTranscript = "";
       let pendingTranscript = "";
+      let queuedTranscript = "";
       let lastSubmittedTranscript = "";
       let activeAudio = null;
       let activeTurnController = null;
@@ -488,6 +489,7 @@ function renderPage(agentId) {
       let isAssistantSpeaking = false;
       let isProcessingTurn = false;
       let pendingFinalize = false;
+      let hasBargedInCurrentUtterance = false;
 
       function setStatus(title, detail, meter = "") {
         statusTitle.textContent = title;
@@ -516,6 +518,8 @@ function renderPage(agentId) {
       }
 
       function interruptAssistant(reason = "Interrupted") {
+        if (hasBargedInCurrentUtterance) return;
+        hasBargedInCurrentUtterance = true;
         debug("Assistant interrupted", reason);
         stopPlayback();
         if (activeTurnController) {
@@ -573,9 +577,19 @@ function renderPage(agentId) {
 
       async function submitTurn(text) {
         const transcript = String(text || "").trim();
-        if (!transcript || transcript === lastSubmittedTranscript || isProcessingTurn) return;
+        if (!transcript) return;
+        if (transcript === lastSubmittedTranscript) {
+          debug("Skipping duplicate transcript", transcript);
+          return;
+        }
+        if (isProcessingTurn) {
+          queuedTranscript = transcript;
+          debug("Queued transcript while previous turn is still closing", transcript);
+          return;
+        }
         lastSubmittedTranscript = transcript;
         isProcessingTurn = true;
+        queuedTranscript = "";
         activeTurnController = new AbortController();
         pushMessage("user", transcript);
         debug("Submitting transcript", transcript);
@@ -617,6 +631,16 @@ function renderPage(agentId) {
           isProcessingTurn = false;
           activeTurnController = null;
           ttsController = null;
+          const nextTranscript = queuedTranscript;
+          queuedTranscript = "";
+          if (nextTranscript && nextTranscript !== lastSubmittedTranscript) {
+            debug("Flushing queued transcript", nextTranscript);
+            setTimeout(() => {
+              submitTurn(nextTranscript).catch((error) => {
+                debug("Queued transcript failed", String(error?.message || error || "Unknown error"));
+              });
+            }, 0);
+          }
         }
       }
 
@@ -628,14 +652,16 @@ function renderPage(agentId) {
         latestTranscript = "";
         lastNonEmptyTranscript = "";
         pendingTranscript = "";
+        queuedTranscript = "";
         pendingFinalize = false;
+        hasBargedInCurrentUtterance = false;
 
         recording = sonioxClient.realtime.record({
           model: "stt-rt-v4",
           language_hints: ["ar", "en"],
           enable_language_identification: true,
           enable_endpoint_detection: true,
-          max_endpoint_delay_ms: 900,
+          max_endpoint_delay_ms: 600,
           auto_reconnect: true,
           max_reconnect_attempts: 3,
           reconnect_base_delay_ms: 1000,
@@ -665,6 +691,7 @@ function renderPage(agentId) {
           if (!recording) return;
           pendingFinalize = true;
           pendingTranscript = latestTranscript || lastNonEmptyTranscript || "";
+          hasBargedInCurrentUtterance = false;
           debug("Endpoint detected");
           setStatus("Endpoint", "You paused. Finalizing the utterance.", "...");
           try {
@@ -678,6 +705,7 @@ function renderPage(agentId) {
           const transcript = pendingTranscript || latestTranscript || lastNonEmptyTranscript || "";
           pendingTranscript = "";
           latestTranscript = "";
+          lastNonEmptyTranscript = "";
           debug("Transcript finalized", transcript || "(empty)");
           await submitTurn(transcript);
         });
