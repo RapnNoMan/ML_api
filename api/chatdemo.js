@@ -1,3 +1,7 @@
+const { getChatCompletion } = require("../scripts/internal/getChatCompletion");
+const { getChatHistory } = require("../scripts/internal/getChatHistory");
+const { saveMessage } = require("../scripts/internal/saveMessage");
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -33,10 +37,96 @@ function duplicateTrailingArabicLetter(text) {
 const VOICE_MODE_INSTRUCTION =
   "VOICE MODE INSTRUCTION: Reply in plain spoken language only. Keep the answer as short as possible. Use 1 to 2 short sentences maximum. Do not use markdown, bullet points, numbered lists, bold text, headings, or formatting. Do not sound like a written LLM response. Speak naturally like a person on a call.";
 
+const FAST_VOICE_TURN_INSTRUCTION =
+  "You are in real-time phone-call mode. Reply immediately and naturally. Keep it extremely short. One short sentence is preferred. Two short sentences maximum. No lists, no formatting, no explanations unless the user explicitly asks. If the user is greeting, greeting back is enough. If the user is just acknowledging, acknowledge back briefly.";
+
+const FAST_VOICE_BLOCKLIST = [
+  "price",
+  "pricing",
+  "cost",
+  "plan",
+  "plans",
+  "subscription",
+  "subscribe",
+  "buy",
+  "purchase",
+  "refund",
+  "invoice",
+  "email",
+  "calendar",
+  "book",
+  "appointment",
+  "ticket",
+  "agent",
+  "human",
+  "order",
+  "product",
+  "products",
+  "service",
+  "services",
+  "integration",
+  "api",
+  "quote",
+  "demo",
+  "meeting",
+  "whatsapp",
+  "instagram",
+  "messenger",
+  "telegram",
+  "سعر",
+  "الاسعار",
+  "الأسعار",
+  "سعركم",
+  "منتج",
+  "منتجات",
+  "خدمة",
+  "خدمات",
+  "اشتراك",
+  "اشتراكات",
+  "احجز",
+  "موعد",
+  "ايميل",
+  "بريد",
+  "فاتورة",
+  "شراء",
+  "طلب",
+  "طلبات",
+  "انسان",
+  "بشري",
+  "موظف",
+  "وكيل",
+];
+
+const FAST_VOICE_PATTERNS = [
+  /^(hi|hello|hey|yo|hola|alo+|hello there)[.!? ]*$/i,
+  /^(how are you|how's it going|how are things|what's up)[.!? ]*$/i,
+  /^(ok|okay|kk|cool|nice|sure|yes|yep|yeah|nah|nope|go on|continue)[.!? ]*$/i,
+  /^(thanks|thank you|thx)[.!? ]*$/i,
+  /^(bye|goodbye|see you|talk later)[.!? ]*$/i,
+  /^(مرحبا|هلا|هلو|ألو|الو|السلام عليكم|اهلا|أهلا|كيف الحال|شلونك|شخبارك|تمام|اوكي|أوكي|طيب|شكرا|شكراً|مع السلامة|كمل|كمّل|أيوه|ايوه|إيش|ايش)[.!؟ ]*$/i,
+];
+
 function buildVoiceModeMessage(transcript) {
   const userText = String(transcript || "").trim();
   if (!userText) return userText;
   return `${VOICE_MODE_INSTRUCTION}\n\nUser said: ${userText}`;
+}
+
+function normalizeFastVoiceText(text) {
+  return String(text || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+}
+
+function isFastVoiceEligible(transcript) {
+  const text = normalizeFastVoiceText(transcript);
+  if (!text) return false;
+  if (text.length > 90) return false;
+  if (/[0-9]/.test(text)) return false;
+  if (text.includes("http://") || text.includes("https://") || text.includes("@")) return false;
+  if (FAST_VOICE_BLOCKLIST.some((part) => text.includes(part))) return false;
+  return FAST_VOICE_PATTERNS.some((pattern) => pattern.test(text));
 }
 
 function stripFormatting(text) {
@@ -148,6 +238,16 @@ async function proxyWidgetTurn({ baseUrl, agentId, transcript, anonId, chatId })
   if (!transcript) return { ok: false, status: 400, error: "Missing transcript" };
   if (!anonId || !chatId) return { ok: false, status: 400, error: "Missing chat identity" };
 
+  if (isFastVoiceEligible(transcript)) {
+    const fastResult = await runFastVoiceTurn({
+      agentId,
+      transcript,
+      anonId,
+      chatId,
+    });
+    if (fastResult.ok) return fastResult;
+  }
+
   let response;
   try {
     response = await fetch(`${baseUrl}/api/v1/widget/${encodeURIComponent(agentId)}`, {
@@ -185,6 +285,69 @@ async function proxyWidgetTurn({ baseUrl, agentId, transcript, anonId, chatId })
     ok: true,
     reply: limitToTwoSentences(String(payload?.reply || "").trim()),
     raw: payload || null,
+  };
+}
+
+async function runFastVoiceTurn({ agentId, transcript, anonId, chatId }) {
+  if (!process.env.OPENAI_API_KEY) {
+    return { ok: false, status: 500, error: "Missing OPENAI_API_KEY" };
+  }
+
+  const historyResult = await getChatHistory({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    anonId,
+    chatId,
+    maxRows: 1,
+  });
+
+  const historyMessages = historyResult.ok ? historyResult.messages.slice(-2) : [];
+  const messages = [
+    ...historyMessages,
+    { role: "user", content: String(transcript || "").trim() },
+  ];
+
+  const completion = await getChatCompletion({
+    apiKey: process.env.OPENAI_API_KEY,
+    model: "gpt-5-nano",
+    reasoning: { effort: "low" },
+    instructions: `${VOICE_MODE_INSTRUCTION}\n\n${FAST_VOICE_TURN_INSTRUCTION}`,
+    messages,
+    tools: [],
+  });
+
+  if (!completion.ok) {
+    return { ok: false, status: completion.status, error: completion.error };
+  }
+
+  const reply = limitToTwoSentences(String(completion?.data?.reply || "").trim());
+  if (!reply) {
+    return { ok: false, status: 502, error: "Empty fast voice reply" };
+  }
+
+  const saveResult = await saveMessage({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    anonId,
+    chatId,
+    prompt: String(transcript || "").trim(),
+    result: reply,
+    source: "chatdemo_fast_voice",
+    action: false,
+  });
+
+  if (!saveResult.ok) {
+    return { ok: false, status: saveResult.status, error: saveResult.error };
+  }
+
+  return {
+    ok: true,
+    reply,
+    raw: {
+      mode: "fast_voice",
+    },
   };
 }
 
