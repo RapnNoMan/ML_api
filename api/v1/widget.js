@@ -1394,7 +1394,7 @@ module.exports = async function handler(req, res) {
           agentId,
           anonId,
           chatId,
-          maxRows: 3,
+          maxRows: 4,
         })
       : Promise.resolve({ ok: true, messages: [] });
 

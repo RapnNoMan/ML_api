@@ -966,7 +966,7 @@ module.exports = async function handler(req, res) {
           agentId: body.agent_id,
           anonId,
           chatId,
-          maxRows: 3,
+          maxRows: 4,
         })
       : Promise.resolve({ ok: true, messages: [] });
 

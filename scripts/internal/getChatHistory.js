@@ -1,4 +1,4 @@
-async function getChatHistory({ supId, supKey, agentId, anonId, chatId, maxRows = 3 }) {
+async function getChatHistory({ supId, supKey, agentId, anonId, chatId, maxRows = 4 }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
