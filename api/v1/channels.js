@@ -3027,8 +3027,9 @@ async function generateAiHandoffReply({
         ? [
             "HUMAN HANDOFF CONFIRMATION",
             "A human handoff request has been successfully created.",
-            "Tell the customer they are now in queue for a human agent.",
-            "Invite them to share additional details in the meantime so the human agent has context.",
+            "Thank the customer for contacting us.",
+            "Tell them we will contact them as soon as possible.",
+            "Do not say they are in a queue or waiting for a human agent.",
             "Keep the response concise and clear.",
           ].join("\n")
         : null,
@@ -3497,8 +3498,9 @@ async function processIncomingMessage({ event, connection, headers }) {
         ? [
             "HUMAN HANDOFF CONFIRMATION",
             "A human handoff request has been successfully created.",
-            "Tell the customer they are now in queue for a human agent.",
-            "Invite them to share additional details in the meantime so the human agent has context.",
+            "Thank the customer for contacting us.",
+            "Tell them we will contact them as soon as possible.",
+            "Do not say they are in a queue or waiting for a human agent.",
             "Keep the response concise and clear.",
           ].join("\n")
         : null,
