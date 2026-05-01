@@ -1480,7 +1480,6 @@ async function updateTelegramPendingRequests({
   supKey,
   agentId,
   pendingAccessRequests,
-  customerName,
 }) {
   if (!supId || !supKey || !agentId) {
     return { ok: false, status: 500, error: "Server configuration error" };
@@ -1493,9 +1492,6 @@ async function updateTelegramPendingRequests({
   };
   if (pendingAccessRequests !== undefined) {
     payload.pending_access_requests = normalizeJsonArray(pendingAccessRequests);
-  }
-  if (normalizeCustomerName(customerName)) {
-    payload.customer_name = normalizeCustomerName(customerName);
   }
 
   let response;
@@ -1518,6 +1514,18 @@ async function updateTelegramPendingRequests({
     return { ok: false, status: 502, error: "Telegram channel update unavailable" };
   }
   return { ok: true };
+}
+
+function telegramAccessItemMatchesChatId(item, chatId) {
+  const normalizedChatId = String(chatId || "").trim();
+  if (!normalizedChatId || !item || typeof item !== "object") return false;
+  return [
+    item.chat_id,
+    item.chatId,
+    item.telegram_chat_id,
+    item.telegramChatId,
+    item.id,
+  ].some((value) => String(value || "").trim() === normalizedChatId);
 }
 
 async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
@@ -2749,7 +2757,6 @@ module.exports = async function handler(req, res) {
             supId: process.env.SUP_ID,
             supKey: process.env.SUP_KEY,
             agentId: connectionResult.connection.agent_id,
-            customerName: event.customerName,
           });
         }
         const securityEnabled = Boolean(connectionResult.connection.security_enabled);
@@ -2757,8 +2764,8 @@ module.exports = async function handler(req, res) {
           const chatIdStr = String(event.recipientId || "").trim();
           const allowedUsers = normalizeJsonArray(connectionResult.connection.allowed_chat_users);
           const pendingRequests = normalizeJsonArray(connectionResult.connection.pending_access_requests);
-          const isAllowed = allowedUsers.some(
-            (item) => String(item?.chat_id || "").trim() === chatIdStr
+          const isAllowed = allowedUsers.some((item) =>
+            telegramAccessItemMatchesChatId(item, chatIdStr)
           );
           const startIdentifier = extractTelegramStartIdentifier(event.text);
           const isStartCommand = /^\/start(?:@\w+)?(?:\s+.+)?$/i.test(String(event.text || "").trim());
@@ -2783,14 +2790,28 @@ module.exports = async function handler(req, res) {
               ),
               requestItem,
             ];
-            await updateTelegramPendingRequests({
+            const pendingUpdateResult = await updateTelegramPendingRequests({
               supId: process.env.SUP_ID,
               supKey: process.env.SUP_KEY,
               agentId: connectionResult.connection.agent_id,
               pendingAccessRequests: nextPending,
-              customerName: event.customerName,
             });
-            connectionResult.connection.pending_access_requests = nextPending;
+            if (pendingUpdateResult.ok) {
+              connectionResult.connection.pending_access_requests = nextPending;
+            } else {
+              await insertMetaWebhookDebugMessage({
+                supId: process.env.SUP_ID,
+                supKey: process.env.SUP_KEY,
+                event,
+                raw: {
+                  stage: "telegram_pending_request_update_failed",
+                  channel: event.channel,
+                  recipient_id: chatIdStr,
+                  status: pendingUpdateResult?.status ?? null,
+                  error: pendingUpdateResult?.error ?? "Unknown pending request update error",
+                },
+              });
+            }
           }
 
           let securityReply = "";
