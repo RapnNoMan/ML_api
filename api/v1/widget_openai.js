@@ -33,9 +33,9 @@ const {
   assignHumanHandoffChat,
 } = require("../../scripts/internal/humanHandoff");
 
-const DEEPSEEK_CHAT_COMPLETIONS_API_URL = "https://api.deepseek.com/chat/completions";
-const PRIMARY_MODEL = process.env.DEEPSEEK_WIDGET_MODEL || "deepseek-v4-flash";
-const FOLLOWUP_MODEL = process.env.DEEPSEEK_WIDGET_FOLLOWUP_MODEL || PRIMARY_MODEL;
+const OPENAI_CHAT_COMPLETIONS_API_URL = "https://api.openai.com/v1/chat/completions";
+const PRIMARY_MODEL = process.env.OPENAI_WIDGET_MODEL || "gpt-4o-mini";
+const FOLLOWUP_MODEL = process.env.OPENAI_WIDGET_FOLLOWUP_MODEL || PRIMARY_MODEL;
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -685,7 +685,7 @@ function extractAssistantBlocks(payload, fallbackOutputItems = []) {
   return blocks;
 }
 
-function toDeepSeekTools(tools) {
+function toChatCompletionTools(tools) {
   return (Array.isArray(tools) ? tools : []).map((tool) => {
     if (tool?.type === "function" && tool?.function) return tool;
     return {
@@ -702,7 +702,7 @@ function toDeepSeekTools(tools) {
   });
 }
 
-function buildDeepSeekMessages({ instructions, messages, assistantBlocks, toolResults }) {
+function buildChatCompletionMessages({ instructions, messages, assistantBlocks, toolResults }) {
   const systemRules = `
 TOOL RULES (MUST FOLLOW):
 - Use the provided tools when needed.
@@ -764,7 +764,7 @@ TOOL RULES (MUST FOLLOW):
   return finalMessages;
 }
 
-function parseDeepSeekToolCall(toolCall) {
+function parseChatCompletionToolCall(toolCall) {
   const fn = toolCall?.function && typeof toolCall.function === "object" ? toolCall.function : {};
   let variables = {};
   if (typeof fn?.arguments === "string" && fn.arguments.trim()) {
@@ -780,24 +780,24 @@ function parseDeepSeekToolCall(toolCall) {
   };
 }
 
-function extractDeepSeekText(payload) {
+function extractChatCompletionText(payload) {
   const message = payload?.choices?.[0]?.message;
   return typeof message?.content === "string" ? message.content : "";
 }
 
-function extractDeepSeekFunctionCalls(payload) {
+function extractChatCompletionFunctionCalls(payload) {
   const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
-  return (Array.isArray(toolCalls) ? toolCalls : []).map(parseDeepSeekToolCall);
+  return (Array.isArray(toolCalls) ? toolCalls : []).map(parseChatCompletionToolCall);
 }
 
-function extractDeepSeekAssistantBlocks(payload) {
+function extractChatCompletionAssistantBlocks(payload) {
   const message = payload?.choices?.[0]?.message;
   const blocks = [];
   if (typeof message?.content === "string" && message.content) {
     blocks.push({ type: "text", text: message.content });
   }
   for (const toolCall of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
-    const parsed = parseDeepSeekToolCall(toolCall);
+    const parsed = parseChatCompletionToolCall(toolCall);
     blocks.push({
       type: "tool_use",
       id: parsed.call_id,
@@ -978,7 +978,7 @@ async function getChatCompletionStream({
   signal,
   onTextDelta,
 }) {
-  return getDeepSeekChatCompletionStream({
+  return getProviderChatCompletionStream({
     apiKey,
     model,
     instructions,
@@ -1000,7 +1000,7 @@ async function getChatCompletion({
   assistantBlocks,
   toolResults,
 }) {
-  return getDeepSeekChatCompletion({
+  return getProviderChatCompletion({
     apiKey,
     model,
     instructions,
@@ -1064,7 +1064,7 @@ function parseOpenAiSseEventBlock(block) {
   }
 }
 
-async function getDeepSeekChatCompletionStream({
+async function getProviderChatCompletionStream({
   apiKey,
   model,
   instructions,
@@ -1079,19 +1079,18 @@ async function getDeepSeekChatCompletionStream({
 
   const requestBody = {
     model,
-    messages: buildDeepSeekMessages({ instructions, messages, assistantBlocks, toolResults }),
-    thinking: { type: "disabled" },
+    messages: buildChatCompletionMessages({ instructions, messages, assistantBlocks, toolResults }),
     stream: true,
     stream_options: { include_usage: true },
   };
   if (Array.isArray(tools) && tools.length > 0) {
-    requestBody.tools = toDeepSeekTools(tools);
+    requestBody.tools = toChatCompletionTools(tools);
     requestBody.tool_choice = "auto";
   }
 
   let response;
   try {
-    response = await fetch(DEEPSEEK_CHAT_COMPLETIONS_API_URL, {
+    response = await fetch(OPENAI_CHAT_COMPLETIONS_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -1101,7 +1100,7 @@ async function getDeepSeekChatCompletionStream({
       signal,
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling DeepSeek" };
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
   }
 
   if (!response.ok) {
@@ -1112,12 +1111,12 @@ async function getDeepSeekChatCompletionStream({
     return {
       ok: false,
       status: response.status || 502,
-      error: errText || "DeepSeek request failed",
+      error: errText || "OpenAI request failed",
     };
   }
 
   if (!response.body) {
-    return { ok: false, status: 502, error: "Missing stream body from DeepSeek" };
+    return { ok: false, status: 502, error: "Missing stream body from OpenAI" };
   }
 
   const reader = response.body.getReader();
@@ -1134,7 +1133,7 @@ async function getDeepSeekChatCompletionStream({
     try {
       chunk = await reader.read();
     } catch (_) {
-      return { ok: false, status: 502, error: "Stream read error from DeepSeek" };
+      return { ok: false, status: 502, error: "Stream read error from OpenAI" };
     }
     done = Boolean(chunk?.done);
     if (chunk?.value) {
@@ -1155,7 +1154,7 @@ async function getDeepSeekChatCompletionStream({
 
         const payload = evt.payload;
         if (payload?.error) {
-          upstreamError = payload.error?.message || "DeepSeek streaming failed";
+          upstreamError = payload.error?.message || "OpenAI streaming failed";
         }
         if (payload?.usage) usage = payload.usage;
         const delta = payload?.choices?.[0]?.delta || {};
@@ -1191,7 +1190,7 @@ async function getDeepSeekChatCompletionStream({
   }
 
   const finalToolCalls = streamedToolCalls.filter(Boolean);
-  const toolCalls = finalToolCalls.map(parseDeepSeekToolCall);
+  const toolCalls = finalToolCalls.map(parseChatCompletionToolCall);
   const outputItems = [
     ...(assembledText ? [{ type: "text", text: assembledText }] : []),
     ...toolCalls.map((call) => ({
@@ -1233,7 +1232,7 @@ async function getDeepSeekChatCompletionStream({
   };
 }
 
-async function getDeepSeekChatCompletion({
+async function getProviderChatCompletion({
   apiKey,
   model,
   instructions,
@@ -1246,18 +1245,17 @@ async function getDeepSeekChatCompletion({
 
   const requestBody = {
     model,
-    messages: buildDeepSeekMessages({ instructions, messages, assistantBlocks, toolResults }),
-    thinking: { type: "disabled" },
+    messages: buildChatCompletionMessages({ instructions, messages, assistantBlocks, toolResults }),
     stream: false,
   };
   if (Array.isArray(tools) && tools.length > 0) {
-    requestBody.tools = toDeepSeekTools(tools);
+    requestBody.tools = toChatCompletionTools(tools);
     requestBody.tool_choice = "auto";
   }
 
   let response;
   try {
-    response = await fetch(DEEPSEEK_CHAT_COMPLETIONS_API_URL, {
+    response = await fetch(OPENAI_CHAT_COMPLETIONS_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -1266,7 +1264,7 @@ async function getDeepSeekChatCompletion({
       body: JSON.stringify(requestBody),
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling DeepSeek" };
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
   }
 
   if (!response.ok) {
@@ -1277,7 +1275,7 @@ async function getDeepSeekChatCompletion({
     return {
       ok: false,
       status: response.status || 502,
-      error: errText || "DeepSeek request failed",
+      error: errText || "OpenAI request failed",
     };
   }
 
@@ -1285,11 +1283,11 @@ async function getDeepSeekChatCompletion({
   try {
     payload = await response.json();
   } catch (_) {
-    return { ok: false, status: 502, error: "Invalid JSON from DeepSeek" };
+    return { ok: false, status: 502, error: "Invalid JSON from OpenAI" };
   }
 
-  const toolCalls = extractDeepSeekFunctionCalls(payload);
-  const outputItems = extractDeepSeekAssistantBlocks(payload);
+  const toolCalls = extractChatCompletionFunctionCalls(payload);
+  const outputItems = extractChatCompletionAssistantBlocks(payload);
   if (toolCalls.length > 0) {
     return {
       ok: true,
@@ -1304,7 +1302,7 @@ async function getDeepSeekChatCompletion({
     };
   }
 
-  const rawText = extractDeepSeekText(payload);
+  const rawText = extractChatCompletionText(payload);
   if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
 
   return {
@@ -1402,8 +1400,8 @@ module.exports = async function handler(req, res) {
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    deepSeekApiKey: process.env.DEEPSEEK_API_KEY,
-    deepSeekModel: process.env.DEEPSEEK_WIDGET_SPAM_MODEL || PRIMARY_MODEL,
+    openAiApiKey: process.env.OPENAI_API_KEY,
+    openAiModel: process.env.OPENAI_WIDGET_SPAM_MODEL || PRIMARY_MODEL,
     agentId,
     anonId,
     incomingMessage,
@@ -1727,7 +1725,7 @@ module.exports = async function handler(req, res) {
   const completionStartedAt = Date.now();
   const completion = wantsStream
       ? await getChatCompletionStream({
-        apiKey: process.env.DEEPSEEK_API_KEY,
+        apiKey: process.env.OPENAI_API_KEY,
         model: PRIMARY_MODEL,
         instructions: prompt,
         messages,
@@ -1738,7 +1736,7 @@ module.exports = async function handler(req, res) {
         },
       })
     : await getChatCompletion({
-        apiKey: process.env.DEEPSEEK_API_KEY,
+        apiKey: process.env.OPENAI_API_KEY,
         model: PRIMARY_MODEL,
         instructions: prompt,
         messages,
@@ -2501,7 +2499,7 @@ module.exports = async function handler(req, res) {
     const followupStartedAt = Date.now();
     const followup = wantsStream
       ? await getChatCompletionStream({
-          apiKey: process.env.DEEPSEEK_API_KEY,
+          apiKey: process.env.OPENAI_API_KEY,
           model: FOLLOWUP_MODEL,
           instructions: followupInstructions,
           messages,
@@ -2516,7 +2514,7 @@ module.exports = async function handler(req, res) {
           },
         })
       : await getChatCompletion({
-          apiKey: process.env.DEEPSEEK_API_KEY,
+          apiKey: process.env.OPENAI_API_KEY,
           model: FOLLOWUP_MODEL,
           instructions: followupInstructions,
           messages,
@@ -2754,3 +2752,4 @@ module.exports = async function handler(req, res) {
     }
   }
 };
+
