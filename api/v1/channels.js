@@ -26,6 +26,8 @@ const {
   resolveConversationStartMessageId,
   updateHumanHandoffChatMessageStart,
   assignHumanHandoffChat,
+  assignDispatcherHandoffChat,
+  assignDispatcherAiAgentChat,
 } = require("../../scripts/internal/humanHandoff");
 
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
@@ -791,6 +793,437 @@ function getChannelMode({ agentId, agentInfo }) {
   return agentInfo?.dispatcher ? "ai_dispatcher" : "ai_agent";
 }
 
+function bool(value) {
+  return Boolean(value);
+}
+
+function toCleanTextArray(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function toCleanUuidArray(value) {
+  return (Array.isArray(value) ? value : [])
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+}
+
+function toPostgrestIn(values) {
+  const cleaned = (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return `in.(${cleaned.map((value) => `"${value.replace(/"/g, '\\"')}"`).join(",")})`;
+}
+
+async function getDispatcherRoutingIntakeSettings({ supId, supKey, agentId }) {
+  if (!supId || !supKey || !agentId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/dispatcher_routing_intake_settings`);
+  url.searchParams.set(
+    "select",
+    "workspace_id,route_category_names,require_phone_number,require_gender,require_age,require_email,custom_field_names,dispatch_to_ai_agents,route_ai_agent_ids,custom_instructions"
+  );
+  url.searchParams.set("agent_id", `eq.${agentId}`);
+  url.searchParams.set("limit", "1");
+
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        Accept: "application/json",
+      },
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher intake service unavailable" };
+  }
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Dispatcher intake service unavailable" };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher intake service unavailable" };
+  }
+
+  const row = Array.isArray(payload) ? payload[0] : null;
+  return {
+    ok: true,
+    settings: {
+      workspace_id: row?.workspace_id ?? null,
+      route_category_names: toCleanTextArray(row?.route_category_names),
+      require_phone_number: bool(row?.require_phone_number),
+      require_gender: bool(row?.require_gender),
+      require_age: bool(row?.require_age),
+      require_email: bool(row?.require_email),
+      custom_field_names: toCleanTextArray(row?.custom_field_names).slice(0, 5),
+      dispatch_to_ai_agents: bool(row?.dispatch_to_ai_agents),
+      route_ai_agent_ids: toCleanUuidArray(row?.route_ai_agent_ids),
+      custom_instructions: String(row?.custom_instructions || "").trim(),
+    },
+  };
+}
+
+async function getDispatcherRouteAiAgents({ supId, supKey, workspaceId, aiAgentIds }) {
+  const ids = toCleanUuidArray(aiAgentIds);
+  if (!supId || !supKey || !workspaceId || ids.length === 0) {
+    return { ok: true, agents: [] };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/agents`);
+  url.searchParams.set("select", "id,name,role,dispatcher,created_at");
+  url.searchParams.set("workspace_id", `eq.${workspaceId}`);
+  url.searchParams.set("id", toPostgrestIn(ids));
+
+  let rows;
+  try {
+    const response = await fetch(url.toString(), {
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        Accept: "application/json",
+      },
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Dispatcher AI agents service unavailable" };
+    rows = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher AI agents service unavailable" };
+  }
+
+  const agents = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (row?.dispatcher === true) continue;
+    const aiAgentId = String(row?.id || "").trim();
+    if (!aiAgentId) continue;
+    const actionsResult = await getAgentAllActions({
+      supId,
+      supKey,
+      agentId: aiAgentId,
+      includePortalTickets: true,
+    });
+    if (!actionsResult.ok) return actionsResult;
+    const tools = (Array.isArray(actionsResult.tools) ? actionsResult.tools : []).map((tool) => ({
+      name: String(tool?.name || "").trim(),
+      description: String(tool?.description || "").trim(),
+    })).filter((tool) => tool.name || tool.description);
+    agents.push({
+      id: aiAgentId,
+      name: String(row?.name || "").trim() || "Untitled agent",
+      role: String(row?.role || "").trim(),
+      tools,
+    });
+  }
+
+  const order = new Map(ids.map((id, index) => [id, index]));
+  agents.sort((a, b) => (order.get(a.id) ?? 9999) - (order.get(b.id) ?? 9999));
+  return { ok: true, agents };
+}
+
+async function upsertDispatcherRoutingIntakeDraft({
+  supId,
+  supKey,
+  workspaceId,
+  agentId,
+  chatId,
+  source,
+  customerName,
+  country,
+  phoneNumber = null,
+  rawData,
+}) {
+  if (!supId || !supKey || !workspaceId || !agentId || !chatId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/dispatcher_routing_intake_drafts`);
+  url.searchParams.set("on_conflict", "workspace_id,agent_id,chat_id");
+
+  const payload = {
+    workspace_id: workspaceId,
+    agent_id: agentId,
+    chat_id: chatId,
+    source: source || null,
+    raw_data: rawData && typeof rawData === "object" ? rawData : {},
+  };
+  if (normalizeCustomerName(customerName)) payload.customer_name = normalizeCustomerName(customerName);
+  if (normalizeCountry(country)) payload.country = normalizeCountry(country);
+  if (String(phoneNumber || "").trim()) payload.phone_number = String(phoneNumber || "").trim();
+
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "POST",
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        "Content-Type": "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher intake draft service unavailable" };
+  }
+  if (!response.ok) {
+    return { ok: false, status: 502, error: "Dispatcher intake draft service unavailable" };
+  }
+
+  let responsePayload;
+  try {
+    responsePayload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher intake draft service unavailable" };
+  }
+  const row = Array.isArray(responsePayload) ? responsePayload[0] : responsePayload;
+  return { ok: true, draft: row || null };
+}
+
+async function updateDispatcherRoutingIntakeDraftFields({
+  supId,
+  supKey,
+  workspaceId,
+  agentId,
+  chatId,
+  phoneNumber = null,
+  gender = null,
+  age = null,
+  email = null,
+  customFields = null,
+}) {
+  if (!supId || !supKey || !workspaceId || !agentId || !chatId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const payload = {};
+  if (String(phoneNumber || "").trim()) payload.phone_number = String(phoneNumber).trim();
+  if (String(gender || "").trim()) payload.gender = String(gender).trim();
+  const numericAge = Number(age);
+  if (Number.isFinite(numericAge) && numericAge > 0) payload.age = Math.floor(numericAge);
+  if (String(email || "").trim()) payload.email = String(email).trim();
+  if (customFields && typeof customFields === "object" && !Array.isArray(customFields)) {
+    payload.custom_fields = customFields;
+  }
+  if (Object.keys(payload).length === 0) return { ok: true, skipped: true };
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/dispatcher_routing_intake_drafts`);
+  url.searchParams.set("workspace_id", `eq.${workspaceId}`);
+  url.searchParams.set("agent_id", `eq.${agentId}`);
+  url.searchParams.set("chat_id", `eq.${chatId}`);
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: "PATCH",
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Dispatcher intake draft update failed" };
+    return { ok: true };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher intake draft service unavailable" };
+  }
+}
+
+function buildDispatcherRoutingPromptBlock({ settings, draft, channel, routeAiAgents = [] }) {
+  if (!settings) return "";
+
+  const sections = ["DISPATCHER ROUTING INTAKE"];
+  const categories = toCleanTextArray(settings.route_category_names);
+  if (categories.length > 0) {
+    sections.push(["Routing categories:", ...categories.map((name) => `- ${name}`)].join("\n"));
+  }
+
+  const requiredFields = [];
+  const isWhatsApp = channel === "whatsapp";
+  if (settings.require_phone_number && !isWhatsApp) requiredFields.push(["phone_number", "Phone number"]);
+  if (settings.require_gender) requiredFields.push(["gender", "Gender"]);
+  if (settings.require_age) requiredFields.push(["age", "Age"]);
+  if (settings.require_email) requiredFields.push(["email", "Email"]);
+  const customFieldNames = toCleanTextArray(settings.custom_field_names).slice(0, 5);
+  for (const fieldName of customFieldNames) {
+    requiredFields.push([`custom:${fieldName}`, fieldName]);
+  }
+  if (requiredFields.length > 0) {
+    sections.push(
+      [
+        "Required intake fields:",
+        ...requiredFields.map(([, label]) => `- ${label}`),
+        "Collect missing required fields naturally before routing.",
+        "Do not mention or request fields that are not listed above.",
+        "Call dispatch_to_human only after all required fields are known.",
+      ].join("\n")
+    );
+  }
+
+  const known = [];
+  if (normalizeCustomerName(draft?.customer_name)) known.push(`Customer name: ${normalizeCustomerName(draft.customer_name)}`);
+  if (normalizeCountry(draft?.country)) known.push(`Country: ${normalizeCountry(draft.country)}`);
+  for (const [key, label] of requiredFields) {
+    const value = key.startsWith("custom:")
+      ? draft?.custom_fields?.[key.slice("custom:".length)]
+      : draft?.[key];
+    if (value !== null && value !== undefined && String(value).trim()) {
+      known.push(`${label}: ${String(value).trim()}`);
+    }
+  }
+  if (known.length > 0) {
+    sections.push(["Known customer information:", ...known.map((line) => `- ${line}`)].join("\n"));
+  }
+
+  sections.push(
+    [
+      "Dispatcher handoff tool:",
+      "When the customer's request is clear and all required fields are known, call dispatch_to_human.",
+      "Choose the best routing category silently.",
+      "Do not tell the customer the chat is assigned until the tool succeeds.",
+    ].join("\n")
+  );
+
+  if (settings.dispatch_to_ai_agents && routeAiAgents.length > 0) {
+    const lines = [
+      "AI agent handoff options:",
+      "If one of these AI agents can solve or meaningfully help with the customer's request using its role or tools, call dispatch_to_ai_agent instead of dispatch_to_human.",
+      "Use AI agent handoff only when the selected AI agent is a strong fit. Otherwise continue intake or dispatch to a human.",
+    ];
+    for (const agent of routeAiAgents) {
+      lines.push(`- ${agent.name} (${agent.id})`);
+      if (agent.role) lines.push(`  Role: ${agent.role}`);
+      if (agent.tools.length > 0) {
+        lines.push("  Tools:");
+        for (const tool of agent.tools.slice(0, 12)) {
+          lines.push(`  - ${tool.name}${tool.description ? `: ${tool.description}` : ""}`);
+        }
+      } else {
+        lines.push("  Tools: none configured");
+      }
+    }
+    sections.push(lines.join("\n"));
+  }
+
+  if (settings.custom_instructions) {
+    sections.push(["Dispatcher custom instructions:", settings.custom_instructions].join("\n"));
+  }
+
+  return sections.join("\n\n");
+}
+
+function buildDispatcherAiHandoffTool({ routeAiAgents }) {
+  const agents = Array.isArray(routeAiAgents) ? routeAiAgents : [];
+  if (agents.length === 0) return null;
+  return {
+    type: "function",
+    name: "dispatch_to_ai_agent",
+    description:
+      "Route the conversation to an allowed AI agent when that AI agent can solve or meaningfully help with the customer's request.",
+    parameters: {
+      type: "object",
+      properties: {
+        ai_agent_id: {
+          type: "string",
+          enum: agents.map((agent) => agent.id),
+          description: "The allowed AI agent ID that best fits the customer's request.",
+        },
+        subject: {
+          type: "string",
+          description: "Short subject for the AI agent in 3-8 words.",
+        },
+        summery: {
+          type: "string",
+          description: "Concise summary for the AI agent, including the customer's request and relevant context.",
+        },
+        reason: {
+          type: "string",
+          description: "Brief internal reason this AI agent is a good fit.",
+        },
+      },
+      required: ["ai_agent_id", "subject", "summery", "reason"],
+      additionalProperties: false,
+    },
+  };
+}
+
+function buildDispatcherHandoffTool({ settings, channel }) {
+  const categories = toCleanTextArray(settings?.route_category_names);
+  const properties = {
+    category_name: {
+      type: "string",
+      description: "The routing category that best matches the customer's request.",
+      ...(categories.length > 0 ? { enum: categories } : {}),
+    },
+    subject: {
+      type: "string",
+      description: "Short subject for the human agent in 3-8 words.",
+    },
+    summery: {
+      type: "string",
+      description: "Concise summary for the assigned human agent, including the customer's request and relevant intake details.",
+    },
+  };
+  const required = ["category_name", "subject", "summery"];
+
+  const isWhatsApp = channel === "whatsapp";
+  if (settings?.require_phone_number && !isWhatsApp) {
+    properties.phone_number = { type: "string", description: "Customer phone number." };
+    required.push("phone_number");
+  }
+  if (settings?.require_gender) {
+    properties.gender = { type: "string", description: "Customer gender." };
+    required.push("gender");
+  }
+  if (settings?.require_age) {
+    properties.age = { type: "integer", description: "Customer age." };
+    required.push("age");
+  }
+  if (settings?.require_email) {
+    properties.email = { type: "string", description: "Customer email address." };
+    required.push("email");
+  }
+
+  const customFieldNames = toCleanTextArray(settings?.custom_field_names).slice(0, 5);
+  if (customFieldNames.length > 0) {
+    properties.custom_fields = {
+      type: "object",
+      description: "Required custom intake fields keyed exactly by the configured field names.",
+      properties: Object.fromEntries(
+        customFieldNames.map((fieldName) => [
+          fieldName,
+          { type: "string", description: `Customer value for ${fieldName}.` },
+        ])
+      ),
+      required: customFieldNames,
+      additionalProperties: false,
+    };
+    required.push("custom_fields");
+  }
+
+  return {
+    type: "function",
+    name: "dispatch_to_human",
+    description:
+      "Route the conversation to a human agent after the customer's request is understood and every required intake field is known.",
+    parameters: {
+      type: "object",
+      properties,
+      required,
+      additionalProperties: false,
+    },
+  };
+}
+
 async function saveChannelCustomerForPortal({
   agentId,
   anonId,
@@ -836,6 +1269,7 @@ async function executeActionCalls({
   actionCalls,
   actionMap,
   agentId,
+  workspaceId = null,
   anonId,
   chatId,
   country,
@@ -847,6 +1281,8 @@ async function executeActionCalls({
   const toolResults = [];
   let calendarContext = null;
   let humanHandoffActivated = false;
+  let aiHandoffActivated = false;
+  let aiHandoff = null;
 
   for (const call of actionCalls) {
     const actionDef = actionMap.get(call.action_key);
@@ -882,6 +1318,238 @@ async function executeActionCalls({
     let url = actionDef.url;
     let requestBody;
     let requestPayloadForLog = variables;
+
+    if (actionDef.kind === "dispatcher_handoff") {
+      const categoryName = String(variables?.category_name ?? "").trim();
+      const subject = String(variables?.subject ?? "").trim() || "Human support request";
+      const summery =
+        String(variables?.summery ?? variables?.summary ?? "").trim() ||
+        `Dispatcher routed this conversation. Last message: ${String(incomingMessage || "").trim()}`;
+      const customFields =
+        variables?.custom_fields && typeof variables.custom_fields === "object" && !Array.isArray(variables.custom_fields)
+          ? variables.custom_fields
+          : {};
+
+      if (!categoryName) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url: null, method: "LOCAL", headers: {}, body: variables },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Missing required tool arguments",
+            missing_required_fields: ["category_name"],
+          },
+        });
+        continue;
+      }
+
+      const saveDashboardResult = await saveHumanMessageToMessages({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        workspaceId,
+        anonId,
+        chatId,
+        country,
+        customerName,
+        source,
+        prompt: String(incomingMessage),
+        result: null,
+      });
+      if (!saveDashboardResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url: null, method: "LOCAL", headers: {}, body: variables },
+          response: {
+            ok: false,
+            status: saveDashboardResult.status || 502,
+            error: saveDashboardResult.error || "Message service unavailable",
+          },
+        });
+        continue;
+      }
+
+      let messageStartId = null;
+      const startMessageResult = await resolveConversationStartMessageId({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        anonId,
+        chatId,
+        latestMessageId: saveDashboardResult.messageId,
+      });
+      if (startMessageResult.ok && startMessageResult.messageStartId) {
+        messageStartId = startMessageResult.messageStartId;
+      }
+
+      const draftUpdateResult = await updateDispatcherRoutingIntakeDraftFields({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        workspaceId,
+        agentId,
+        chatId,
+        phoneNumber: variables?.phone_number ?? null,
+        gender: variables?.gender ?? null,
+        age: variables?.age ?? null,
+        email: variables?.email ?? null,
+        customFields,
+      });
+      if (!draftUpdateResult.ok) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url: null, method: "LOCAL", headers: {}, body: variables },
+          response: {
+            ok: false,
+            status: draftUpdateResult.status || 502,
+            error: draftUpdateResult.error || "Dispatcher intake draft update failed",
+          },
+        });
+        continue;
+      }
+
+      const dispatchResult = await assignDispatcherHandoffChat({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        workspaceId,
+        chatSource,
+        source,
+        chatId,
+        anonId,
+        externalUserId: anonId,
+        country,
+        customerName,
+        categoryName,
+        subject,
+        summery,
+        phoneNumber: variables?.phone_number ?? null,
+        gender: variables?.gender ?? null,
+        age: variables?.age ?? null,
+        email: variables?.email ?? null,
+        customFields,
+        messageStartId,
+      });
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        tool_args: variables,
+        request: { url: null, method: "LOCAL", headers: {}, body: variables },
+        response: dispatchResult.ok
+          ? {
+              ok: true,
+              status: 200,
+              body: JSON.stringify({
+                handoff_chat_id: dispatchResult.handoffChatId ?? null,
+                assigned_human_agent_user_id: dispatchResult.assignedHumanAgentUserId ?? null,
+                category_name: categoryName,
+              }),
+            }
+          : {
+              ok: false,
+              status: dispatchResult.status || 502,
+              error: dispatchResult.error || "Dispatcher handoff failed",
+              details: dispatchResult.details || null,
+            },
+      });
+      if (dispatchResult.ok) {
+        humanHandoffActivated = true;
+        break;
+      }
+      continue;
+    }
+
+    if (actionDef.kind === "dispatcher_ai_handoff") {
+      const aiAgentId = String(variables?.ai_agent_id ?? "").trim();
+      const subject = String(variables?.subject ?? "").trim() || "AI agent handoff";
+      const summery =
+        String(variables?.summery ?? variables?.summary ?? "").trim() ||
+        `Dispatcher routed this conversation to an AI agent. Last message: ${String(incomingMessage || "").trim()}`;
+      const allowedAiAgentIds = toCleanUuidArray(actionDef.allowed_ai_agent_ids);
+
+      if (!aiAgentId || !allowedAiAgentIds.includes(aiAgentId)) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url: null, method: "LOCAL", headers: {}, body: variables },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Invalid AI agent handoff target",
+          },
+        });
+        continue;
+      }
+
+      const dispatchResult = await assignDispatcherAiAgentChat({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        workspaceId,
+        aiAgentId,
+        chatSource,
+        source,
+        chatId,
+        anonId,
+        externalUserId: anonId,
+        country,
+        customerName,
+        subject,
+        summery,
+      });
+      toolResults.push({
+        call_id: call.call_id ?? null,
+        action_key: call.action_key,
+        tool_args: variables,
+        request: { url: null, method: "LOCAL", headers: {}, body: variables },
+        response: dispatchResult.ok
+          ? {
+              ok: true,
+              status: 200,
+              body: JSON.stringify({
+                handoff_chat_id: dispatchResult.handoffChatId ?? null,
+                assigned_ai_agent_id: dispatchResult.assignedAiAgentId ?? aiAgentId,
+              }),
+            }
+          : {
+              ok: false,
+              status: dispatchResult.status || 502,
+              error: dispatchResult.error || "AI handoff failed",
+              details: dispatchResult.details || null,
+            },
+      });
+      if (dispatchResult.ok) {
+        await saveMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId: aiAgentId,
+          workspaceId,
+          anonId,
+          chatId,
+          country,
+          customerName,
+          prompt: String(incomingMessage),
+          result: null,
+          source,
+          action: true,
+        });
+        aiHandoffActivated = true;
+        aiHandoff = {
+          agentId: aiAgentId,
+          subject,
+          summery,
+          reason: String(variables?.reason ?? "").trim(),
+          handoffChatId: dispatchResult.handoffChatId ?? null,
+        };
+        break;
+      }
+      continue;
+    }
 
     if (actionDef.kind === "human_handoff") {
       const subject = String(variables?.subject ?? "").trim() || "Human support request";
@@ -1323,7 +1991,7 @@ async function executeActionCalls({
     });
   }
 
-  return { toolResults, calendarContext, humanHandoffActivated };
+  return { toolResults, calendarContext, humanHandoffActivated, aiHandoffActivated, aiHandoff };
 }
 function toWebhookEvents(payload) {
   const objectType = String(payload?.object || "").toLowerCase();
@@ -2191,6 +2859,18 @@ function startTypingHeartbeat({ pageAccessToken, recipientId, intervalMs = 3500 
   };
 }
 
+const DISPATCHER_SYSTEM_INSTRUCTION = [
+  "You are an AI dispatcher.",
+  "",
+  "Understand the customer's request and collect only the required information needed to route them correctly. Ask for missing required details clearly and efficiently, combining questions when possible. Do not ask for unnecessary information.",
+  "",
+  "Keep replies short, clear, and natural.",
+  "",
+  "Do not mention internal systems, routing logic, or processes. Do not say the chat is assigned unless it actually is. Use routing categories silently if provided.",
+  "",
+  "Your goal is to prepare the conversation for a smooth handoff with all required information collected.",
+].join("\n");
+
 function buildChannelPrompt({ systemRole, chunks, nowIso, channel, extraRules }) {
   const sections = [];
   if (typeof systemRole === "string" && systemRole.trim()) {
@@ -2245,6 +2925,153 @@ function calendarContextNote(calendarContext) {
   ].join("\n");
 }
 
+async function generateAiHandoffReply({
+  aiAgentId,
+  handoff,
+  anonId,
+  chatId,
+  country,
+  customerName,
+  source,
+  chatSource,
+  incomingText,
+  dispatcherHistoryMessages,
+}) {
+  const aiAgentInfo = await getAgentInfo({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId: aiAgentId,
+  });
+  if (!aiAgentInfo.ok) return aiAgentInfo;
+
+  const [ragResult, toolsResult] = await Promise.all([
+    SKIP_VECTOR_MESSAGES.has(normalizeIncomingMessage(incomingText))
+      ? Promise.resolve({ ok: true, chunks: [] })
+      : getRelevantKnowledgeChunks({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId: aiAgentId,
+          message: incomingText,
+        }),
+    getAgentAllActions({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId: aiAgentId,
+      includePortalTickets: true,
+    }),
+  ]);
+  if (!ragResult.ok) return ragResult;
+  if (!toolsResult.ok) return toolsResult;
+
+  const handoffContext = [
+    "AI AGENT HANDOFF CONTEXT",
+    `Subject: ${String(handoff?.subject || "AI agent handoff").trim()}`,
+    `Summary: ${String(handoff?.summery || "").trim()}`,
+    handoff?.reason ? `Dispatcher reason: ${String(handoff.reason).trim()}` : null,
+    "You are now handling this customer directly. Continue naturally from the conversation history and help solve the customer's request.",
+    "Do not mention internal handoff mechanics, routing logic, or backend systems.",
+  ].filter(Boolean).join("\n");
+
+  const prompt = buildChannelPrompt({
+    systemRole: aiAgentInfo.role,
+    chunks: ragResult.chunks,
+    nowIso: new Date().toISOString(),
+    channel: chatSource,
+    extraRules: handoffContext,
+  });
+
+  const handoffMessages = [
+    ...(Array.isArray(dispatcherHistoryMessages) ? dispatcherHistoryMessages : []),
+    { role: "user", content: incomingText },
+  ]
+    .filter((message) => String(message?.content || "").trim())
+    .slice(-10);
+
+  const completion = await getXAiChatCompletion({
+    apiKey: process.env.OPENAI_API_KEY,
+    model: PRIMARY_MODEL,
+    instructions: prompt,
+    messages: handoffMessages,
+    tools: Array.isArray(toolsResult.tools) ? toolsResult.tools : [],
+  });
+  if (!completion.ok) return completion;
+
+  let replyRaw = completion.data?.reply ?? "";
+  if (completion.data?.mode === "actions_needed") {
+    const actionCalls = Array.isArray(completion.data?.action_calls) ? completion.data.action_calls : [];
+    const { toolResults, calendarContext, humanHandoffActivated } = await executeActionCalls({
+      actionCalls,
+      actionMap: new Map(toolsResult.actionMap || []),
+      agentId: aiAgentId,
+      workspaceId: aiAgentInfo.workspace_id,
+      anonId,
+      chatId,
+      country,
+      customerName,
+      source,
+      chatSource,
+      incomingMessage: incomingText,
+    });
+
+    const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
+    const followupInputItems = toXAiInputItems(handoffMessages, assistantBlocks, toolResults);
+    const ticketOutcome = getLatestTicketOutcome({
+      toolResults,
+      actionMap: new Map(toolsResult.actionMap || []),
+    });
+    const followupPrompt = [
+      prompt,
+      calendarContext ? calendarContextNote(calendarContext) : null,
+      buildTicketOutcomeInstruction(ticketOutcome),
+      humanHandoffActivated
+        ? [
+            "HUMAN HANDOFF CONFIRMATION",
+            "A human handoff request has been successfully created.",
+            "Tell the customer they are now in queue for a human agent.",
+            "Invite them to share additional details in the meantime so the human agent has context.",
+            "Keep the response concise and clear.",
+          ].join("\n")
+        : null,
+    ].filter(Boolean).join("\n\n");
+
+    const followup = await getXAiChatCompletion({
+      apiKey: process.env.OPENAI_API_KEY,
+      model: FOLLOWUP_MODEL,
+      instructions: followupPrompt,
+      messages: handoffMessages,
+      inputItems: followupInputItems,
+    });
+    if (!followup.ok) return followup;
+    replyRaw = followup.data?.reply ?? "";
+  }
+
+  const finalReply =
+    chatSource === "whatsapp"
+      ? formatReplyForWhatsAppText(replyRaw)
+      : chatSource === "telegram"
+        ? formatReplyForTelegramText(replyRaw)
+        : formatReplyForMetaText(replyRaw);
+  if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
+
+  const saveResult = await saveMessage({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId: aiAgentId,
+    workspaceId: aiAgentInfo.workspace_id,
+    anonId,
+    chatId,
+    country,
+    customerName,
+    prompt: null,
+    result: finalReply,
+    source,
+    action: true,
+  });
+  if (!saveResult.ok) return saveResult;
+
+  return { ok: true, reply: finalReply };
+}
+
 async function verifyMetaWebhookSignature(req) {
   const appSecret = String(process.env.META_APP_SECRET || "");
   if (!appSecret) return { ok: true, reason: "skipped_no_secret" };
@@ -2280,7 +3107,7 @@ async function verifyMetaWebhookSignature(req) {
 }
 async function processIncomingMessage({ event, connection, headers }) {
   const requestStartedAt = Date.now();
-  const agentId = String(connection.agent_id || "").trim() || null;
+  let agentId = String(connection.agent_id || "").trim() || null;
   const anonId = `${event.channel}:${event.senderId}`;
   const chatId = `${event.channel}:${connection.thread_id}:${event.senderId}`;
   const source = `meta_${event.channel}`;
@@ -2304,70 +3131,95 @@ async function processIncomingMessage({ event, connection, headers }) {
     agentInfo = agentInfoResult;
   }
 
-  const channelMode = getChannelMode({ agentId, agentInfo });
-  const portalAgentId = channelMode === "ai_agent" ? agentId : null;
-  const portalChatResult = await ensurePortalChat({
-    portalId: process.env.PORTAL_ID,
-    portalSecretKey: process.env.PORTAL_SECRET_KEY,
-    agentId: portalAgentId,
-    chatSource: event.channel,
-    source,
-    chatId,
-    anonId,
-    externalUserId: anonId,
-    country: requestCountry,
-    customerName,
-    subject: customerName ? `Conversation with ${customerName}` : "Channel conversation",
-    summery: "Incoming channel conversation.",
-  });
-  if (!portalChatResult.ok) {
-    return { ok: false, status: portalChatResult.status || 502, error: portalChatResult.error };
-  }
-
-  const assignedHumanAgentUserId =
-    portalChatResult.chat?.assigned_human_agent_user_id ?? null;
-  if (assignedHumanAgentUserId || channelMode === "none") {
-    const saveResult = await saveChannelCustomerForPortal({
-      agentId: portalChatResult.chat?.agent_id ?? portalAgentId,
-      anonId,
+  let channelMode = getChannelMode({ agentId, agentInfo });
+  let portalChatResult = { ok: true, chat: null };
+  if (channelMode !== "ai_agent") {
+    portalChatResult = await ensurePortalChat({
+      portalId: process.env.PORTAL_ID,
+      portalSecretKey: process.env.PORTAL_SECRET_KEY,
+      agentId: null,
+      workspaceId: agentInfo?.workspace_id ?? null,
+      chatSource: event.channel,
+      source,
       chatId,
+      anonId,
+      externalUserId: anonId,
       country: requestCountry,
       customerName,
-      source,
-      incomingText,
-      assignedHumanAgentUserId,
+      subject: customerName ? `Conversation with ${customerName}` : "Channel conversation",
+      summery: "Incoming channel conversation.",
     });
-    if (!saveResult.ok) {
-      return { ok: false, status: saveResult.status || 502, error: saveResult.error };
+    if (!portalChatResult.ok) {
+      return { ok: false, status: portalChatResult.status || 502, error: portalChatResult.error };
     }
-    requestSucceeded = true;
-    return {
-      ok: true,
-      humanHandoff: Boolean(assignedHumanAgentUserId),
-      portalChatOnly: channelMode === "none",
-      actionUsed: false,
-      actionCount: 0,
-    };
-  }
 
-  const savePortalCustomerResult = await saveHumanMessageToPortalFeed({
-    portalId: process.env.PORTAL_ID,
-    portalSecretKey: process.env.PORTAL_SECRET_KEY,
-    agentId: portalChatResult.chat?.agent_id ?? portalAgentId,
-    anonId,
-    chatId,
-    source,
-    senderType: "customer",
-    assignedHumanAgentUserId: null,
-    prompt: incomingText,
-    result: null,
-  });
-  if (!savePortalCustomerResult.ok) {
-    return {
-      ok: false,
-      status: savePortalCustomerResult.status || 502,
-      error: savePortalCustomerResult.error,
-    };
+    const assignedHumanAgentUserId =
+      portalChatResult.chat?.assigned_human_agent_user_id ?? null;
+    const existingPortalAgentId = String(portalChatResult.chat?.agent_id || "").trim();
+    if (!assignedHumanAgentUserId && existingPortalAgentId && existingPortalAgentId !== agentId) {
+      const portalAgentInfoResult = await getAgentInfo({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId: existingPortalAgentId,
+      });
+      if (!portalAgentInfoResult.ok) {
+        return {
+          ok: false,
+          status: portalAgentInfoResult.status,
+          error: portalAgentInfoResult.error,
+        };
+      }
+      if (!portalAgentInfoResult.dispatcher) {
+        agentId = existingPortalAgentId;
+        agentInfo = portalAgentInfoResult;
+        channelMode = "ai_agent";
+      }
+    }
+    if (assignedHumanAgentUserId || channelMode === "none") {
+      const saveResult = await saveChannelCustomerForPortal({
+        agentId: portalChatResult.chat?.agent_id ?? null,
+        anonId,
+        chatId,
+        country: requestCountry,
+        customerName,
+        source,
+        incomingText,
+        assignedHumanAgentUserId,
+      });
+      if (!saveResult.ok) {
+        return { ok: false, status: saveResult.status || 502, error: saveResult.error };
+      }
+      requestSucceeded = true;
+      return {
+        ok: true,
+        humanHandoff: Boolean(assignedHumanAgentUserId),
+        portalChatOnly: channelMode === "none",
+        actionUsed: false,
+        actionCount: 0,
+      };
+    }
+
+    if (channelMode !== "ai_agent") {
+      const savePortalCustomerResult = await saveHumanMessageToPortalFeed({
+        portalId: process.env.PORTAL_ID,
+        portalSecretKey: process.env.PORTAL_SECRET_KEY,
+        agentId: portalChatResult.chat?.agent_id ?? null,
+        anonId,
+        chatId,
+        source,
+        senderType: "customer",
+        assignedHumanAgentUserId: null,
+        prompt: incomingText,
+        result: null,
+      });
+      if (!savePortalCustomerResult.ok) {
+        return {
+          ok: false,
+          status: savePortalCustomerResult.status || 502,
+          error: savePortalCustomerResult.error,
+        };
+      }
+    }
   }
 
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
@@ -2397,6 +3249,62 @@ async function processIncomingMessage({ event, connection, headers }) {
     consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
   }
 
+  let dispatcherPromptBlock = "";
+  let dispatcherSettings = null;
+  let dispatcherRouteAiAgents = [];
+  if (channelMode === "ai_dispatcher") {
+    const dispatcherSettingsResult = await getDispatcherRoutingIntakeSettings({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId,
+    });
+    if (!dispatcherSettingsResult.ok) {
+      return {
+        ok: false,
+        status: dispatcherSettingsResult.status || 502,
+        error: dispatcherSettingsResult.error,
+      };
+    }
+    dispatcherSettings = dispatcherSettingsResult.settings;
+    if (dispatcherSettings.dispatch_to_ai_agents && dispatcherSettings.route_ai_agent_ids.length > 0) {
+      const aiAgentsResult = await getDispatcherRouteAiAgents({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        workspaceId: agentInfo.workspace_id,
+        aiAgentIds: dispatcherSettings.route_ai_agent_ids,
+      });
+      if (!aiAgentsResult.ok) {
+        return { ok: false, status: aiAgentsResult.status || 502, error: aiAgentsResult.error };
+      }
+      dispatcherRouteAiAgents = aiAgentsResult.agents;
+    }
+    const draftResult = await upsertDispatcherRoutingIntakeDraft({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      workspaceId: agentInfo.workspace_id,
+      agentId,
+      chatId,
+      source,
+      customerName,
+      country: requestCountry,
+      phoneNumber: event.channel === "whatsapp" ? event.senderId : null,
+      rawData: {
+        channel: event.channel,
+        sender_id: event.senderId,
+        recipient_id: event.recipientId,
+      },
+    });
+    if (!draftResult.ok) {
+      return { ok: false, status: draftResult.status || 502, error: draftResult.error };
+    }
+    dispatcherPromptBlock = buildDispatcherRoutingPromptBlock({
+      settings: dispatcherSettings,
+      draft: draftResult.draft,
+      channel: event.channel,
+      routeAiAgents: dispatcherRouteAiAgents,
+    });
+  }
+
   const historyPromise = getChatHistory({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -2418,12 +3326,42 @@ async function processIncomingMessage({ event, connection, headers }) {
           message: incomingText,
         })
       : Promise.resolve({ ok: true, chunks: [] });
-  const toolsResultPromise = getAgentAllActions({
-    supId: process.env.SUP_ID,
-    supKey: process.env.SUP_KEY,
-    agentId,
-    includePortalTickets: true,
-  });
+  const toolsResultPromise =
+    channelMode === "ai_dispatcher"
+      ? (() => {
+          const tools = [buildDispatcherHandoffTool({ settings: dispatcherSettings, channel: event.channel })];
+          const aiHandoffTool =
+            dispatcherSettings?.dispatch_to_ai_agents === true
+              ? buildDispatcherAiHandoffTool({ routeAiAgents: dispatcherRouteAiAgents })
+              : null;
+          if (aiHandoffTool) tools.push(aiHandoffTool);
+          const actionMap = [
+            [
+              "dispatch_to_human",
+              {
+                kind: "dispatcher_handoff",
+                tool_name: "dispatch_to_human",
+              },
+            ],
+          ];
+          if (aiHandoffTool) {
+            actionMap.push([
+              "dispatch_to_ai_agent",
+              {
+                kind: "dispatcher_ai_handoff",
+                tool_name: "dispatch_to_ai_agent",
+                allowed_ai_agent_ids: dispatcherRouteAiAgents.map((agent) => agent.id),
+              },
+            ]);
+          }
+          return Promise.resolve({ ok: true, tools, actionMap });
+        })()
+      : getAgentAllActions({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          agentId,
+          includePortalTickets: true,
+        });
 
   let latencyFirstCallMs = null;
   let latencySecondCallMs = null;
@@ -2443,11 +3381,11 @@ async function processIncomingMessage({ event, connection, headers }) {
   const effectiveActionMap = new Map(toolsResult.actionMap || []);
 
   const prompt = buildChannelPrompt({
-    systemRole: agentInfo.role,
+    systemRole: channelMode === "ai_dispatcher" ? DISPATCHER_SYSTEM_INSTRUCTION : agentInfo.role,
     chunks: ragResult.chunks,
     nowIso: new Date().toISOString(),
     channel: event.channel,
-    extraRules: channelMode === "ai_dispatcher" ? "You are currently acting as an AI dispatcher. For now, answer using the normal AI agent behavior." : "",
+    extraRules: channelMode === "ai_dispatcher" ? dispatcherPromptBlock : "",
   });
 
   const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
@@ -2481,11 +3419,12 @@ async function processIncomingMessage({ event, connection, headers }) {
     actionCount = actionCalls.length;
 
     const toolsStartedAt = Date.now();
-    const { toolResults, calendarContext, humanHandoffActivated } =
+    const { toolResults, calendarContext, humanHandoffActivated, aiHandoffActivated, aiHandoff } =
       await executeActionCalls({
       actionCalls,
       actionMap: effectiveActionMap,
       agentId,
+      workspaceId: agentInfo.workspace_id,
       anonId,
       chatId,
       country: requestCountry,
@@ -2495,6 +3434,54 @@ async function processIncomingMessage({ event, connection, headers }) {
       incomingMessage: incomingText,
     });
     latencyToolsMs = Date.now() - toolsStartedAt;
+
+    if (aiHandoffActivated && aiHandoff?.agentId) {
+      const dispatcherHistoryResult = await getChatHistory({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        agentId,
+        anonId,
+        chatId,
+        maxRows: 10,
+      });
+      if (!dispatcherHistoryResult.ok) {
+        return {
+          ok: false,
+          status: dispatcherHistoryResult.status,
+          error: dispatcherHistoryResult.error,
+        };
+      }
+
+      const aiReplyResult = await generateAiHandoffReply({
+        aiAgentId: aiHandoff.agentId,
+        handoff: aiHandoff,
+        anonId,
+        chatId,
+        country: requestCountry,
+        customerName,
+        source: `meta_${event.channel}`,
+        chatSource: event.channel,
+        incomingText,
+        dispatcherHistoryMessages: dispatcherHistoryResult.messages,
+      });
+      if (!aiReplyResult.ok) {
+        return {
+          ok: false,
+          status: aiReplyResult.status || 502,
+          error: aiReplyResult.error,
+        };
+      }
+
+      requestSucceeded = true;
+      return {
+        ok: true,
+        reply: aiReplyResult.reply,
+        humanHandoff: false,
+        aiHandoff: true,
+        actionUsed: true,
+        actionCount,
+      };
+    }
 
     const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
     const followupInputItems = toXAiInputItems(messages, assistantBlocks, toolResults);
@@ -2512,6 +3499,15 @@ async function processIncomingMessage({ event, connection, headers }) {
             "A human handoff request has been successfully created.",
             "Tell the customer they are now in queue for a human agent.",
             "Invite them to share additional details in the meantime so the human agent has context.",
+            "Keep the response concise and clear.",
+          ].join("\n")
+        : null,
+      aiHandoffActivated
+        ? [
+            "AI AGENT HANDOFF CONFIRMATION",
+            "The conversation has been routed to the selected AI agent.",
+            "Tell the customer you are connecting them with the right assistant for this request.",
+            "Do not mention internal agent IDs, tools, routing logic, or backend systems.",
             "Keep the response concise and clear.",
           ].join("\n")
         : null,
@@ -2600,7 +3596,14 @@ async function processIncomingMessage({ event, connection, headers }) {
     });
 
     requestSucceeded = true;
-    return { ok: true, reply: finalReply, humanHandoff: humanHandoffActivated, actionUsed: true, actionCount };
+    return {
+      ok: true,
+      reply: finalReply,
+      humanHandoff: humanHandoffActivated,
+      aiHandoff: aiHandoffActivated,
+      actionUsed: true,
+      actionCount,
+    };
   }
 
   const reply =

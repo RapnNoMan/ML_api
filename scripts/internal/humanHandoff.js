@@ -139,6 +139,7 @@ async function createPortalChat({
   portalId,
   portalSecretKey,
   agentId = null,
+  workspaceId = null,
   chatSource,
   source,
   chatId,
@@ -156,6 +157,7 @@ async function createPortalChat({
   const url = `${baseUrl}/human_handoff_chats`;
   const payload = {
     agent_id: agentId || null,
+    workspace_id: workspaceId || null,
     chat_source: chatSource,
     source: source ?? null,
     chat_id: chatId,
@@ -210,6 +212,7 @@ async function ensurePortalChat({
   portalId,
   portalSecretKey,
   agentId = null,
+  workspaceId = null,
   chatSource,
   source,
   chatId,
@@ -227,6 +230,7 @@ async function ensurePortalChat({
     portalId,
     portalSecretKey,
     agentId,
+    workspaceId,
     chatSource,
     source,
     chatId,
@@ -237,6 +241,519 @@ async function ensurePortalChat({
     subject,
     summery,
   });
+}
+
+function normalizeNullableText(value) {
+  if (value === null || value === undefined) return null;
+  const text = String(value).trim();
+  return text || null;
+}
+
+function normalizePositiveInteger(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) return null;
+  return Math.floor(number);
+}
+
+function postgrestIn(values) {
+  const cleaned = (Array.isArray(values) ? values : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  return `in.(${cleaned.map((value) => `"${value.replace(/"/g, '\\"')}"`).join(",")})`;
+}
+
+async function upsertDispatcherContact({
+  portalId,
+  portalSecretKey,
+  workspaceId,
+  chatSource,
+  source,
+  externalIdentifier,
+  customerName = null,
+  phoneNumber = null,
+  gender = null,
+  age = null,
+  email = null,
+  country = null,
+  customFields = null,
+}) {
+  if (!portalId || !portalSecretKey || !workspaceId || !chatSource || !externalIdentifier) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/contacts`);
+  url.searchParams.set("on_conflict", "workspace_id,chat_source,external_identifier");
+
+  const metadata = {};
+  if (customFields && typeof customFields === "object" && !Array.isArray(customFields)) {
+    metadata.dispatcher_custom_fields = customFields;
+  }
+
+  const payload = {
+    workspace_id: workspaceId,
+    agent_id: null,
+    chat_source: chatSource,
+    source: source ?? null,
+    external_identifier: externalIdentifier,
+  };
+  if (normalizeNullableText(customerName)) payload.customer_name = normalizeNullableText(customerName);
+  if (normalizeNullableText(phoneNumber)) payload.phone_number = normalizeNullableText(phoneNumber);
+  if (normalizeNullableText(gender)) payload.gender = normalizeNullableText(gender);
+  if (normalizePositiveInteger(age)) payload.age = normalizePositiveInteger(age);
+  if (normalizeNullableText(email)) payload.email = normalizeNullableText(email);
+  if (normalizeNullableText(country)) payload.country = normalizeNullableText(country);
+  if (Object.keys(metadata).length > 0) payload.metadata = metadata;
+
+  let response;
+  try {
+    response = await fetch(url.toString(), {
+      method: "POST",
+      headers: authHeaders(portalSecretKey, {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        Prefer: "resolution=merge-duplicates,return=representation",
+      }),
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Contact service unavailable" };
+  }
+
+  if (!response.ok) {
+    let text = "";
+    try {
+      text = await response.text();
+    } catch (_) {}
+    return { ok: false, status: response.status || 502, error: "Contact upsert failed", details: text || null };
+  }
+
+  let rows;
+  try {
+    rows = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Contact service unavailable" };
+  }
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return { ok: true, contact: row || null, contactId: row?.id ?? null };
+}
+
+async function getDispatcherCandidateMembers({ portalId, portalSecretKey, workspaceId, categoryName }) {
+  if (!portalId || !portalSecretKey || !workspaceId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = buildRestUrl(baseUrl, "workspace_members", {
+    select: "user_id,user_category",
+    workspace_id: `eq.${workspaceId}`,
+    active: "eq.true",
+    can_access_human_agents: "eq.true",
+    user_category: normalizeNullableText(categoryName) ? `eq.${normalizeNullableText(categoryName)}` : undefined,
+    order: "created_at.asc",
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: authHeaders(portalSecretKey, { Accept: "application/json" }),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Human agent member service unavailable" };
+    const rows = await response.json();
+    return { ok: true, members: Array.isArray(rows) ? rows : [] };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Human agent member service unavailable" };
+  }
+}
+
+async function getDispatcherActiveShifts({ portalId, portalSecretKey, candidateUserIds }) {
+  const userIds = (Array.isArray(candidateUserIds) ? candidateUserIds : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (!portalId || !portalSecretKey || userIds.length === 0) {
+    return { ok: true, shifts: [] };
+  }
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = buildRestUrl(baseUrl, "human_agents_on_shift", {
+    select: "id,human_agent_user_id,max_concurrent_chats,updated_at",
+    human_agent_user_id: postgrestIn(userIds),
+    is_on_shift: "eq.true",
+    on_break: "eq.false",
+    wrap_up: "eq.false",
+    order: "updated_at.asc,id.asc",
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: authHeaders(portalSecretKey, { Accept: "application/json" }),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Human agent shift service unavailable" };
+    const rows = await response.json();
+    return { ok: true, shifts: Array.isArray(rows) ? rows : [] };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Human agent shift service unavailable" };
+  }
+}
+
+async function getHumanAgentActiveChatCounts({ portalId, portalSecretKey, workspaceId, userIds }) {
+  const cleanedUserIds = (Array.isArray(userIds) ? userIds : [])
+    .map((value) => String(value || "").trim())
+    .filter(Boolean);
+  if (!portalId || !portalSecretKey || !workspaceId || cleanedUserIds.length === 0) {
+    return { ok: true, counts: new Map() };
+  }
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = buildRestUrl(baseUrl, "human_handoff_chats", {
+    select: "assigned_human_agent_user_id",
+    workspace_id: `eq.${workspaceId}`,
+    assigned_human_agent_user_id: postgrestIn(cleanedUserIds),
+    status: "eq.active",
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: authHeaders(portalSecretKey, { Accept: "application/json" }),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Human handoff service unavailable" };
+    const rows = await response.json();
+    const counts = new Map();
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const userId = String(row?.assigned_human_agent_user_id || "").trim();
+      if (!userId) continue;
+      counts.set(userId, (counts.get(userId) || 0) + 1);
+    }
+    return { ok: true, counts };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Human handoff service unavailable" };
+  }
+}
+
+function chooseLeastLoaded(candidates, counts) {
+  const list = (Array.isArray(candidates) ? candidates : []).filter((item) =>
+    String(item?.userId || "").trim()
+  );
+  if (list.length === 0) return null;
+  return [...list].sort((a, b) => {
+    const countDiff = (counts.get(a.userId) || 0) - (counts.get(b.userId) || 0);
+    if (countDiff !== 0) return countDiff;
+    return String(a.userId).localeCompare(String(b.userId));
+  })[0];
+}
+
+async function chooseDispatcherHumanAgent({ portalId, portalSecretKey, workspaceId, categoryName }) {
+  const membersResult = await getDispatcherCandidateMembers({
+    portalId,
+    portalSecretKey,
+    workspaceId,
+    categoryName,
+  });
+  if (!membersResult.ok) return membersResult;
+
+  const members = membersResult.members;
+  const userIds = members.map((member) => String(member?.user_id || "").trim()).filter(Boolean);
+  if (userIds.length === 0) {
+    return {
+      ok: true,
+      assignedHumanAgentUserId: null,
+      shiftId: null,
+      usedShift: false,
+      unassigned: true,
+    };
+  }
+
+  const countsResult = await getHumanAgentActiveChatCounts({
+    portalId,
+    portalSecretKey,
+    workspaceId,
+    userIds,
+  });
+  if (!countsResult.ok) return countsResult;
+
+  const shiftsResult = await getDispatcherActiveShifts({
+    portalId,
+    portalSecretKey,
+    candidateUserIds: userIds,
+  });
+  if (!shiftsResult.ok) return shiftsResult;
+
+  const counts = countsResult.counts || new Map();
+  const shiftedCandidates = [];
+  for (const shift of shiftsResult.shifts) {
+    const userId = String(shift?.human_agent_user_id || "").trim();
+    if (!userId) continue;
+    const activeCount = counts.get(userId) || 0;
+    const maxConcurrentChats = normalizePositiveInteger(shift?.max_concurrent_chats);
+    if (maxConcurrentChats !== null && activeCount >= maxConcurrentChats) continue;
+    shiftedCandidates.push({ userId, shiftId: shift?.id ?? null });
+  }
+
+  const shiftedChoice = chooseLeastLoaded(shiftedCandidates, counts);
+  if (shiftedChoice) {
+    return {
+      ok: true,
+      assignedHumanAgentUserId: shiftedChoice.userId,
+      shiftId: shiftedChoice.shiftId ?? null,
+      usedShift: true,
+    };
+  }
+
+  const fallbackChoice = chooseLeastLoaded(
+    userIds.map((userId) => ({ userId, shiftId: null })),
+    counts
+  );
+  if (!fallbackChoice) {
+    return {
+      ok: true,
+      assignedHumanAgentUserId: null,
+      shiftId: null,
+      usedShift: false,
+      unassigned: true,
+    };
+  }
+  return {
+    ok: true,
+    assignedHumanAgentUserId: fallbackChoice.userId,
+    shiftId: null,
+    usedShift: false,
+  };
+}
+
+async function assignDispatcherHandoffChat({
+  portalId,
+  portalSecretKey,
+  workspaceId,
+  chatSource,
+  source,
+  chatId,
+  anonId = null,
+  externalUserId = null,
+  country = null,
+  customerName = null,
+  categoryName,
+  subject = null,
+  summery = null,
+  phoneNumber = null,
+  gender = null,
+  age = null,
+  email = null,
+  customFields = null,
+  messageStartId = null,
+}) {
+  if (!portalId || !portalSecretKey || !workspaceId || !chatSource || !chatId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const assignmentResult = await chooseDispatcherHumanAgent({
+    portalId,
+    portalSecretKey,
+    workspaceId,
+    categoryName,
+  });
+  if (!assignmentResult.ok) return assignmentResult;
+
+  const externalIdentifier =
+    normalizeNullableText(externalUserId) || normalizeNullableText(anonId) || normalizeNullableText(chatId);
+  const contactResult = await upsertDispatcherContact({
+    portalId,
+    portalSecretKey,
+    workspaceId,
+    chatSource,
+    source,
+    externalIdentifier,
+    customerName,
+    phoneNumber,
+    gender,
+    age,
+    email,
+    country,
+    customFields,
+  });
+  if (!contactResult.ok) return contactResult;
+
+  const existingResult = await getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId });
+  if (!existingResult.ok) return existingResult;
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const payload = {
+    workspace_id: workspaceId,
+    agent_id: null,
+    chat_source: chatSource,
+    source: source ?? null,
+    chat_id: chatId,
+    annon: anonId ?? null,
+    external_user_id: externalUserId ?? null,
+    country: country ?? null,
+    customer_name: normalizeNullableText(customerName),
+    subject: normalizeNullableText(subject) || "Human support request",
+    summery: normalizeNullableText(summery) || "Dispatcher routed this conversation to a human agent.",
+    assigned_human_agent_user_id: assignmentResult.assignedHumanAgentUserId,
+    shift_id: assignmentResult.shiftId ?? null,
+    contact_id: contactResult.contactId ?? null,
+    message_start_id: messageStartId ?? null,
+    status: "active",
+    updated_at: new Date().toISOString(),
+  };
+
+  let response;
+  try {
+    if (existingResult.chat?.id) {
+      response = await fetch(
+        buildRestUrl(baseUrl, "human_handoff_chats", { id: `eq.${existingResult.chat.id}` }),
+        {
+          method: "PATCH",
+          headers: authHeaders(portalSecretKey, {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Prefer: "return=representation",
+          }),
+          body: JSON.stringify(payload),
+        }
+      );
+    } else {
+      response = await fetch(`${baseUrl}/human_handoff_chats`, {
+        method: "POST",
+        headers: authHeaders(portalSecretKey, {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Prefer: "return=representation",
+        }),
+        body: JSON.stringify(payload),
+      });
+    }
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher handoff service unavailable" };
+  }
+
+  if (!response.ok) {
+    let text = "";
+    try {
+      text = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: "Dispatcher handoff assignment failed",
+      details: text || null,
+    };
+  }
+
+  let rows;
+  try {
+    rows = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Dispatcher handoff service unavailable" };
+  }
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return {
+    ok: true,
+    created: !existingResult.chat?.id,
+    handoffChatId: row?.id ?? null,
+    assignedHumanAgentUserId: row?.assigned_human_agent_user_id ?? assignmentResult.assignedHumanAgentUserId,
+    shiftId: row?.shift_id ?? assignmentResult.shiftId ?? null,
+    contactId: row?.contact_id ?? contactResult.contactId ?? null,
+    status: row?.status ?? "active",
+  };
+}
+
+async function assignDispatcherAiAgentChat({
+  portalId,
+  portalSecretKey,
+  workspaceId,
+  aiAgentId,
+  chatSource,
+  source,
+  chatId,
+  anonId = null,
+  externalUserId = null,
+  country = null,
+  customerName = null,
+  subject = null,
+  summery = null,
+}) {
+  if (!portalId || !portalSecretKey || !workspaceId || !aiAgentId || !chatSource || !chatId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const existingResult = await getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId });
+  if (!existingResult.ok) return existingResult;
+
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const payload = {
+    workspace_id: workspaceId,
+    agent_id: aiAgentId,
+    chat_source: chatSource,
+    source: source ?? null,
+    chat_id: chatId,
+    annon: anonId ?? null,
+    external_user_id: externalUserId ?? null,
+    country: country ?? null,
+    customer_name: normalizeNullableText(customerName),
+    subject: normalizeNullableText(subject) || "AI agent handoff",
+    summery: normalizeNullableText(summery) || "Dispatcher routed this conversation to an AI agent.",
+    assigned_human_agent_user_id: null,
+    shift_id: null,
+    status: "active",
+    updated_at: new Date().toISOString(),
+  };
+
+  let response;
+  try {
+    if (existingResult.chat?.id) {
+      response = await fetch(
+        buildRestUrl(baseUrl, "human_handoff_chats", { id: `eq.${existingResult.chat.id}` }),
+        {
+          method: "PATCH",
+          headers: authHeaders(portalSecretKey, {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Prefer: "return=representation",
+          }),
+          body: JSON.stringify(payload),
+        }
+      );
+    } else {
+      response = await fetch(`${baseUrl}/human_handoff_chats`, {
+        method: "POST",
+        headers: authHeaders(portalSecretKey, {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Prefer: "return=representation",
+        }),
+        body: JSON.stringify(payload),
+      });
+    }
+  } catch (_) {
+    return { ok: false, status: 502, error: "AI handoff service unavailable" };
+  }
+
+  if (!response.ok) {
+    let text = "";
+    try {
+      text = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: "AI handoff assignment failed",
+      details: text || null,
+    };
+  }
+
+  let rows;
+  try {
+    rows = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "AI handoff service unavailable" };
+  }
+  const row = Array.isArray(rows) ? rows[0] : rows;
+  return {
+    ok: true,
+    created: !existingResult.chat?.id,
+    handoffChatId: row?.id ?? null,
+    assignedAiAgentId: row?.agent_id ?? aiAgentId,
+    status: row?.status ?? "active",
+  };
 }
 
 async function checkAvailableHumanAgents({ portalId, portalSecretKey, agentId }) {
@@ -582,4 +1099,6 @@ module.exports = {
   resolveConversationStartMessageId,
   updateHumanHandoffChatMessageStart,
   assignHumanHandoffChat,
+  assignDispatcherHandoffChat,
+  assignDispatcherAiAgentChat,
 };
