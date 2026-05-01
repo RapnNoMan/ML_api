@@ -285,11 +285,6 @@ async function upsertDispatcherContact({
   const url = new URL(`${baseUrl}/contacts`);
   url.searchParams.set("on_conflict", "workspace_id,chat_source,external_identifier");
 
-  const metadata = {};
-  if (customFields && typeof customFields === "object" && !Array.isArray(customFields)) {
-    metadata.dispatcher_custom_fields = customFields;
-  }
-
   const payload = {
     workspace_id: workspaceId,
     agent_id: null,
@@ -303,7 +298,9 @@ async function upsertDispatcherContact({
   if (normalizePositiveInteger(age)) payload.age = normalizePositiveInteger(age);
   if (normalizeNullableText(email)) payload.email = normalizeNullableText(email);
   if (normalizeNullableText(country)) payload.country = normalizeNullableText(country);
-  if (Object.keys(metadata).length > 0) payload.metadata = metadata;
+  if (customFields && typeof customFields === "object" && !Array.isArray(customFields)) {
+    payload.custom_fields = customFields;
+  }
 
   let response;
   try {

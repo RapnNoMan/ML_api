@@ -1065,6 +1065,8 @@ function buildDispatcherRoutingPromptBlock({ settings, draft, channel, routeAiAg
         "Collect missing required fields naturally before routing.",
         "Do not mention or request fields that are not listed above.",
         "Call dispatch_to_human only after all required fields are known.",
+        "For custom fields, use the exact field names and the exact values provided by the customer.",
+        "Do not fill custom fields using unrelated known information such as country, name, or source.",
       ].join("\n")
     );
   }
@@ -1156,6 +1158,34 @@ function buildDispatcherAiHandoffTool({ routeAiAgents }) {
   };
 }
 
+function validateDispatcherHandoffVariables({ actionDef, variables }) {
+  const missing = [];
+  if (!String(variables?.category_name ?? "").trim()) missing.push("category_name");
+  if (!String(variables?.subject ?? "").trim()) missing.push("subject");
+  if (!String(variables?.summery ?? variables?.summary ?? "").trim()) missing.push("summery");
+  if (actionDef.require_phone_number && !String(variables?.phone_number ?? "").trim()) {
+    missing.push("phone_number");
+  }
+  if (actionDef.require_gender && !String(variables?.gender ?? "").trim()) missing.push("gender");
+  if (actionDef.require_age) {
+    const age = Number(variables?.age);
+    if (!Number.isFinite(age) || age <= 0) missing.push("age");
+  }
+  if (actionDef.require_email && !String(variables?.email ?? "").trim()) missing.push("email");
+
+  const customFields =
+    variables?.custom_fields && typeof variables.custom_fields === "object" && !Array.isArray(variables.custom_fields)
+      ? variables.custom_fields
+      : {};
+  for (const fieldName of toCleanTextArray(actionDef.custom_field_names).slice(0, 5)) {
+    if (!String(customFields?.[fieldName] ?? "").trim()) {
+      missing.push(`custom_fields.${fieldName}`);
+    }
+  }
+
+  return missing;
+}
+
 function buildDispatcherHandoffTool({ settings, channel }) {
   const categories = toCleanTextArray(settings?.route_category_names);
   const properties = {
@@ -1197,11 +1227,12 @@ function buildDispatcherHandoffTool({ settings, channel }) {
   if (customFieldNames.length > 0) {
     properties.custom_fields = {
       type: "object",
-      description: "Required custom intake fields keyed exactly by the configured field names.",
+      description:
+        "Required custom intake fields. Keys must exactly match the configured field names. Values must be the exact values provided by the customer, not inferred from unrelated fields.",
       properties: Object.fromEntries(
         customFieldNames.map((fieldName) => [
           fieldName,
-          { type: "string", description: `Customer value for ${fieldName}.` },
+          { type: "string", description: `Exact customer-provided value for ${fieldName}.` },
         ])
       ),
       required: customFieldNames,
@@ -1320,6 +1351,23 @@ async function executeActionCalls({
     let requestPayloadForLog = variables;
 
     if (actionDef.kind === "dispatcher_handoff") {
+      const missingDispatcherFields = validateDispatcherHandoffVariables({ actionDef, variables });
+      if (missingDispatcherFields.length > 0) {
+        toolResults.push({
+          call_id: call.call_id ?? null,
+          action_key: call.action_key,
+          tool_args: variables,
+          request: { url: null, method: "LOCAL", headers: {}, body: variables },
+          response: {
+            ok: false,
+            status: 400,
+            error: "Missing required dispatcher handoff fields",
+            missing_required_fields: missingDispatcherFields,
+          },
+        });
+        continue;
+      }
+
       const categoryName = String(variables?.category_name ?? "").trim();
       const subject = String(variables?.subject ?? "").trim() || "Human support request";
       const summery =
@@ -3342,6 +3390,11 @@ async function processIncomingMessage({ event, connection, headers }) {
               {
                 kind: "dispatcher_handoff",
                 tool_name: "dispatch_to_human",
+                require_phone_number: dispatcherSettings?.require_phone_number === true && event.channel !== "whatsapp",
+                require_gender: dispatcherSettings?.require_gender === true,
+                require_age: dispatcherSettings?.require_age === true,
+                require_email: dispatcherSettings?.require_email === true,
+                custom_field_names: toCleanTextArray(dispatcherSettings?.custom_field_names).slice(0, 5),
               },
             ],
           ];
