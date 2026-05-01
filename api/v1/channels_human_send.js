@@ -168,15 +168,15 @@ async function validatePortalHumanAgentAccess({ portalId, portalSecretKey, agent
   return { ok: true };
 }
 
-async function getActiveHandoffChat({ portalId, portalSecretKey, agentId, chatSource, chatId }) {
+async function getActiveHandoffChat({ portalId, portalSecretKey, workspaceId, anonId, chatId }) {
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const url = new URL(`${baseUrl}/human_handoff_chats`);
   url.searchParams.set(
     "select",
-    "id,assigned_human_agent_user_id,status,chat_source,chat_id,agent_id"
+    "id,assigned_human_agent_user_id,status,chat_source,chat_id,agent_id,workspace_id"
   );
-  url.searchParams.set("agent_id", `eq.${agentId}`);
-  url.searchParams.set("chat_source", `eq.${chatSource}`);
+  url.searchParams.set("workspace_id", `eq.${workspaceId}`);
+  url.searchParams.set("annon", `eq.${anonId}`);
   url.searchParams.set("chat_id", `eq.${chatId}`);
   url.searchParams.set("status", "neq.closed");
   url.searchParams.set("order", "created_at.desc");
@@ -234,6 +234,34 @@ async function fetchDashboardAgentWorkspaceId({ supId, supKey, agentId }) {
 async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSource, threadId }) {
   if (chatSource === "telegram") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+    const workspaceResult = await fetchDashboardAgentWorkspaceId({ supId, supKey, agentId });
+    if (!workspaceResult.ok) return workspaceResult;
+    if (workspaceResult.workspaceId) {
+      const workspaceBotUrl = new URL(`${baseUrl}/workspace_telegram_bots`);
+      workspaceBotUrl.searchParams.set("select", "id,workspace_id,assigned_agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled");
+      workspaceBotUrl.searchParams.set("workspace_id", `eq.${workspaceResult.workspaceId}`);
+      workspaceBotUrl.searchParams.set("bot_id", `eq.${threadId}`);
+      workspaceBotUrl.searchParams.set("limit", "1");
+      let workspaceBotResponse;
+      try {
+        workspaceBotResponse = await fetch(workspaceBotUrl.toString(), {
+          headers: { apikey: supKey, Authorization: `Bearer ${supKey}`, Accept: "application/json" },
+        });
+      } catch (_) {
+        return { ok: false, status: 502, error: "Telegram channel service unavailable" };
+      }
+      if (!workspaceBotResponse.ok) {
+        return { ok: false, status: 502, error: "Telegram channel service unavailable" };
+      }
+      const workspaceBotPayload = await workspaceBotResponse.json().catch(() => []);
+      const workspaceBotRow = (Array.isArray(workspaceBotPayload) ? workspaceBotPayload : []).find(
+        (item) => Boolean(item?.connected) && Boolean(item?.webhook_enabled)
+      );
+      if (workspaceBotRow?.bot_token) {
+        return { ok: true, connection: { kind: "telegram", botToken: String(workspaceBotRow.bot_token) } };
+      }
+    }
+
     const url = new URL(`${baseUrl}/telegram_channel_connections`);
     url.searchParams.set("select", "agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled");
     url.searchParams.set("agent_id", `eq.${agentId}`);
@@ -435,12 +463,14 @@ module.exports = async function handler(req, res) {
   const body = req.body ?? {};
   const agentId = normalizeIdValue(body.agent_id);
   const chatId = normalizeIdValue(body.chat_id);
+  const bodyAnonId = normalizeIdValue(body.anon_id);
   const message = sanitizeOutgoingText(body.message);
   const chatSource = normalizeIdValue(body.chat_source).toLowerCase();
 
   const missing = [];
   if (!agentId) missing.push("agent_id");
   if (!chatId) missing.push("chat_id");
+  if (!bodyAnonId) missing.push("anon_id");
   if (!message) missing.push("message");
   if (!chatSource) missing.push("chat_source");
   if (missing.length > 0) {
@@ -510,11 +540,25 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const workspaceLookup = await fetchDashboardAgentWorkspaceId({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+  });
+  if (!workspaceLookup.ok) {
+    res.status(workspaceLookup.status).json({ error: workspaceLookup.error });
+    return;
+  }
+  if (!workspaceLookup.workspaceId) {
+    res.status(403).json({ error: "Unauthorized" });
+    return;
+  }
+
   const handoffChatResult = await getActiveHandoffChat({
     portalId: process.env.PORTAL_ID,
     portalSecretKey: process.env.PORTAL_SECRET_KEY,
-    agentId,
-    chatSource,
+    workspaceId: workspaceLookup.workspaceId,
+    anonId: bodyAnonId,
     chatId,
   });
   if (!handoffChatResult.ok) {
@@ -586,21 +630,12 @@ module.exports = async function handler(req, res) {
   );
 
   const messageSource = mapChatSourceToMessageSource(chatSource);
-  const workspaceLookup = await fetchDashboardAgentWorkspaceId({
-    supId: process.env.SUP_ID,
-    supKey: process.env.SUP_KEY,
-    agentId,
-  });
-  if (!workspaceLookup.ok) {
-    res.status(workspaceLookup.status).json({ error: workspaceLookup.error });
-    return;
-  }
   const saveDashboardResult = await saveHumanMessageToMessages({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
     workspaceId: workspaceLookup.workspaceId,
-    anonId: normalizeIdValue(body.anon_id) || `${chatSource}:${parsed.recipientId}`,
+    anonId: bodyAnonId,
     chatId,
     country: normalizeIdValue(body.country) || null,
     source: messageSource,
@@ -616,7 +651,7 @@ module.exports = async function handler(req, res) {
     portalId: process.env.PORTAL_ID,
     portalSecretKey: process.env.PORTAL_SECRET_KEY,
     agentId,
-    anonId: normalizeIdValue(body.anon_id) || `${chatSource}:${parsed.recipientId}`,
+    anonId: bodyAnonId,
     chatId,
     source: messageSource,
     senderType: "human_agent",
