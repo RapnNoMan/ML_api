@@ -72,7 +72,6 @@
     { "source": "/internal", "destination": "/api/deadend_probe" },
     { "source": "/config", "destination": "/api/deadend_probe" },
     { "source": "/secret", "destination": "/api/deadend_probe" },
-    { "source": "/chatdemo", "destination": "/api/chatdemo" },
     { "source": "/v1/chat", "destination": "/api/v1/chat" },
     { "source": "/v1/widget/:agent_id", "destination": "/api/v1/widget?agent_id=:agent_id" },
     { "source": "/v1/widget_openai/:agent_id", "destination": "/api/v1/widget_openai?agent_id=:agent_id" },
@@ -88,7 +87,6 @@
     { "source": "/v1/channels", "destination": "/api/v1/channels" },
     { "source": "/v1/channels_human_send", "destination": "/api/v1/channels_human_send" },
     { "source": "/v1/widget_human_log", "destination": "/api/v1/widget_human_log" },
-    { "source": "/v1/human_handoff_debug", "destination": "/api/v1/human_handoff_debug" },
     { "source": "/v1/ticket_tool_test", "destination": "/api/v1/ticket_tool_test" }
   ]
 }
