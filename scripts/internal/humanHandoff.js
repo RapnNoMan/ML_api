@@ -108,6 +108,137 @@ async function getOpenHumanHandoffChat({ portalId, portalSecretKey, agentId, cha
   }
 }
 
+async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId }) {
+  if (!portalId || !portalSecretKey || !chatSource || !chatId) {
+    return { ok: true, chat: null };
+  }
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = buildRestUrl(baseUrl, "human_handoff_chats", {
+    select: "id,agent_id,status,assigned_human_agent_user_id,shift_id",
+    chat_source: `eq.${chatSource}`,
+    chat_id: `eq.${chatId}`,
+    status: "neq.closed",
+    order: "created_at.desc",
+    limit: "1",
+  });
+
+  try {
+    const response = await fetch(url, {
+      headers: authHeaders(portalSecretKey, { Accept: "application/json" }),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Portal chat service unavailable" };
+    const payload = await response.json();
+    const row = Array.isArray(payload) ? payload[0] : null;
+    return { ok: true, chat: row || null };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Portal chat service unavailable" };
+  }
+}
+
+async function createPortalChat({
+  portalId,
+  portalSecretKey,
+  agentId = null,
+  chatSource,
+  source,
+  chatId,
+  anonId = null,
+  externalUserId = null,
+  country = null,
+  customerName = null,
+  subject = null,
+  summery = null,
+}) {
+  if (!portalId || !portalSecretKey || !chatSource || !chatId) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+  const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const url = `${baseUrl}/human_handoff_chats`;
+  const payload = {
+    agent_id: agentId || null,
+    chat_source: chatSource,
+    source: source ?? null,
+    chat_id: chatId,
+    annon: anonId ?? null,
+    external_user_id: externalUserId ?? null,
+    country: country ?? null,
+    customer_name: customerName ?? null,
+    subject: subject ?? null,
+    summery: summery ?? null,
+    assigned_human_agent_user_id: null,
+    status: "active",
+  };
+
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: authHeaders(portalSecretKey, {
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      }),
+      body: JSON.stringify(payload),
+    });
+  } catch (_) {
+    return { ok: false, status: 502, error: "Portal chat service unavailable" };
+  }
+
+  if (!response.ok) {
+    let text = "";
+    try {
+      text = await response.text();
+    } catch (_) {}
+    return {
+      ok: false,
+      status: response.status || 502,
+      error: "Portal chat creation failed",
+      details: text || null,
+    };
+  }
+
+  let responsePayload;
+  try {
+    responsePayload = await response.json();
+  } catch (_) {
+    return { ok: false, status: 502, error: "Portal chat service unavailable" };
+  }
+  const row = Array.isArray(responsePayload) ? responsePayload[0] : responsePayload;
+  return { ok: true, created: true, chat: row || null };
+}
+
+async function ensurePortalChat({
+  portalId,
+  portalSecretKey,
+  agentId = null,
+  chatSource,
+  source,
+  chatId,
+  anonId = null,
+  externalUserId = null,
+  country = null,
+  customerName = null,
+  subject = null,
+  summery = null,
+}) {
+  const existing = await getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId });
+  if (!existing.ok) return existing;
+  if (existing.chat) return { ok: true, created: false, chat: existing.chat };
+  return createPortalChat({
+    portalId,
+    portalSecretKey,
+    agentId,
+    chatSource,
+    source,
+    chatId,
+    anonId,
+    externalUserId,
+    country,
+    customerName,
+    subject,
+    summery,
+  });
+}
+
 async function checkAvailableHumanAgents({ portalId, portalSecretKey, agentId }) {
   if (!portalId || !portalSecretKey || !agentId) return { ok: true, available: false };
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
@@ -145,7 +276,7 @@ async function saveHumanMessageToMessages({
   prompt,
   result = null,
 }) {
-  if (!supId || !supKey || !agentId || !chatId) {
+  if (!supId || !supKey || !chatId) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
@@ -308,7 +439,7 @@ async function saveHumanMessageToPortalFeed({
   prompt,
   result = null,
 }) {
-  if (!portalId || !portalSecretKey || !agentId || !chatId || !senderType) {
+  if (!portalId || !portalSecretKey || !chatId || !senderType) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
@@ -442,6 +573,9 @@ module.exports = {
   HUMAN_HANDOFF_CONFIRMATION_REPLY,
   checkHumanAgentsAppEnabled,
   getOpenHumanHandoffChat,
+  getActivePortalChat,
+  createPortalChat,
+  ensurePortalChat,
   checkAvailableHumanAgents,
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,

@@ -20,14 +20,9 @@ const {
   buildTicketOutcomeInstruction,
 } = require("../../scripts/internal/ticketOutcome");
 const {
-  HUMAN_HANDOFF_TOOL_NAME,
-  HUMAN_HANDOFF_TOOL,
-  HUMAN_HANDOFF_PROMPT_BLOCK,
-  checkHumanAgentsAppEnabled,
-  getOpenHumanHandoffChat,
-  checkAvailableHumanAgents,
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
+  ensurePortalChat,
   resolveConversationStartMessageId,
   updateHumanHandoffChatMessageStart,
   assignHumanHandoffChat,
@@ -385,7 +380,7 @@ function createXAiRequestBody({ model, instructions, messages, tools, inputItems
     model,
     instructions: finalInstructions,
     input: Array.isArray(inputItems) ? inputItems : toOpenAiInputItems(messages),
-    text: { verbosity: "low" },
+    text: { verbosity: "medium" },
     stream: false,
   };
 
@@ -790,6 +785,53 @@ function usageToTokens(usage) {
     output: Number.isFinite(output) && output > 0 ? Math.floor(output) : 0,
   };
 }
+
+function getChannelMode({ agentId, agentInfo }) {
+  if (!agentId) return "none";
+  return agentInfo?.dispatcher ? "ai_dispatcher" : "ai_agent";
+}
+
+async function saveChannelCustomerForPortal({
+  agentId,
+  anonId,
+  chatId,
+  country,
+  customerName,
+  source,
+  incomingText,
+  assignedHumanAgentUserId = null,
+}) {
+  const saveDashboardResult = await saveHumanMessageToMessages({
+    supId: process.env.SUP_ID,
+    supKey: process.env.SUP_KEY,
+    agentId,
+    anonId,
+    chatId,
+    country,
+    customerName,
+    source,
+    prompt: incomingText,
+    result: null,
+  });
+  if (!saveDashboardResult.ok) return saveDashboardResult;
+
+  const savePortalResult = await saveHumanMessageToPortalFeed({
+    portalId: process.env.PORTAL_ID,
+    portalSecretKey: process.env.PORTAL_SECRET_KEY,
+    agentId,
+    anonId,
+    chatId,
+    source,
+    senderType: "customer",
+    assignedHumanAgentUserId,
+    prompt: incomingText,
+    result: null,
+  });
+  if (!savePortalResult.ok) return savePortalResult;
+
+  return { ok: true };
+}
+
 async function executeActionCalls({
   actionCalls,
   actionMap,
@@ -1654,14 +1696,13 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
   });
 
   if (!row) return { ok: false, status: 404, error: "Channel page not found" };
-  if (!row?.agent_id) return { ok: false, status: 404, error: "Agent not found" };
   if (!row?.page_access_token) return { ok: false, status: 400, error: "Missing page access token" };
 
   return {
     ok: true,
     connection: {
       kind: "meta",
-      agent_id: String(row.agent_id || "").trim(),
+      agent_id: String(row.agent_id || "").trim() || null,
       thread_id: String(row.page_id || "").trim(),
       page_id: String(row.page_id || "").trim(),
       access_token: String(row.page_access_token || "").trim(),
@@ -2161,9 +2202,10 @@ async function verifyMetaWebhookSignature(req) {
 }
 async function processIncomingMessage({ event, connection, headers }) {
   const requestStartedAt = Date.now();
-  const agentId = connection.agent_id;
+  const agentId = String(connection.agent_id || "").trim() || null;
   const anonId = `${event.channel}:${event.senderId}`;
   const chatId = `${event.channel}:${connection.thread_id}:${event.senderId}`;
+  const source = `meta_${event.channel}`;
   const requestCountry = getRequestCountry(headers);
   const customerName = normalizeCustomerName(event.customerName);
   const incomingText = sanitizeIncomingUserText(event.text);
@@ -2171,6 +2213,85 @@ async function processIncomingMessage({ event, connection, headers }) {
   let consumedExtraCreditRowId = null;
   let requestSucceeded = false;
   try {
+  let agentInfo = null;
+  if (agentId) {
+    const agentInfoResult = await getAgentInfo({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      agentId,
+    });
+    if (!agentInfoResult.ok) {
+      return { ok: false, status: agentInfoResult.status, error: agentInfoResult.error };
+    }
+    agentInfo = agentInfoResult;
+  }
+
+  const channelMode = getChannelMode({ agentId, agentInfo });
+  const portalAgentId = channelMode === "ai_agent" ? agentId : null;
+  const portalChatResult = await ensurePortalChat({
+    portalId: process.env.PORTAL_ID,
+    portalSecretKey: process.env.PORTAL_SECRET_KEY,
+    agentId: portalAgentId,
+    chatSource: event.channel,
+    source,
+    chatId,
+    anonId,
+    externalUserId: anonId,
+    country: requestCountry,
+    customerName,
+    subject: customerName ? `Conversation with ${customerName}` : "Channel conversation",
+    summery: "Incoming channel conversation.",
+  });
+  if (!portalChatResult.ok) {
+    return { ok: false, status: portalChatResult.status || 502, error: portalChatResult.error };
+  }
+
+  const assignedHumanAgentUserId =
+    portalChatResult.chat?.assigned_human_agent_user_id ?? null;
+  if (assignedHumanAgentUserId || channelMode === "none") {
+    const saveResult = await saveChannelCustomerForPortal({
+      agentId: portalChatResult.chat?.agent_id ?? portalAgentId,
+      anonId,
+      chatId,
+      country: requestCountry,
+      customerName,
+      source,
+      incomingText,
+      assignedHumanAgentUserId,
+    });
+    if (!saveResult.ok) {
+      return { ok: false, status: saveResult.status || 502, error: saveResult.error };
+    }
+    requestSucceeded = true;
+    return {
+      ok: true,
+      humanHandoff: Boolean(assignedHumanAgentUserId),
+      portalChatOnly: channelMode === "none",
+      actionUsed: false,
+      actionCount: 0,
+    };
+  }
+
+  const savePortalCustomerResult = await saveHumanMessageToPortalFeed({
+    portalId: process.env.PORTAL_ID,
+    portalSecretKey: process.env.PORTAL_SECRET_KEY,
+    agentId: portalChatResult.chat?.agent_id ?? portalAgentId,
+    anonId,
+    chatId,
+    source,
+    senderType: "customer",
+    assignedHumanAgentUserId: null,
+    prompt: incomingText,
+    result: null,
+  });
+  if (!savePortalCustomerResult.ok) {
+    return {
+      ok: false,
+      status: savePortalCustomerResult.status || 502,
+      error: savePortalCustomerResult.error,
+    };
+  }
+
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -2198,77 +2319,6 @@ async function processIncomingMessage({ event, connection, headers }) {
     consumedExtraCreditRowId = Math.floor(usageCheckExtraCreditRowId);
   }
 
-  const handoffAppResult = await checkHumanAgentsAppEnabled({
-    supId: process.env.SUP_ID,
-    supKey: process.env.SUP_KEY,
-    agentId,
-  });
-  const humanHandoffAppEnabled = Boolean(handoffAppResult?.ok && handoffAppResult?.enabled);
-  let humanHandoffToolEnabled = false;
-  if (humanHandoffAppEnabled) {
-    const [openHandoffChatResult, availableHumanAgentsResult] = await Promise.all([
-      getOpenHumanHandoffChat({
-        portalId: process.env.PORTAL_ID,
-        portalSecretKey: process.env.PORTAL_SECRET_KEY,
-        agentId,
-        chatSource: event.channel,
-        chatId,
-      }),
-      checkAvailableHumanAgents({
-        portalId: process.env.PORTAL_ID,
-        portalSecretKey: process.env.PORTAL_SECRET_KEY,
-        agentId,
-      }),
-    ]);
-    if (openHandoffChatResult?.ok && openHandoffChatResult.chat) {
-      const assignedHumanAgentUserId =
-        openHandoffChatResult.chat?.assigned_human_agent_user_id ?? null;
-      const saveDashboardResult = await saveHumanMessageToMessages({
-        supId: process.env.SUP_ID,
-        supKey: process.env.SUP_KEY,
-        agentId,
-        anonId,
-        chatId,
-        country: requestCountry,
-        customerName,
-        source: `meta_${event.channel}`,
-        prompt: incomingText,
-        result: null,
-      });
-      if (!saveDashboardResult.ok) {
-        return {
-          ok: false,
-          status: saveDashboardResult.status,
-          error: saveDashboardResult.error,
-        };
-      }
-      const savePortalResult = await saveHumanMessageToPortalFeed({
-        portalId: process.env.PORTAL_ID,
-        portalSecretKey: process.env.PORTAL_SECRET_KEY,
-        agentId,
-        anonId,
-        chatId,
-        source: `meta_${event.channel}`,
-        senderType: "customer",
-        assignedHumanAgentUserId,
-        prompt: incomingText,
-        result: null,
-      });
-      if (!savePortalResult.ok) {
-        return {
-          ok: false,
-          status: savePortalResult.status,
-          error: savePortalResult.error,
-        };
-      }
-      requestSucceeded = true;
-      return { ok: true, humanHandoff: true, actionUsed: false, actionCount: 0 };
-    }
-    humanHandoffToolEnabled = Boolean(
-      availableHumanAgentsResult?.ok && availableHumanAgentsResult?.available
-    );
-  }
-
   const historyPromise = getChatHistory({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -2290,11 +2340,6 @@ async function processIncomingMessage({ event, connection, headers }) {
           message: incomingText,
         })
       : Promise.resolve({ ok: true, chunks: [] });
-  const agentInfoPromise = getAgentInfo({
-    supId: process.env.SUP_ID,
-    supKey: process.env.SUP_KEY,
-    agentId,
-  });
   const toolsResultPromise = getAgentAllActions({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -2306,42 +2351,25 @@ async function processIncomingMessage({ event, connection, headers }) {
   let latencySecondCallMs = null;
   let latencyToolsMs = null;
 
-  const [historyResult, ragResult, agentInfo, toolsResult] = await Promise.all([
+  const [historyResult, ragResult, toolsResult] = await Promise.all([
     historyPromise,
     ragPromise,
-    agentInfoPromise,
     toolsResultPromise,
   ]);
 
   if (!historyResult.ok) return { ok: false, status: historyResult.status, error: historyResult.error };
   if (!ragResult.ok) return { ok: false, status: ragResult.status, error: ragResult.error };
-  if (!agentInfo.ok) return { ok: false, status: agentInfo.status, error: agentInfo.error };
   if (!toolsResult.ok) return { ok: false, status: toolsResult.status, error: toolsResult.error };
 
   const effectiveTools = Array.isArray(toolsResult.tools) ? [...toolsResult.tools] : [];
   const effectiveActionMap = new Map(toolsResult.actionMap || []);
-  if (
-    humanHandoffToolEnabled &&
-    !effectiveTools.some((tool) => String(tool?.name || "").trim() === HUMAN_HANDOFF_TOOL_NAME)
-  ) {
-    effectiveTools.push(HUMAN_HANDOFF_TOOL);
-    effectiveActionMap.set(HUMAN_HANDOFF_TOOL_NAME, {
-      tool_name: HUMAN_HANDOFF_TOOL_NAME,
-      kind: "human_handoff",
-      id: null,
-      method: "LOCAL",
-      url: null,
-      headers: {},
-      body_template: null,
-    });
-  }
 
   const prompt = buildChannelPrompt({
     systemRole: agentInfo.role,
     chunks: ragResult.chunks,
     nowIso: new Date().toISOString(),
     channel: event.channel,
-    extraRules: humanHandoffToolEnabled ? HUMAN_HANDOFF_PROMPT_BLOCK : "",
+    extraRules: channelMode === "ai_dispatcher" ? "You are currently acting as an AI dispatcher. For now, answer using the normal AI agent behavior." : "",
   });
 
   const historyMessages = Array.isArray(historyResult.messages) ? historyResult.messages : [];
@@ -2979,13 +3007,13 @@ module.exports = async function handler(req, res) {
         }
         continue;
       }
-      if (handled.humanHandoff && !handled.reply) {
+      if ((handled.humanHandoff || handled.portalChatOnly) && !handled.reply) {
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
           event,
           raw: {
-            stage: "human_handoff_active",
+            stage: handled.portalChatOnly ? "portal_chat_only" : "human_handoff_active",
             channel: event.channel,
             chat_id: `${event.channel}:${connectionResult.connection.thread_id}:${event.senderId}`,
           },
@@ -3135,6 +3163,7 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
 
 
 

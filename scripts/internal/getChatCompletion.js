@@ -83,7 +83,7 @@ TOOL RULES (MUST FOLLOW):
     reasoning,
     instructions: finalInstructions,
     input: Array.isArray(inputItems) ? inputItems : toInputItems(messages),
-    text: { verbosity: "low" },
+    text: { verbosity: "medium" },
   };
 
   if (Array.isArray(tools) && tools.length > 0) {
@@ -161,3 +161,4 @@ TOOL RULES (MUST FOLLOW):
 module.exports = {
   getChatCompletion,
 };
+

@@ -275,7 +275,7 @@ async function classifyConversationWithOpenAi({ apiKey, model, conversation, rea
       },
     ],
     max_output_tokens: 80,
-    text: { verbosity: "low" },
+    text: { verbosity: "medium" },
   };
 
   let response;
@@ -519,3 +519,4 @@ async function evaluateAnonSpamAndMaybeBan({
 module.exports = {
   evaluateAnonSpamAndMaybeBan,
 };
+

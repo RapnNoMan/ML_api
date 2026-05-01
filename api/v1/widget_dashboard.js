@@ -897,7 +897,7 @@ TOOL RULES (MUST FOLLOW):
     reasoning,
     instructions: finalInstructions,
     input: Array.isArray(inputItems) ? inputItems : toOpenAiInputItems(messages),
-    text: { verbosity: "low" },
+    text: { verbosity: "medium" },
     stream: true,
   };
 
@@ -2386,6 +2386,7 @@ module.exports = async function handler(req, res) {
     }
   }
 };
+
 
 
 
