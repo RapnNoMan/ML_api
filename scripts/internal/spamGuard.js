@@ -1,5 +1,7 @@
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
+const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_SPAM_MODEL = "grok-4-1-fast-non-reasoning";
+const DEFAULT_OPENAI_SPAM_MODEL = "gpt-5.4-nano";
 
 function parseContentRangeTotal(contentRange) {
   const value = String(contentRange || "").trim();
@@ -240,6 +242,75 @@ async function classifyConversationWithXAi({ apiKey, model, conversation }) {
   return { ok: true, label, rawText };
 }
 
+async function classifyConversationWithOpenAi({ apiKey, model, conversation, reasoning }) {
+  if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
+
+  const prompt = [
+    "Classify whether this user is spamming or just having a normal support conversation.",
+    "",
+    "Rules:",
+    '- "normal" = genuine support intent, even if frustrated, repetitive, or rude',
+    '- "spam" = trolling, nonsense, abuse, repeated junk, meaningless repeated messages, or obvious messing around',
+    '- "uncertain" = not enough evidence',
+    "",
+    'If unsure, return "uncertain".',
+    "",
+    "User messages:",
+    conversation,
+    "",
+    "Return JSON only:",
+    '{"label":"normal|spam|uncertain"}',
+  ].join("\n");
+
+  const requestBody = {
+    model: model || DEFAULT_OPENAI_SPAM_MODEL,
+    reasoning,
+    input: [
+      {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: prompt }],
+      },
+    ],
+    max_output_tokens: 80,
+    text: { verbosity: "low" },
+  };
+
+  let response;
+  try {
+    response = await fetch(OPENAI_RESPONSES_API_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(requestBody),
+    });
+  } catch {
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+  }
+
+  if (!response.ok) {
+    const text = await response.text();
+    return { ok: false, status: response.status || 502, error: text || "OpenAI request failed" };
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return { ok: false, status: 502, error: "Invalid JSON from OpenAI" };
+  }
+
+  const rawText = extractResponseText(payload);
+  const label = parseSpamLabelFromModelText(rawText);
+  if (!label) {
+    return { ok: false, status: 502, error: "Invalid spam classification output" };
+  }
+
+  return { ok: true, label, rawText };
+}
+
 async function upsertAnonBan({ supId, supKey, agentId, anonId, reason, evidence }) {
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = `${baseUrl}/banned_agent_users?on_conflict=agent_id,anon_id`;
@@ -279,6 +350,9 @@ async function evaluateAnonSpamAndMaybeBan({
   supKey,
   xaiApiKey,
   xaiModel,
+  openAiApiKey,
+  openAiModel,
+  openAiReasoning,
   agentId,
   anonId,
   incomingMessage,
@@ -338,11 +412,18 @@ async function evaluateAnonSpamAndMaybeBan({
   }
 
   const conversation = buildUserMessagesList(rowsAsc, incomingMessage);
-  const classifyResult = await classifyConversationWithXAi({
-    apiKey: xaiApiKey,
-    model: xaiModel,
-    conversation,
-  });
+  const classifyResult = openAiApiKey
+    ? await classifyConversationWithOpenAi({
+        apiKey: openAiApiKey,
+        model: openAiModel,
+        reasoning: openAiReasoning,
+        conversation,
+      })
+    : await classifyConversationWithXAi({
+        apiKey: xaiApiKey,
+        model: xaiModel,
+        conversation,
+      });
   if (!classifyResult.ok) return classifyResult;
 
   if (classifyResult.label !== "spam") {
