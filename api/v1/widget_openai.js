@@ -627,7 +627,7 @@ function extractFunctionCalls(payload, fallbackOutputItems = []) {
     calls.push({
       action_key: typeof item?.name === "string" ? item.name : "",
       variables,
-      call_id: item?.id ?? item?.call_id ?? null,
+      call_id: item?.call_id ?? item?.id ?? null,
     });
   }
   return calls;
