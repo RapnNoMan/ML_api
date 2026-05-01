@@ -1,7 +1,7 @@
 const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 const DEFAULT_SPAM_MODEL = "grok-4-1-fast-non-reasoning";
-const DEFAULT_OPENAI_SPAM_MODEL = "gpt-5.4-nano";
+const DEFAULT_OPENAI_SPAM_MODEL = "gpt-5-nano";
 
 function parseContentRangeTotal(contentRange) {
   const value = String(contentRange || "").trim();

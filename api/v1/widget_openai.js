@@ -34,9 +34,9 @@ const {
 } = require("../../scripts/internal/humanHandoff");
 
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
-const PRIMARY_MODEL = process.env.OPENAI_WIDGET_MODEL || "gpt-5.4-nano";
+const PRIMARY_MODEL = process.env.OPENAI_WIDGET_MODEL || "gpt-5-nano";
 const FOLLOWUP_MODEL = process.env.OPENAI_WIDGET_FOLLOWUP_MODEL || PRIMARY_MODEL;
-const LOWEST_REASONING = { effort: "none" };
+const LOWEST_REASONING = { effort: "minimal" };
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
