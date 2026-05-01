@@ -33,10 +33,9 @@ const {
   assignHumanHandoffChat,
 } = require("../../scripts/internal/humanHandoff");
 
-const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
-const PRIMARY_MODEL = process.env.OPENAI_WIDGET_MODEL || "gpt-5-nano";
-const FOLLOWUP_MODEL = process.env.OPENAI_WIDGET_FOLLOWUP_MODEL || PRIMARY_MODEL;
-const LOWEST_REASONING = { effort: "minimal" };
+const DEEPSEEK_CHAT_COMPLETIONS_API_URL = "https://api.deepseek.com/chat/completions";
+const PRIMARY_MODEL = process.env.DEEPSEEK_WIDGET_MODEL || "deepseek-v4-flash";
+const FOLLOWUP_MODEL = process.env.DEEPSEEK_WIDGET_FOLLOWUP_MODEL || PRIMARY_MODEL;
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -686,6 +685,129 @@ function extractAssistantBlocks(payload, fallbackOutputItems = []) {
   return blocks;
 }
 
+function toDeepSeekTools(tools) {
+  return (Array.isArray(tools) ? tools : []).map((tool) => {
+    if (tool?.type === "function" && tool?.function) return tool;
+    return {
+      type: "function",
+      function: {
+        name: String(tool?.name ?? ""),
+        description: String(tool?.description ?? ""),
+        parameters:
+          tool?.parameters && typeof tool.parameters === "object"
+            ? tool.parameters
+            : { type: "object", properties: {} },
+      },
+    };
+  });
+}
+
+function buildDeepSeekMessages({ instructions, messages, assistantBlocks, toolResults }) {
+  const systemRules = `
+TOOL RULES (MUST FOLLOW):
+- Use the provided tools when needed.
+- Never make the tool call without having the full info from the user.
+- Never call a tool unless every required parameter is present in the tool input.
+- If a tool is needed, call it before any user-facing answer text.
+`.trim();
+
+  const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
+  const finalMessages = [];
+  if (finalInstructions) {
+    finalMessages.push({ role: "system", content: finalInstructions });
+  }
+
+  for (const message of Array.isArray(messages) ? messages : []) {
+    finalMessages.push({
+      role: message?.role === "assistant" ? "assistant" : "user",
+      content: String(message?.content ?? ""),
+    });
+  }
+
+  const assistantTextParts = [];
+  const toolCalls = [];
+  for (const item of Array.isArray(assistantBlocks) ? assistantBlocks : []) {
+    if (item?.type === "text" && typeof item?.text === "string") {
+      assistantTextParts.push(item.text);
+      continue;
+    }
+    if (item?.type === "tool_use") {
+      toolCalls.push({
+        id: item?.id ?? null,
+        type: "function",
+        function: {
+          name: String(item?.name ?? ""),
+          arguments: JSON.stringify(
+            item?.input && typeof item.input === "object" ? item.input : {}
+          ),
+        },
+      });
+    }
+  }
+
+  if (assistantTextParts.length > 0 || toolCalls.length > 0) {
+    finalMessages.push({
+      role: "assistant",
+      content: assistantTextParts.join(""),
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    });
+  }
+
+  for (const result of Array.isArray(toolResults) ? toolResults : []) {
+    finalMessages.push({
+      role: "tool",
+      tool_call_id: String(result?.call_id ?? ""),
+      content: JSON.stringify(result),
+    });
+  }
+
+  return finalMessages;
+}
+
+function parseDeepSeekToolCall(toolCall) {
+  const fn = toolCall?.function && typeof toolCall.function === "object" ? toolCall.function : {};
+  let variables = {};
+  if (typeof fn?.arguments === "string" && fn.arguments.trim()) {
+    try {
+      const parsed = JSON.parse(fn.arguments);
+      if (parsed && typeof parsed === "object") variables = parsed;
+    } catch (_) {}
+  }
+  return {
+    action_key: typeof fn?.name === "string" ? fn.name : "",
+    variables,
+    call_id: toolCall?.id ?? null,
+  };
+}
+
+function extractDeepSeekText(payload) {
+  const message = payload?.choices?.[0]?.message;
+  return typeof message?.content === "string" ? message.content : "";
+}
+
+function extractDeepSeekFunctionCalls(payload) {
+  const toolCalls = payload?.choices?.[0]?.message?.tool_calls;
+  return (Array.isArray(toolCalls) ? toolCalls : []).map(parseDeepSeekToolCall);
+}
+
+function extractDeepSeekAssistantBlocks(payload) {
+  const message = payload?.choices?.[0]?.message;
+  const blocks = [];
+  if (typeof message?.content === "string" && message.content) {
+    blocks.push({ type: "text", text: message.content });
+  }
+  for (const toolCall of Array.isArray(message?.tool_calls) ? message.tool_calls : []) {
+    const parsed = parseDeepSeekToolCall(toolCall);
+    blocks.push({
+      type: "tool_use",
+      id: parsed.call_id,
+      name: parsed.action_key,
+      input: parsed.variables,
+    });
+  }
+  return blocks;
+}
+
 function normalizeAnthropicInputSchema(schema) {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     return { type: "object", properties: {} };
@@ -848,7 +970,6 @@ function toOpenAiConversationInputItems(messages, assistantBlocks, toolResults) 
 async function getChatCompletionStream({
   apiKey,
   model,
-  reasoning,
   instructions,
   messages,
   tools,
@@ -857,13 +978,14 @@ async function getChatCompletionStream({
   signal,
   onTextDelta,
 }) {
-  return getOpenAiChatCompletionStream({
+  return getDeepSeekChatCompletionStream({
     apiKey,
     model,
-    reasoning,
     instructions,
+    messages,
     tools,
-    inputItems: toOpenAiConversationInputItems(messages, assistantBlocks, toolResults),
+    assistantBlocks,
+    toolResults,
     signal,
     onTextDelta,
   });
@@ -872,20 +994,20 @@ async function getChatCompletionStream({
 async function getChatCompletion({
   apiKey,
   model,
-  reasoning,
   instructions,
   messages,
   tools,
   assistantBlocks,
   toolResults,
 }) {
-  return getOpenAiChatCompletion({
+  return getDeepSeekChatCompletion({
     apiKey,
     model,
-    reasoning,
     instructions,
+    messages,
     tools,
-    inputItems: toOpenAiConversationInputItems(messages, assistantBlocks, toolResults),
+    assistantBlocks,
+    toolResults,
   });
 }
 
@@ -942,31 +1064,34 @@ function parseOpenAiSseEventBlock(block) {
   }
 }
 
-async function getOpenAiChatCompletionStream({
+async function getDeepSeekChatCompletionStream({
   apiKey,
   model,
-  reasoning,
   instructions,
   messages,
   tools,
-  inputItems,
+  assistantBlocks,
+  toolResults,
   signal,
   onTextDelta,
 }) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
 
-  const requestBody = createOpenAiCompletionRequestBody({
+  const requestBody = {
     model,
-    reasoning,
-    instructions,
-    messages,
-    tools,
-    inputItems,
-  });
+    messages: buildDeepSeekMessages({ instructions, messages, assistantBlocks, toolResults }),
+    thinking: { type: "disabled" },
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = toDeepSeekTools(tools);
+    requestBody.tool_choice = "auto";
+  }
 
   let response;
   try {
-    response = await fetch(OPENAI_RESPONSES_API_URL, {
+    response = await fetch(DEEPSEEK_CHAT_COMPLETIONS_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -976,7 +1101,7 @@ async function getOpenAiChatCompletionStream({
       signal,
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+    return { ok: false, status: 502, error: "Network error calling DeepSeek" };
   }
 
   if (!response.ok) {
@@ -987,20 +1112,20 @@ async function getOpenAiChatCompletionStream({
     return {
       ok: false,
       status: response.status || 502,
-      error: errText || "OpenAI request failed",
+      error: errText || "DeepSeek request failed",
     };
   }
 
   if (!response.body) {
-    return { ok: false, status: 502, error: "Missing stream body from OpenAI" };
+    return { ok: false, status: 502, error: "Missing stream body from DeepSeek" };
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let assembledText = "";
-  let finalResponse = null;
-  const outputItems = [];
+  let usage = null;
+  const streamedToolCalls = [];
   let upstreamError = null;
   let done = false;
 
@@ -1009,7 +1134,7 @@ async function getOpenAiChatCompletionStream({
     try {
       chunk = await reader.read();
     } catch (_) {
-      return { ok: false, status: 502, error: "Stream read error from OpenAI" };
+      return { ok: false, status: 502, error: "Stream read error from DeepSeek" };
     }
     done = Boolean(chunk?.done);
     if (chunk?.value) {
@@ -1029,20 +1154,31 @@ async function getOpenAiChatCompletionStream({
         }
 
         const payload = evt.payload;
-        if (payload?.type === "response.output_text.delta" && typeof payload?.delta === "string") {
-          assembledText += payload.delta;
+        if (payload?.error) {
+          upstreamError = payload.error?.message || "DeepSeek streaming failed";
+        }
+        if (payload?.usage) usage = payload.usage;
+        const delta = payload?.choices?.[0]?.delta || {};
+        if (typeof delta?.content === "string") {
+          assembledText += delta.content;
           if (typeof onTextDelta === "function") {
-            await onTextDelta(payload.delta);
+            await onTextDelta(delta.content);
           }
-        } else if (payload?.type === "response.output_item.done" && payload?.item) {
-          outputItems.push(payload.item);
-        } else if (payload?.type === "response.completed" && payload?.response) {
-          finalResponse = payload.response;
-        } else if (payload?.type === "response.failed") {
-          upstreamError =
-            payload?.response?.error?.message ||
-            payload?.error?.message ||
-            "OpenAI streaming failed";
+        }
+        for (const toolDelta of Array.isArray(delta?.tool_calls) ? delta.tool_calls : []) {
+          const index = Number.isInteger(toolDelta?.index) ? toolDelta.index : streamedToolCalls.length;
+          const current =
+            streamedToolCalls[index] ||
+            { id: null, type: "function", function: { name: "", arguments: "" } };
+          if (toolDelta?.id) current.id = toolDelta.id;
+          if (toolDelta?.type) current.type = toolDelta.type;
+          if (typeof toolDelta?.function?.name === "string") {
+            current.function.name += toolDelta.function.name;
+          }
+          if (typeof toolDelta?.function?.arguments === "string") {
+            current.function.arguments += toolDelta.function.arguments;
+          }
+          streamedToolCalls[index] = current;
         }
 
         delimiterIdx = buffer.indexOf("\n\n");
@@ -1054,14 +1190,17 @@ async function getOpenAiChatCompletionStream({
     return { ok: false, status: 502, error: upstreamError };
   }
 
-  const payload = finalResponse || { output: outputItems };
-  const finalOutputItems = Array.isArray(payload?.output) ? payload.output : outputItems;
-  const toolCalls = extractFunctionCalls(payload, finalOutputItems);
-  const assistantBlocks = extractAssistantBlocks(payload, finalOutputItems);
-  const rawText =
-    typeof payload?.output_text === "string" && payload.output_text.trim()
-      ? payload.output_text
-      : (extractResponseText(payload) || assembledText);
+  const finalToolCalls = streamedToolCalls.filter(Boolean);
+  const toolCalls = finalToolCalls.map(parseDeepSeekToolCall);
+  const outputItems = [
+    ...(assembledText ? [{ type: "text", text: assembledText }] : []),
+    ...toolCalls.map((call) => ({
+      type: "tool_use",
+      id: call.call_id,
+      name: call.action_key,
+      input: call.variables,
+    })),
+  ];
 
   if (toolCalls.length > 0) {
     return {
@@ -1071,13 +1210,13 @@ async function getOpenAiChatCompletionStream({
         reply: "",
         action_calls: toolCalls,
       },
-      usage: payload?.usage ?? null,
+      usage,
       raw: "",
-      output_items: assistantBlocks,
+      output_items: outputItems,
     };
   }
 
-  if (!rawText) {
+  if (!assembledText) {
     return { ok: false, status: 502, error: "Empty model output" };
   }
 
@@ -1085,39 +1224,40 @@ async function getOpenAiChatCompletionStream({
     ok: true,
     data: {
       mode: "reply",
-      reply: rawText,
+      reply: assembledText,
       action_calls: [],
     },
-    usage: payload?.usage ?? null,
-    raw: rawText,
-    output_items: assistantBlocks,
+    usage,
+    raw: assembledText,
+    output_items: outputItems,
   };
 }
 
-async function getOpenAiChatCompletion({
+async function getDeepSeekChatCompletion({
   apiKey,
   model,
-  reasoning,
   instructions,
   messages,
   tools,
-  inputItems,
+  assistantBlocks,
+  toolResults,
 }) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
 
-  const requestBody = createOpenAiCompletionRequestBody({
+  const requestBody = {
     model,
-    reasoning,
-    instructions,
-    messages,
-    tools,
-    inputItems,
-  });
-  requestBody.stream = false;
+    messages: buildDeepSeekMessages({ instructions, messages, assistantBlocks, toolResults }),
+    thinking: { type: "disabled" },
+    stream: false,
+  };
+  if (Array.isArray(tools) && tools.length > 0) {
+    requestBody.tools = toDeepSeekTools(tools);
+    requestBody.tool_choice = "auto";
+  }
 
   let response;
   try {
-    response = await fetch(OPENAI_RESPONSES_API_URL, {
+    response = await fetch(DEEPSEEK_CHAT_COMPLETIONS_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -1126,7 +1266,7 @@ async function getOpenAiChatCompletion({
       body: JSON.stringify(requestBody),
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling OpenAI" };
+    return { ok: false, status: 502, error: "Network error calling DeepSeek" };
   }
 
   if (!response.ok) {
@@ -1137,7 +1277,7 @@ async function getOpenAiChatCompletion({
     return {
       ok: false,
       status: response.status || 502,
-      error: errText || "OpenAI request failed",
+      error: errText || "DeepSeek request failed",
     };
   }
 
@@ -1145,11 +1285,11 @@ async function getOpenAiChatCompletion({
   try {
     payload = await response.json();
   } catch (_) {
-    return { ok: false, status: 502, error: "Invalid JSON from OpenAI" };
+    return { ok: false, status: 502, error: "Invalid JSON from DeepSeek" };
   }
 
-  const toolCalls = extractFunctionCalls(payload);
-  const assistantBlocks = extractAssistantBlocks(payload);
+  const toolCalls = extractDeepSeekFunctionCalls(payload);
+  const outputItems = extractDeepSeekAssistantBlocks(payload);
   if (toolCalls.length > 0) {
     return {
       ok: true,
@@ -1160,11 +1300,11 @@ async function getOpenAiChatCompletion({
       },
       usage: payload?.usage ?? null,
       raw: "",
-      output_items: assistantBlocks,
+      output_items: outputItems,
     };
   }
 
-  const rawText = extractResponseText(payload);
+  const rawText = extractDeepSeekText(payload);
   if (!rawText) return { ok: false, status: 502, error: "Empty model output" };
 
   return {
@@ -1176,7 +1316,7 @@ async function getOpenAiChatCompletion({
     },
     usage: payload?.usage ?? null,
     raw: rawText,
-    output_items: assistantBlocks,
+    output_items: outputItems,
   };
 }
 
@@ -1262,9 +1402,8 @@ module.exports = async function handler(req, res) {
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    openAiApiKey: process.env.OPENAI_API_KEY,
-    openAiModel: process.env.OPENAI_WIDGET_SPAM_MODEL || PRIMARY_MODEL,
-    openAiReasoning: LOWEST_REASONING,
+    deepSeekApiKey: process.env.DEEPSEEK_API_KEY,
+    deepSeekModel: process.env.DEEPSEEK_WIDGET_SPAM_MODEL || PRIMARY_MODEL,
     agentId,
     anonId,
     incomingMessage,
@@ -1588,9 +1727,8 @@ module.exports = async function handler(req, res) {
   const completionStartedAt = Date.now();
   const completion = wantsStream
       ? await getChatCompletionStream({
-        apiKey: process.env.OPENAI_API_KEY,
+        apiKey: process.env.DEEPSEEK_API_KEY,
         model: PRIMARY_MODEL,
-        reasoning: LOWEST_REASONING,
         instructions: prompt,
         messages,
         tools: effectiveTools,
@@ -1600,9 +1738,8 @@ module.exports = async function handler(req, res) {
         },
       })
     : await getChatCompletion({
-        apiKey: process.env.OPENAI_API_KEY,
+        apiKey: process.env.DEEPSEEK_API_KEY,
         model: PRIMARY_MODEL,
-        reasoning: LOWEST_REASONING,
         instructions: prompt,
         messages,
         tools: effectiveTools,
@@ -2318,35 +2455,6 @@ module.exports = async function handler(req, res) {
       completion.output_items && Array.isArray(completion.output_items)
         ? completion.output_items
         : [];
-    const followupInputItems = [
-      ...toOpenAiInputItems(messages),
-      ...assistantBlocks.map((item) => {
-        if (item?.type === "text") {
-          return {
-            type: "message",
-            role: "assistant",
-            content: [{ type: "output_text", text: String(item.text ?? "") }],
-          };
-        }
-        if (item?.type === "tool_use") {
-          return {
-            type: "function_call",
-            call_id: item?.id ?? null,
-            name: String(item?.name ?? ""),
-            arguments: JSON.stringify(
-              item?.input && typeof item.input === "object" ? item.input : {}
-            ),
-          };
-        }
-        return null;
-      }).filter(Boolean),
-      ...toolResults.map((result) => ({
-        type: "function_call_output",
-        call_id: result.call_id,
-        output: JSON.stringify(result),
-      })),
-    ];
-
     const calendarNote = calendarContext
       ? [
           "CALENDAR SETTINGS",
@@ -2392,13 +2500,13 @@ module.exports = async function handler(req, res) {
 
     const followupStartedAt = Date.now();
     const followup = wantsStream
-      ? await getOpenAiChatCompletionStream({
-          apiKey: process.env.OPENAI_API_KEY,
+      ? await getChatCompletionStream({
+          apiKey: process.env.DEEPSEEK_API_KEY,
           model: FOLLOWUP_MODEL,
-          reasoning: LOWEST_REASONING,
           instructions: followupInstructions,
           messages,
-          inputItems: followupInputItems,
+          assistantBlocks,
+          toolResults,
           signal: streamAbortController?.signal,
           onTextDelta: async (delta) => {
             nanoStreamChunks.push(delta);
@@ -2407,13 +2515,13 @@ module.exports = async function handler(req, res) {
             }
           },
         })
-      : await getOpenAiChatCompletion({
-          apiKey: process.env.OPENAI_API_KEY,
+      : await getChatCompletion({
+          apiKey: process.env.DEEPSEEK_API_KEY,
           model: FOLLOWUP_MODEL,
-          reasoning: LOWEST_REASONING,
           instructions: followupInstructions,
           messages,
-          inputItems: followupInputItems,
+          assistantBlocks,
+          toolResults,
         });
     latencyNanoMs = Date.now() - followupStartedAt;
     if (!followup.ok) {
