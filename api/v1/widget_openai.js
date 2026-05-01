@@ -34,8 +34,8 @@ const {
 } = require("../../scripts/internal/humanHandoff");
 
 const OPENAI_CHAT_COMPLETIONS_API_URL = "https://api.openai.com/v1/chat/completions";
-const PRIMARY_MODEL = process.env.OPENAI_WIDGET_MODEL || "gpt-4o-mini";
-const FOLLOWUP_MODEL = process.env.OPENAI_WIDGET_FOLLOWUP_MODEL || PRIMARY_MODEL;
+const PRIMARY_MODEL = process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini";
+const FOLLOWUP_MODEL = process.env.OPENAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -1350,8 +1350,8 @@ module.exports = async function handler(req, res) {
     }
 
   const requestStartedAt = Date.now();
-  let latencyMiniMs = null;
-  let latencyNanoMs = null;
+  let latencyFirstCallMs = null;
+  let latencySecondCallMs = null;
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
@@ -1401,7 +1401,7 @@ module.exports = async function handler(req, res) {
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     openAiApiKey: process.env.OPENAI_API_KEY,
-    openAiModel: process.env.OPENAI_WIDGET_SPAM_MODEL || PRIMARY_MODEL,
+    openAiModel: process.env.OPENAI_SPAM_MODEL || PRIMARY_MODEL,
     agentId,
     anonId,
     incomingMessage,
@@ -1742,7 +1742,7 @@ module.exports = async function handler(req, res) {
         messages,
         tools: effectiveTools,
       });
-  latencyMiniMs = Date.now() - completionStartedAt;
+  latencyFirstCallMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
     if (streamReady) {
       sendSseEvent(res, "error", { error: completion.error });
@@ -2521,7 +2521,7 @@ module.exports = async function handler(req, res) {
           assistantBlocks,
           toolResults,
         });
-    latencyNanoMs = Date.now() - followupStartedAt;
+    latencySecondCallMs = Date.now() - followupStartedAt;
     if (!followup.ok) {
       if (streamReady) {
         sendSseEvent(res, "error", { error: followup.error });
@@ -2572,8 +2572,8 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const miniTokens = usageToTokens(completion.usage);
-    const nanoTokens = usageToTokens(followup.usage);
+    const firstCallTokens = usageToTokens(completion.usage);
+    const secondCallTokens = usageToTokens(followup.usage);
     trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -2584,20 +2584,20 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: PRIMARY_MODEL,
-      modelNano: FOLLOWUP_MODEL,
-      miniInputTokens: miniTokens.input,
-      miniOutputTokens: miniTokens.output,
-      nanoInputTokens: nanoTokens.input,
-      nanoOutputTokens: nanoTokens.output,
+      modelFirstCall: PRIMARY_MODEL,
+      modelSecondCall: FOLLOWUP_MODEL,
+      firstInputTokens: firstCallTokens.input,
+      firstOutputTokens: firstCallTokens.output,
+      secondInputTokens: secondCallTokens.input,
+      secondOutputTokens: secondCallTokens.output,
       actionUsed: true,
       actionCount: actionCalls.length,
       ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
       ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
       statusCode: 200,
       latencyTotalMs: Date.now() - requestStartedAt,
-      latencyMiniMs,
-      latencyNanoMs,
+      latencyFirstCallMs,
+      latencySecondCallMs,
       latencyToolsMs,
       errorCode: null,
     });
@@ -2687,7 +2687,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const completionMiniTokens = usageToTokens(completion.usage);
+  const completionFirstCallTokens = usageToTokens(completion.usage);
   trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -2698,20 +2698,20 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: PRIMARY_MODEL,
-    modelNano: FOLLOWUP_MODEL,
-    miniInputTokens: completionMiniTokens.input,
-    miniOutputTokens: completionMiniTokens.output,
-    nanoInputTokens: 0,
-    nanoOutputTokens: 0,
+    modelFirstCall: PRIMARY_MODEL,
+    modelSecondCall: FOLLOWUP_MODEL,
+    firstInputTokens: completionFirstCallTokens.input,
+    firstOutputTokens: completionFirstCallTokens.output,
+    secondInputTokens: 0,
+    secondOutputTokens: 0,
     actionUsed: false,
     actionCount: 0,
     ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
     ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
     statusCode: 200,
     latencyTotalMs: Date.now() - requestStartedAt,
-    latencyMiniMs,
-    latencyNanoMs: null,
+    latencyFirstCallMs,
+    latencySecondCallMs: null,
     latencyToolsMs: null,
     errorCode: null,
   });
@@ -2752,4 +2752,6 @@ module.exports = async function handler(req, res) {
     }
   }
 };
+
+
 

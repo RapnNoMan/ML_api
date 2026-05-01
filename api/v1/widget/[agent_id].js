@@ -236,8 +236,8 @@ module.exports = async function handler(req, res) {
     }
 
   const requestStartedAt = Date.now();
-  let latencyMiniMs = null;
-  let latencyNanoMs = null;
+  let latencyFirstCallMs = null;
+  let latencySecondCallMs = null;
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
@@ -403,13 +403,12 @@ module.exports = async function handler(req, res) {
   const completionStartedAt = Date.now();
   const completion = await getChatCompletion({
     apiKey: process.env.OPENAI_API_KEY,
-    model: "gpt-5-mini",
-    reasoning: { effort: "low" },
+    model: process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini",
     instructions: prompt,
     messages,
     tools: toolsResult.tools,
   });
-  latencyMiniMs = Date.now() - completionStartedAt;
+  latencyFirstCallMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
     res.status(completion.status).json({ error: completion.error });
     return;
@@ -878,13 +877,12 @@ module.exports = async function handler(req, res) {
     const followupStartedAt = Date.now();
     const followup = await getChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
-      model: "gpt-5-nano",
-      reasoning: { effort: "minimal" },
+      model: process.env.OPENAI_FOLLOWUP_MODEL || process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini",
       instructions: followupInstructions,
       messages,
       inputItems: [...inputItems],
     });
-    latencyNanoMs = Date.now() - followupStartedAt;
+    latencySecondCallMs = Date.now() - followupStartedAt;
 
     if (!followup.ok) {
       res.status(followup.status).json({ error: followup.error });
@@ -910,8 +908,8 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const miniTokens = usageToTokens(completion.usage);
-    const nanoTokens = usageToTokens(followup.usage);
+    const firstCallTokens = usageToTokens(completion.usage);
+    const secondCallTokens = usageToTokens(followup.usage);
     trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -922,20 +920,20 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: "gpt-5-mini",
-      modelNano: "gpt-5-nano",
-      miniInputTokens: miniTokens.input,
-      miniOutputTokens: miniTokens.output,
-      nanoInputTokens: nanoTokens.input,
-      nanoOutputTokens: nanoTokens.output,
+      modelFirstCall: process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini",
+      modelSecondCall: process.env.OPENAI_FOLLOWUP_MODEL || process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini",
+      firstInputTokens: firstCallTokens.input,
+      firstOutputTokens: firstCallTokens.output,
+      secondInputTokens: secondCallTokens.input,
+      secondOutputTokens: secondCallTokens.output,
       actionUsed: true,
       actionCount: actionCalls.length,
       ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
       ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
       statusCode: 200,
       latencyTotalMs: Date.now() - requestStartedAt,
-      latencyMiniMs,
-      latencyNanoMs,
+      latencyFirstCallMs,
+      latencySecondCallMs,
       latencyToolsMs,
       errorCode: null,
     });
@@ -966,7 +964,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const miniTokens = usageToTokens(completion.usage);
+  const firstCallTokens = usageToTokens(completion.usage);
   trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -977,20 +975,20 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: "gpt-5-mini",
-    modelNano: "gpt-5-nano",
-    miniInputTokens: miniTokens.input,
-    miniOutputTokens: miniTokens.output,
-    nanoInputTokens: 0,
-    nanoOutputTokens: 0,
+    modelFirstCall: process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini",
+    modelSecondCall: process.env.OPENAI_FOLLOWUP_MODEL || process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini",
+    firstInputTokens: firstCallTokens.input,
+    firstOutputTokens: firstCallTokens.output,
+    secondInputTokens: 0,
+    secondOutputTokens: 0,
     actionUsed: false,
     actionCount: 0,
     ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
     ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
     statusCode: 200,
     latencyTotalMs: Date.now() - requestStartedAt,
-    latencyMiniMs,
-    latencyNanoMs: null,
+    latencyFirstCallMs,
+    latencySecondCallMs: null,
     latencyToolsMs: null,
     errorCode: null,
   });
@@ -1015,3 +1013,5 @@ module.exports = async function handler(req, res) {
     }
   }
 };
+
+

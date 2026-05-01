@@ -17,14 +17,14 @@ create table if not exists public.message_analytics (
   chat_id text null,
 
   -- Models used
-  model_mini text not null default 'gpt-5-mini',
-  model_nano text not null default 'gpt-5-nano',
+  model_first_call text not null default 'gpt-4o-mini',
+  model_second_call text not null default 'gpt-4o-mini',
 
   -- Token accounting (requested)
-  mini_input_tokens bigint not null default 0,
-  mini_output_tokens bigint not null default 0,
-  nano_input_tokens bigint not null default 0,
-  nano_output_tokens bigint not null default 0,
+  first_input_tokens bigint not null default 0,
+  first_output_tokens bigint not null default 0,
+  second_input_tokens bigint not null default 0,
+  second_output_tokens bigint not null default 0,
 
   -- Optional but high-value analytics fields
   action_used boolean not null default false,
@@ -33,8 +33,8 @@ create table if not exists public.message_analytics (
   rag_chunk_count integer not null default 0,
   status_code integer not null default 200,
   latency_total_ms integer null,
-  latency_mini_ms integer null,
-  latency_nano_ms integer null,
+  latency_first_call_ms integer null,
+  latency_second_call_ms integer null,
   latency_tools_ms integer null,
   error_code text null
 );

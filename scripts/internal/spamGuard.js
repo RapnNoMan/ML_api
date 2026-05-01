@@ -2,7 +2,7 @@ const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 const DEEPSEEK_CHAT_COMPLETIONS_API_URL = "https://api.deepseek.com/chat/completions";
 const DEFAULT_SPAM_MODEL = "grok-4-1-fast-non-reasoning";
-const DEFAULT_OPENAI_SPAM_MODEL = "gpt-5-nano";
+const DEFAULT_OPENAI_SPAM_MODEL = "gpt-4o-mini";
 const DEFAULT_DEEPSEEK_SPAM_MODEL = "deepseek-v4-flash";
 
 function parseContentRangeTotal(contentRange) {

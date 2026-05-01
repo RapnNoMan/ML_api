@@ -34,19 +34,13 @@ const {
 } = require("../../scripts/internal/humanHandoff");
 
 const GEMINI_OPENAI_CHAT_COMPLETIONS_API_URL =
-  process.env.GEMINI_OPENAI_CHAT_COMPLETIONS_API_URL ||
-  "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions";
-const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
-const PRIMARY_MODEL = process.env.GEMINI_PRIMARY_MODEL || "gemini-3.1-flash-lite-preview";
-const FOLLOWUP_MODEL = process.env.GEMINI_FOLLOWUP_MODEL || "gemini-3.1-flash-lite-preview";
-const GROK_FALLBACK_PRIMARY_MODEL =
-  process.env.GEMINI_GROK_FALLBACK_PRIMARY_MODEL ||
-  process.env.XAI_PRIMARY_MODEL ||
-  "grok-4-1-fast-non-reasoning";
-const GROK_FALLBACK_FOLLOWUP_MODEL =
-  process.env.GEMINI_GROK_FALLBACK_FOLLOWUP_MODEL ||
-  process.env.XAI_FOLLOWUP_MODEL ||
-  "grok-4-1-fast-non-reasoning";
+  process.env.OPENAI_CHAT_COMPLETIONS_API_URL ||
+  "https://api.openai.com/v1/chat/completions";
+const XAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
+const PRIMARY_MODEL = process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini";
+const FOLLOWUP_MODEL = process.env.OPENAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
+const GROK_FALLBACK_PRIMARY_MODEL = PRIMARY_MODEL;
+const GROK_FALLBACK_FOLLOWUP_MODEL = FOLLOWUP_MODEL;
 
 function toTextBlocks(content) {
   if (Array.isArray(content)) {
@@ -637,7 +631,7 @@ function extractFunctionCalls(payload, fallbackOutputItems = []) {
     calls.push({
       action_key: typeof item?.name === "string" ? item.name : "",
       variables,
-      call_id: item?.id ?? item?.call_id ?? null,
+      call_id: item?.call_id ?? item?.id ?? null,
     });
   }
   return calls;
@@ -1041,7 +1035,6 @@ TOOL RULES (MUST FOLLOW):
       messages,
       inputItems,
     }),
-    thinking: { type: "disabled" },
     stream,
   };
 
@@ -1398,7 +1391,7 @@ async function getXAiChatCompletionStream({
       inputItems,
       signal,
       onTextDelta,
-      fallbackReason: "Missing GEMINI_API_KEY",
+      fallbackReason: "Missing OPENAI_API_KEY",
     });
   }
 
@@ -1648,7 +1641,7 @@ async function getXAiChatCompletion({
       messages,
       tools,
       inputItems,
-      fallbackReason: "Missing GEMINI_API_KEY",
+      fallbackReason: "Missing OPENAI_API_KEY",
     });
   }
 
@@ -1792,8 +1785,8 @@ module.exports = async function handler(req, res) {
     }
 
   const requestStartedAt = Date.now();
-  let latencyMiniMs = null;
-  let latencyNanoMs = null;
+  let latencyFirstCallMs = null;
+  let latencySecondCallMs = null;
   let latencyToolsMs = null;
 
   const body = req.body ?? {};
@@ -1842,8 +1835,8 @@ module.exports = async function handler(req, res) {
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    xaiApiKey: process.env.XAI_API_KEY,
-    xaiModel: process.env.XAI_SPAM_MODEL || process.env.XAI_PRIMARY_MODEL,
+    openAiApiKey: process.env.OPENAI_API_KEY,
+    openAiModel: process.env.OPENAI_SPAM_MODEL || PRIMARY_MODEL,
     agentId,
     anonId,
     incomingMessage,
@@ -2167,9 +2160,9 @@ module.exports = async function handler(req, res) {
   const completionStartedAt = Date.now();
   const completion = wantsStream
       ? await getChatCompletionStream({
-        apiKey: process.env.GEMINI_API_KEY,
+        apiKey: process.env.OPENAI_API_KEY,
         model: PRIMARY_MODEL,
-        fallbackApiKey: process.env.XAI_API_KEY,
+        fallbackApiKey: process.env.OPENAI_API_KEY,
         fallbackModel: GROK_FALLBACK_PRIMARY_MODEL,
         instructions: prompt,
         messages,
@@ -2180,15 +2173,15 @@ module.exports = async function handler(req, res) {
         },
       })
     : await getChatCompletion({
-        apiKey: process.env.GEMINI_API_KEY,
+        apiKey: process.env.OPENAI_API_KEY,
         model: PRIMARY_MODEL,
-        fallbackApiKey: process.env.XAI_API_KEY,
+        fallbackApiKey: process.env.OPENAI_API_KEY,
         fallbackModel: GROK_FALLBACK_PRIMARY_MODEL,
         instructions: prompt,
         messages,
         tools: effectiveTools,
       });
-  latencyMiniMs = Date.now() - completionStartedAt;
+  latencyFirstCallMs = Date.now() - completionStartedAt;
   if (!completion.ok) {
     if (streamReady) {
       sendSseEvent(res, "error", { error: completion.error });
@@ -2974,9 +2967,9 @@ module.exports = async function handler(req, res) {
     const followupStartedAt = Date.now();
     const followup = wantsStream
       ? await getXAiChatCompletionStream({
-          apiKey: process.env.GEMINI_API_KEY,
+          apiKey: process.env.OPENAI_API_KEY,
           model: FOLLOWUP_MODEL,
-          fallbackApiKey: process.env.XAI_API_KEY,
+          fallbackApiKey: process.env.OPENAI_API_KEY,
           fallbackModel: GROK_FALLBACK_FOLLOWUP_MODEL,
           instructions: followupInstructions,
           messages,
@@ -2990,15 +2983,15 @@ module.exports = async function handler(req, res) {
           },
         })
       : await getXAiChatCompletion({
-          apiKey: process.env.GEMINI_API_KEY,
+          apiKey: process.env.OPENAI_API_KEY,
           model: FOLLOWUP_MODEL,
-          fallbackApiKey: process.env.XAI_API_KEY,
+          fallbackApiKey: process.env.OPENAI_API_KEY,
           fallbackModel: GROK_FALLBACK_FOLLOWUP_MODEL,
           instructions: followupInstructions,
           messages,
           inputItems: followupInputItems,
         });
-    latencyNanoMs = Date.now() - followupStartedAt;
+    latencySecondCallMs = Date.now() - followupStartedAt;
     if (!followup.ok) {
       if (streamReady) {
         sendSseEvent(res, "error", { error: followup.error });
@@ -3049,8 +3042,8 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    const miniTokens = usageToTokens(completion.usage);
-    const nanoTokens = usageToTokens(followup.usage);
+    const firstCallTokens = usageToTokens(completion.usage);
+    const secondCallTokens = usageToTokens(followup.usage);
     trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -3061,20 +3054,20 @@ module.exports = async function handler(req, res) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: PRIMARY_MODEL,
-      modelNano: FOLLOWUP_MODEL,
-      miniInputTokens: miniTokens.input,
-      miniOutputTokens: miniTokens.output,
-      nanoInputTokens: nanoTokens.input,
-      nanoOutputTokens: nanoTokens.output,
+      modelFirstCall: PRIMARY_MODEL,
+      modelSecondCall: FOLLOWUP_MODEL,
+      firstInputTokens: firstCallTokens.input,
+      firstOutputTokens: firstCallTokens.output,
+      secondInputTokens: secondCallTokens.input,
+      secondOutputTokens: secondCallTokens.output,
       actionUsed: true,
       actionCount: actionCalls.length,
       ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
       ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
       statusCode: 200,
       latencyTotalMs: Date.now() - requestStartedAt,
-      latencyMiniMs,
-      latencyNanoMs,
+      latencyFirstCallMs,
+      latencySecondCallMs,
       latencyToolsMs,
       errorCode: null,
     });
@@ -3164,7 +3157,7 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const completionMiniTokens = usageToTokens(completion.usage);
+  const completionFirstCallTokens = usageToTokens(completion.usage);
   trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -3175,20 +3168,20 @@ module.exports = async function handler(req, res) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: PRIMARY_MODEL,
-    modelNano: FOLLOWUP_MODEL,
-    miniInputTokens: completionMiniTokens.input,
-    miniOutputTokens: completionMiniTokens.output,
-    nanoInputTokens: 0,
-    nanoOutputTokens: 0,
+    modelFirstCall: PRIMARY_MODEL,
+    modelSecondCall: FOLLOWUP_MODEL,
+    firstInputTokens: completionFirstCallTokens.input,
+    firstOutputTokens: completionFirstCallTokens.output,
+    secondInputTokens: 0,
+    secondOutputTokens: 0,
     actionUsed: false,
     actionCount: 0,
     ragUsed: Array.isArray(vectorResult.chunks) && vectorResult.chunks.length > 0,
     ragChunkCount: Array.isArray(vectorResult.chunks) ? vectorResult.chunks.length : 0,
     statusCode: 200,
     latencyTotalMs: Date.now() - requestStartedAt,
-    latencyMiniMs,
-    latencyNanoMs: null,
+    latencyFirstCallMs,
+    latencySecondCallMs: null,
     latencyToolsMs: null,
     errorCode: null,
   });
@@ -3229,4 +3222,7 @@ module.exports = async function handler(req, res) {
     }
   }
 };
+
+
+
 

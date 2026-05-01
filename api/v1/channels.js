@@ -33,9 +33,9 @@ const {
   assignHumanHandoffChat,
 } = require("../../scripts/internal/humanHandoff");
 
-const XAI_RESPONSES_API_URL = "https://api.x.ai/v1/responses";
-const PRIMARY_MODEL = process.env.XAI_PRIMARY_MODEL || "grok-4-1-fast-non-reasoning";
-const FOLLOWUP_MODEL = process.env.XAI_FOLLOWUP_MODEL || "grok-4-1-fast-non-reasoning";
+const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
+const PRIMARY_MODEL = process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini";
+const FOLLOWUP_MODEL = process.env.OPENAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 const SONIOX_API_BASE_URL = String(process.env.SONIOX_API_BASE_URL || "https://api.soniox.com").replace(/\/+$/, "");
 const SONIOX_STT_MODEL = process.env.SONIOX_STT_MODEL || "stt-async-v4";
@@ -57,12 +57,7 @@ const META_MIN_TYPING_MS = Math.max(
     ? Math.floor(Number(process.env.META_MIN_TYPING_MS))
     : 1200
 );
-const XAI_MODEL_FALLBACKS = [
-  PRIMARY_MODEL,
-  "grok-4-1-fast-non-reasoning",
-  "grok-4-fast-non-reasoning",
-  "grok-4.1-fast-non-reasoning",
-];
+const OPENAI_MODEL_FALLBACKS = [PRIMARY_MODEL];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
@@ -285,7 +280,7 @@ function extractFunctionCalls(payload, fallbackOutputItems = []) {
     calls.push({
       action_key: typeof item?.name === "string" ? item.name : "",
       variables,
-      call_id: item?.id ?? item?.call_id ?? null,
+      call_id: item?.call_id ?? item?.id ?? null,
     });
   }
   return calls;
@@ -413,7 +408,7 @@ async function callXAiWithModel({ apiKey, model, instructions, messages, tools, 
 
   let response;
   try {
-    response = await fetch(XAI_RESPONSES_API_URL, {
+    response = await fetch(OPENAI_RESPONSES_API_URL, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -422,7 +417,7 @@ async function callXAiWithModel({ apiKey, model, instructions, messages, tools, 
       body: JSON.stringify(requestBody),
     });
   } catch (_) {
-    return { ok: false, status: 502, error: "Network error calling xAI" };
+    return { ok: false, status: 502, error: "Network error calling OpenAI" };
   }
 
   if (!response.ok) {
@@ -433,7 +428,7 @@ async function callXAiWithModel({ apiKey, model, instructions, messages, tools, 
     return {
       ok: false,
       status: response.status || 502,
-      error: errText || "xAI request failed",
+      error: errText || "OpenAI request failed",
     };
   }
 
@@ -441,7 +436,7 @@ async function callXAiWithModel({ apiKey, model, instructions, messages, tools, 
   try {
     payload = await response.json();
   } catch (_) {
-    return { ok: false, status: 502, error: "Invalid JSON from xAI" };
+    return { ok: false, status: 502, error: "Invalid JSON from OpenAI" };
   }
 
   const actionCalls = extractFunctionCalls(payload);
@@ -470,7 +465,7 @@ async function getXAiChatCompletion({ apiKey, model, instructions, messages, too
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
   const uniqueModels = Array.from(
     new Set(
-      [model, ...XAI_MODEL_FALLBACKS]
+      [model, ...OPENAI_MODEL_FALLBACKS]
         .map((item) => String(item || "").trim())
         .filter(Boolean)
     )
@@ -498,7 +493,7 @@ async function getXAiChatCompletion({ apiKey, model, instructions, messages, too
   return {
     ok: false,
     status: lastError?.status || 502,
-    error: lastError?.error || "xAI request failed",
+    error: lastError?.error || "OpenAI request failed",
   };
 }
 
@@ -2179,8 +2174,8 @@ async function processIncomingMessage({ event, connection, headers }) {
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    xaiApiKey: process.env.XAI_API_KEY,
-    xaiModel: process.env.XAI_SPAM_MODEL || process.env.XAI_PRIMARY_MODEL,
+    openAiApiKey: process.env.OPENAI_API_KEY,
+    openAiModel: process.env.OPENAI_SPAM_MODEL || PRIMARY_MODEL,
     agentId,
     anonId,
     incomingMessage: incomingText,
@@ -2307,8 +2302,8 @@ async function processIncomingMessage({ event, connection, headers }) {
     includePortalTickets: true,
   });
 
-  let latencyMiniMs = null;
-  let latencyNanoMs = null;
+  let latencyFirstCallMs = null;
+  let latencySecondCallMs = null;
   let latencyToolsMs = null;
 
   const [historyResult, ragResult, agentInfo, toolsResult] = await Promise.all([
@@ -2363,13 +2358,13 @@ async function processIncomingMessage({ event, connection, headers }) {
 
   const completionStartedAt = Date.now();
   const completion = await getXAiChatCompletion({
-    apiKey: process.env.XAI_API_KEY,
+    apiKey: process.env.OPENAI_API_KEY,
     model: PRIMARY_MODEL,
     instructions: prompt,
     messages,
     tools: effectiveTools,
   });
-  latencyMiniMs = Date.now() - completionStartedAt;
+  latencyFirstCallMs = Date.now() - completionStartedAt;
   if (!completion.ok) return { ok: false, status: completion.status, error: completion.error };
 
   let replyRaw = completion.data?.reply ?? "";
@@ -2420,13 +2415,13 @@ async function processIncomingMessage({ event, connection, headers }) {
 
     const followupStartedAt = Date.now();
     const followup = await getXAiChatCompletion({
-      apiKey: process.env.XAI_API_KEY,
+      apiKey: process.env.OPENAI_API_KEY,
       model: FOLLOWUP_MODEL,
       instructions: followupPrompt,
       messages,
       inputItems: followupInputItems,
     });
-    latencyNanoMs = Date.now() - followupStartedAt;
+    latencySecondCallMs = Date.now() - followupStartedAt;
     if (!followup.ok) return { ok: false, status: followup.status, error: followup.error };
 
     replyRaw = followup.data?.reply ?? "";
@@ -2468,8 +2463,8 @@ async function processIncomingMessage({ event, connection, headers }) {
         });
     if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
-    const miniTokens = usageToTokens(completion.usage);
-    const nanoTokens = usageToTokens(followup.usage);
+    const firstCallTokens = usageToTokens(completion.usage);
+    const secondCallTokens = usageToTokens(followup.usage);
     trackMessageAnalytics({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
@@ -2480,20 +2475,20 @@ async function processIncomingMessage({ event, connection, headers }) {
       country: requestCountry,
       anonId,
       chatId,
-      modelMini: PRIMARY_MODEL,
-      modelNano: FOLLOWUP_MODEL,
-      miniInputTokens: miniTokens.input,
-      miniOutputTokens: miniTokens.output,
-      nanoInputTokens: nanoTokens.input,
-      nanoOutputTokens: nanoTokens.output,
+      modelFirstCall: PRIMARY_MODEL,
+      modelSecondCall: FOLLOWUP_MODEL,
+      firstInputTokens: firstCallTokens.input,
+      firstOutputTokens: firstCallTokens.output,
+      secondInputTokens: secondCallTokens.input,
+      secondOutputTokens: secondCallTokens.output,
       actionUsed: true,
       actionCount,
       ragUsed: Array.isArray(ragResult.chunks) && ragResult.chunks.length > 0,
       ragChunkCount: Array.isArray(ragResult.chunks) ? ragResult.chunks.length : 0,
       statusCode: 200,
       latencyTotalMs: Date.now() - requestStartedAt,
-      latencyMiniMs,
-      latencyNanoMs,
+      latencyFirstCallMs,
+      latencySecondCallMs,
       latencyToolsMs,
       errorCode: null,
     });
@@ -2526,7 +2521,7 @@ async function processIncomingMessage({ event, connection, headers }) {
   });
   if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
-  const miniTokens = usageToTokens(completion.usage);
+  const firstCallTokens = usageToTokens(completion.usage);
   trackMessageAnalytics({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
@@ -2537,20 +2532,20 @@ async function processIncomingMessage({ event, connection, headers }) {
     country: requestCountry,
     anonId,
     chatId,
-    modelMini: PRIMARY_MODEL,
-    modelNano: FOLLOWUP_MODEL,
-    miniInputTokens: miniTokens.input,
-    miniOutputTokens: miniTokens.output,
-    nanoInputTokens: 0,
-    nanoOutputTokens: 0,
+    modelFirstCall: PRIMARY_MODEL,
+    modelSecondCall: FOLLOWUP_MODEL,
+    firstInputTokens: firstCallTokens.input,
+    firstOutputTokens: firstCallTokens.output,
+    secondInputTokens: 0,
+    secondOutputTokens: 0,
     actionUsed: false,
     actionCount: 0,
     ragUsed: Array.isArray(ragResult.chunks) && ragResult.chunks.length > 0,
     ragChunkCount: Array.isArray(ragResult.chunks) ? ragResult.chunks.length : 0,
     statusCode: 200,
     latencyTotalMs: Date.now() - requestStartedAt,
-    latencyMiniMs,
-    latencyNanoMs: null,
+    latencyFirstCallMs,
+    latencySecondCallMs: null,
     latencyToolsMs: null,
     errorCode: null,
   });
@@ -3140,3 +3135,8 @@ module.exports = async function handler(req, res) {
     });
   }
 };
+
+
+
+
+
