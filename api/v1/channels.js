@@ -1257,6 +1257,7 @@ function buildDispatcherHandoffTool({ settings, channel }) {
 
 async function saveChannelCustomerForPortal({
   agentId,
+  workspaceId = null,
   anonId,
   chatId,
   country,
@@ -1269,6 +1270,7 @@ async function saveChannelCustomerForPortal({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
+    workspaceId,
     anonId,
     chatId,
     country,
@@ -3227,6 +3229,7 @@ async function processIncomingMessage({ event, connection, headers }) {
     if (assignedHumanAgentUserId || channelMode === "none") {
       const saveResult = await saveChannelCustomerForPortal({
         agentId: portalChatResult.chat?.agent_id ?? null,
+        workspaceId: portalChatResult.chat?.workspace_id ?? agentInfo?.workspace_id ?? null,
         anonId,
         chatId,
         country: requestCountry,

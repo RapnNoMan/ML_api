@@ -114,7 +114,7 @@ async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chat
   }
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const url = buildRestUrl(baseUrl, "human_handoff_chats", {
-    select: "id,agent_id,status,assigned_human_agent_user_id,shift_id",
+    select: "id,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id",
     chat_source: `eq.${chatSource}`,
     chat_id: `eq.${chatId}`,
     status: "neq.closed",
