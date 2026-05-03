@@ -37,6 +37,21 @@ const HUMAN_HANDOFF_CONVERSATION_GAP_MINUTES = Math.max(
     ? Math.floor(Number(process.env.HUMAN_HANDOFF_CONVERSATION_GAP_MINUTES))
     : 240
 );
+const JORDAN_TIME_ZONE = "Asia/Amman";
+const DISPATCHER_DAY_START_OFFSET_MS = 2 * 60 * 60 * 1000;
+
+function getJordanDispatcherDay(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  const shifted = new Date(date.getTime() - DISPATCHER_DAY_START_OFFSET_MS);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: JORDAN_TIME_ZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(shifted);
+  const partMap = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${partMap.year}-${partMap.month}-${partMap.day}`;
+}
 
 function buildRestUrl(baseUrl, table, searchParams) {
   const url = new URL(`${baseUrl}/${table}`);
@@ -108,19 +123,33 @@ async function getOpenHumanHandoffChat({ portalId, portalSecretKey, agentId, cha
   }
 }
 
-async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId }) {
-  if (!portalId || !portalSecretKey || !chatSource || !chatId) {
+async function getPortalConversationChats({
+  portalId,
+  portalSecretKey,
+  workspaceId,
+  anonId,
+  chatId,
+  chatSource = null,
+}) {
+  if (!portalId || !portalSecretKey || !chatId) {
     return { ok: true, chat: null };
   }
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
-  const url = buildRestUrl(baseUrl, "human_handoff_chats", {
-    select: "id,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id",
-    chat_source: `eq.${chatSource}`,
+  const params = {
+    select: "id,created_at,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id",
     chat_id: `eq.${chatId}`,
-    status: "neq.closed",
     order: "created_at.desc",
-    limit: "1",
-  });
+    limit: "20",
+  };
+  if (workspaceId && anonId) {
+    params.workspace_id = `eq.${workspaceId}`;
+    params.annon = `eq.${anonId}`;
+  } else if (chatSource) {
+    params.chat_source = `eq.${chatSource}`;
+  } else {
+    return { ok: true, chats: [], chat: null };
+  }
+  const url = buildRestUrl(baseUrl, "human_handoff_chats", params);
 
   try {
     const response = await fetch(url, {
@@ -128,11 +157,40 @@ async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chat
     });
     if (!response.ok) return { ok: false, status: 502, error: "Portal chat service unavailable" };
     const payload = await response.json();
-    const row = Array.isArray(payload) ? payload[0] : null;
-    return { ok: true, chat: row || null };
+    const rows = Array.isArray(payload) ? payload : [];
+    return { ok: true, chats: rows, chat: rows[0] || null };
   } catch (_) {
     return { ok: false, status: 502, error: "Portal chat service unavailable" };
   }
+}
+
+function selectReusablePortalChat(chats, now = new Date()) {
+  const rows = Array.isArray(chats) ? chats : [];
+  const active = rows.find((row) => String(row?.status || "") !== "closed");
+  if (active) return { chat: active, reopen: false };
+
+  const today = getJordanDispatcherDay(now);
+  const sameDayClosed = rows.find((row) =>
+    String(row?.status || "") === "closed" &&
+    getJordanDispatcherDay(row?.created_at || now) === today
+  );
+  if (sameDayClosed) return { chat: sameDayClosed, reopen: true };
+  return { chat: null, reopen: false };
+}
+
+async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId, workspaceId = null, anonId = null }) {
+  const result = await getPortalConversationChats({
+    portalId,
+    portalSecretKey,
+    workspaceId,
+    anonId,
+    chatId,
+    chatSource,
+  });
+  if (!result.ok) return result;
+  const selected = selectReusablePortalChat(result.chats);
+  if (!selected.chat) return { ok: true, chat: null };
+  return { ok: true, chat: selected.chat, reopen: selected.reopen };
 }
 
 async function createPortalChat({
@@ -223,9 +281,44 @@ async function ensurePortalChat({
   subject = null,
   summery = null,
 }) {
-  const existing = await getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId });
+  const existing = await getActivePortalChat({
+    portalId,
+    portalSecretKey,
+    chatSource,
+    chatId,
+    workspaceId,
+    anonId,
+  });
   if (!existing.ok) return existing;
-  if (existing.chat) return { ok: true, created: false, chat: existing.chat };
+  if (existing.chat) {
+    if (!existing.reopen) return { ok: true, created: false, chat: existing.chat };
+    const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+    let response;
+    try {
+      response = await fetch(
+        buildRestUrl(baseUrl, "human_handoff_chats", { id: `eq.${existing.chat.id}` }),
+        {
+          method: "PATCH",
+          headers: authHeaders(portalSecretKey, {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+            Prefer: "return=representation",
+          }),
+          body: JSON.stringify({
+            status: "active",
+            ended_at: null,
+            updated_at: new Date().toISOString(),
+          }),
+        }
+      );
+    } catch (_) {
+      return { ok: false, status: 502, error: "Portal chat service unavailable" };
+    }
+    if (!response.ok) return { ok: false, status: 502, error: "Portal chat service unavailable" };
+    const rows = await response.json().catch(() => []);
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    return { ok: true, created: false, reopened: true, chat: row || existing.chat };
+  }
   return createPortalChat({
     portalId,
     portalSecretKey,
@@ -495,24 +588,12 @@ async function chooseDispatcherHumanAgent({ portalId, portalSecretKey, workspace
     };
   }
 
-  const fallbackChoice = chooseLeastLoaded(
-    userIds.map((userId) => ({ userId, shiftId: null })),
-    counts
-  );
-  if (!fallbackChoice) {
-    return {
-      ok: true,
-      assignedHumanAgentUserId: null,
-      shiftId: null,
-      usedShift: false,
-      unassigned: true,
-    };
-  }
   return {
     ok: true,
-    assignedHumanAgentUserId: fallbackChoice.userId,
+    assignedHumanAgentUserId: null,
     shiftId: null,
     usedShift: false,
+    unassigned: true,
   };
 }
 
@@ -568,7 +649,14 @@ async function assignDispatcherHandoffChat({
   });
   if (!contactResult.ok) return contactResult;
 
-  const existingResult = await getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId });
+  const existingResult = await getActivePortalChat({
+    portalId,
+    portalSecretKey,
+    chatSource,
+    chatId,
+    workspaceId,
+    anonId,
+  });
   if (!existingResult.ok) return existingResult;
 
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
@@ -672,7 +760,14 @@ async function assignDispatcherAiAgentChat({
     return { ok: false, status: 500, error: "Server configuration error" };
   }
 
-  const existingResult = await getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId });
+  const existingResult = await getActivePortalChat({
+    portalId,
+    portalSecretKey,
+    chatSource,
+    chatId,
+    workspaceId,
+    anonId,
+  });
   if (!existingResult.ok) return existingResult;
 
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
@@ -945,6 +1040,7 @@ async function saveHumanMessageToPortalFeed({
   portalId,
   portalSecretKey,
   agentId,
+  workspaceId = null,
   anonId,
   chatId,
   source,
@@ -953,13 +1049,14 @@ async function saveHumanMessageToPortalFeed({
   prompt,
   result = null,
 }) {
-  if (!portalId || !portalSecretKey || !chatId || !senderType) {
+  if (!portalId || !portalSecretKey || !workspaceId || !chatId || !senderType) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const url = `${baseUrl}/widget_human_messages`;
   const payload = {
     agent_id: agentId,
+    workspace_id: workspaceId,
     annon: anonId ?? null,
     chat_id: chatId,
     prompt: prompt === null || prompt === undefined ? null : String(prompt),
@@ -1098,4 +1195,5 @@ module.exports = {
   assignHumanHandoffChat,
   assignDispatcherHandoffChat,
   assignDispatcherAiAgentChat,
+  getJordanDispatcherDay,
 };

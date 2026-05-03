@@ -28,6 +28,7 @@ const {
   assignHumanHandoffChat,
   assignDispatcherHandoffChat,
   assignDispatcherAiAgentChat,
+  getJordanDispatcherDay,
 } = require("../../scripts/internal/humanHandoff");
 
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
@@ -933,24 +934,26 @@ async function upsertDispatcherRoutingIntakeDraft({
   workspaceId,
   agentId,
   chatId,
+  chatDay,
   source,
   customerName,
   country,
   phoneNumber = null,
   rawData,
 }) {
-  if (!supId || !supKey || !workspaceId || !agentId || !chatId) {
+  if (!supId || !supKey || !workspaceId || !agentId || !chatId || !chatDay) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
 
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = new URL(`${baseUrl}/dispatcher_routing_intake_drafts`);
-  url.searchParams.set("on_conflict", "workspace_id,agent_id,chat_id");
+  url.searchParams.set("on_conflict", "workspace_id,agent_id,chat_id,chat_day");
 
   const payload = {
     workspace_id: workspaceId,
     agent_id: agentId,
     chat_id: chatId,
+    chat_day: chatDay,
     source: source || null,
     raw_data: rawData && typeof rawData === "object" ? rawData : {},
   };
@@ -993,13 +996,14 @@ async function updateDispatcherRoutingIntakeDraftFields({
   workspaceId,
   agentId,
   chatId,
+  chatDay,
   phoneNumber = null,
   gender = null,
   age = null,
   email = null,
   customFields = null,
 }) {
-  if (!supId || !supKey || !workspaceId || !agentId || !chatId) {
+  if (!supId || !supKey || !workspaceId || !agentId || !chatId || !chatDay) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
 
@@ -1019,6 +1023,7 @@ async function updateDispatcherRoutingIntakeDraftFields({
   url.searchParams.set("workspace_id", `eq.${workspaceId}`);
   url.searchParams.set("agent_id", `eq.${agentId}`);
   url.searchParams.set("chat_id", `eq.${chatId}`);
+  url.searchParams.set("chat_day", `eq.${chatDay}`);
 
   try {
     const response = await fetch(url.toString(), {
@@ -1285,6 +1290,7 @@ async function saveChannelCustomerForPortal({
     portalId: process.env.PORTAL_ID,
     portalSecretKey: process.env.PORTAL_SECRET_KEY,
     agentId,
+    workspaceId,
     anonId,
     chatId,
     source,
@@ -1337,6 +1343,7 @@ async function executeActionCalls({
   workspaceId = null,
   anonId,
   chatId,
+  dispatcherChatDay = null,
   country,
   customerName,
   source,
@@ -1477,6 +1484,7 @@ async function executeActionCalls({
         workspaceId,
         agentId,
         chatId,
+        chatDay: dispatcherChatDay,
         phoneNumber: variables?.phone_number ?? null,
         gender: variables?.gender ?? null,
         age: variables?.age ?? null,
@@ -1718,6 +1726,7 @@ async function executeActionCalls({
         portalId: process.env.PORTAL_ID,
         portalSecretKey: process.env.PORTAL_SECRET_KEY,
         agentId,
+        workspaceId,
         anonId,
         chatId,
         source,
@@ -3292,6 +3301,7 @@ async function processIncomingMessage({ event, connection, headers }) {
         portalId: process.env.PORTAL_ID,
         portalSecretKey: process.env.PORTAL_SECRET_KEY,
         agentId: portalChatResult.chat?.agent_id ?? null,
+        workspaceId: portalChatResult.chat?.workspace_id ?? agentInfo?.workspace_id ?? null,
         anonId,
         chatId,
         source,
@@ -3340,6 +3350,7 @@ async function processIncomingMessage({ event, connection, headers }) {
   let dispatcherPromptBlock = "";
   let dispatcherSettings = null;
   let dispatcherRouteAiAgents = [];
+  const dispatcherChatDay = getJordanDispatcherDay();
   if (channelMode === "ai_dispatcher") {
     const dispatcherSettingsResult = await getDispatcherRoutingIntakeSettings({
       supId: process.env.SUP_ID,
@@ -3372,6 +3383,7 @@ async function processIncomingMessage({ event, connection, headers }) {
       workspaceId: agentInfo.workspace_id,
       agentId,
       chatId,
+      chatDay: dispatcherChatDay,
       source,
       customerName,
       country: requestCountry,
@@ -3527,6 +3539,7 @@ async function processIncomingMessage({ event, connection, headers }) {
       workspaceId: agentInfo.workspace_id,
       anonId,
       chatId,
+      dispatcherChatDay,
       country: requestCountry,
       customerName,
       source: `meta_${event.channel}`,

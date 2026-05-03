@@ -651,6 +651,7 @@ module.exports = async function handler(req, res) {
     portalId: process.env.PORTAL_ID,
     portalSecretKey: process.env.PORTAL_SECRET_KEY,
     agentId,
+    workspaceId: workspaceLookup.workspaceId,
     anonId: bodyAnonId,
     chatId,
     source: messageSource,
