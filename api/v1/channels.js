@@ -1298,6 +1298,38 @@ async function saveChannelCustomerForPortal({
   return { ok: true };
 }
 
+async function updateDashboardMessageResult({ supId, supKey, messageId, result }) {
+  const numericMessageId = Number(messageId);
+  if (!supId || !supKey || !Number.isFinite(numericMessageId) || numericMessageId <= 0) {
+    return { ok: false, status: 500, error: "Server configuration error" };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/messages`);
+  url.searchParams.set("id", `eq.${Math.floor(numericMessageId)}`);
+
+  try {
+    const response = await fetch(url.toString(), {
+      method: "PATCH",
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        "Content-Type": "application/json",
+        Prefer: "return=representation",
+      },
+      body: JSON.stringify({
+        result: result === null || result === undefined ? null : String(result),
+      }),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Message update service unavailable" };
+    const payload = await response.json().catch(() => []);
+    const row = Array.isArray(payload) ? payload[0] : payload;
+    return { ok: true, row: row || null, messageId: row?.id ?? Math.floor(numericMessageId) };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Message update service unavailable" };
+  }
+}
+
 async function executeActionCalls({
   actionCalls,
   actionMap,
@@ -1314,6 +1346,7 @@ async function executeActionCalls({
   const toolResults = [];
   let calendarContext = null;
   let humanHandoffActivated = false;
+  let humanHandoffMessageId = null;
   let aiHandoffActivated = false;
   let aiHandoff = null;
 
@@ -1423,6 +1456,7 @@ async function executeActionCalls({
         });
         continue;
       }
+      humanHandoffMessageId = saveDashboardResult.messageId ?? null;
 
       let messageStartId = null;
       const startMessageResult = await resolveConversationStartMessageId({
@@ -1638,6 +1672,7 @@ async function executeActionCalls({
         supId: process.env.SUP_ID,
         supKey: process.env.SUP_KEY,
         agentId,
+        workspaceId,
         anonId,
         chatId,
         country,
@@ -1660,6 +1695,7 @@ async function executeActionCalls({
         });
         continue;
       }
+      humanHandoffMessageId = saveDashboardResult.messageId ?? null;
       if (assignResult.created && saveDashboardResult.messageId) {
         const startMessageResult = await resolveConversationStartMessageId({
           supId: process.env.SUP_ID,
@@ -2041,7 +2077,7 @@ async function executeActionCalls({
     });
   }
 
-  return { toolResults, calendarContext, humanHandoffActivated, aiHandoffActivated, aiHandoff };
+  return { toolResults, calendarContext, humanHandoffActivated, humanHandoffMessageId, aiHandoffActivated, aiHandoff };
 }
 function toWebhookEvents(payload) {
   const objectType = String(payload?.object || "").toLowerCase();
@@ -3476,7 +3512,14 @@ async function processIncomingMessage({ event, connection, headers }) {
     actionCount = actionCalls.length;
 
     const toolsStartedAt = Date.now();
-    const { toolResults, calendarContext, humanHandoffActivated, aiHandoffActivated, aiHandoff } =
+    const {
+      toolResults,
+      calendarContext,
+      humanHandoffActivated,
+      humanHandoffMessageId,
+      aiHandoffActivated,
+      aiHandoff,
+    } =
       await executeActionCalls({
       actionCalls,
       actionMap: effectiveActionMap,
@@ -3595,18 +3638,26 @@ async function processIncomingMessage({ event, connection, headers }) {
     if (!finalReply) return { ok: false, status: 502, error: "Empty model output" };
 
     const saveResult = humanHandoffActivated
-      ? await saveHumanMessageToMessages({
-          supId: process.env.SUP_ID,
-          supKey: process.env.SUP_KEY,
-          agentId,
-          anonId,
-          chatId,
-          country: requestCountry,
-          customerName,
-          source: `meta_${event.channel}`,
-          prompt: null,
-          result: finalReply,
-        })
+      ? humanHandoffMessageId
+        ? await updateDashboardMessageResult({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            messageId: humanHandoffMessageId,
+            result: finalReply,
+          })
+        : await saveHumanMessageToMessages({
+            supId: process.env.SUP_ID,
+            supKey: process.env.SUP_KEY,
+            agentId,
+            workspaceId: agentInfo.workspace_id,
+            anonId,
+            chatId,
+            country: requestCountry,
+            customerName,
+            source: `meta_${event.channel}`,
+            prompt: null,
+            result: finalReply,
+          })
       : await saveMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
