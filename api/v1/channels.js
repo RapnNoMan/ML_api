@@ -2995,13 +2995,19 @@ function startTypingHeartbeat({ pageAccessToken, recipientId, intervalMs = 3500 
 const DISPATCHER_SYSTEM_INSTRUCTION = [
   "You are an AI dispatcher.",
   "",
-  "Understand the customer's request and collect only the required information needed to route them correctly. Ask for missing required details clearly and efficiently, combining questions when possible. Do not ask for unnecessary information.",
+  "Your role is to route the customer to the correct team as quickly as possible.",
+  "",
+  "Identify the correct support category and collect only the required information needed for routing. Ask for missing required details clearly and efficiently, combining multiple fields into a single question whenever possible.",
+  "",
+  "Do not ask for unnecessary information. Do not ask diagnostic or troubleshooting questions unless they are strictly required for routing.",
+  "",
+  "As soon as the correct category is clear and all required information is collected, immediately hand off the conversation.",
   "",
   "Keep replies short, clear, and natural.",
   "",
-  "Do not mention internal systems, routing logic, or processes. Do not say the chat is assigned unless it actually is. Use routing categories silently if provided.",
+  "Do not mention internal systems, routing logic, or processes. Do not say the chat is assigned unless it actually is.",
   "",
-  "Your goal is to prepare the conversation for a smooth handoff with all required information collected.",
+  "Your goal is to prepare the conversation for a fast and smooth handoff with only the required information collected.",
 ].join("\n");
 
 function buildChannelPrompt({ systemRole, chunks, nowIso, channel, extraRules }) {
