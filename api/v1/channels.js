@@ -20,6 +20,11 @@ const {
   buildTicketOutcomeInstruction,
 } = require("../../scripts/internal/ticketOutcome");
 const {
+  scheduleInitialDispatcherReply,
+  scheduleUnansweredDispatcherCheck,
+  cancelDispatcherJobs,
+} = require("../../scripts/internal/dispatcherJobs");
+const {
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
   ensurePortalChat,
@@ -1163,6 +1168,16 @@ function buildDispatcherAiHandoffTool({ routeAiAgents }) {
   };
 }
 
+function isUnassignedDispatcherHumanHandoffChat(chat) {
+  if (!chat || typeof chat !== "object") return false;
+  if (chat.assigned_human_agent_user_id) return false;
+  if (chat.agent_id) return false;
+  if (chat.message_start_id !== null && chat.message_start_id !== undefined) return true;
+  if (chat.contact_id !== null && chat.contact_id !== undefined) return true;
+  const summery = String(chat.summery || "").trim();
+  return Boolean(summery && summery !== "Incoming channel conversation.");
+}
+
 function validateDispatcherHandoffVariables({ actionDef, variables }) {
   const missing = [];
   if (!String(variables?.category_name ?? "").trim()) missing.push("category_name");
@@ -1344,6 +1359,7 @@ async function executeActionCalls({
   anonId,
   chatId,
   dispatcherChatDay = null,
+  portalChatId = null,
   country,
   customerName,
   source,
@@ -1550,6 +1566,17 @@ async function executeActionCalls({
             },
       });
       if (dispatchResult.ok) {
+        await cancelDispatcherJobs({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          workspaceId,
+          dispatcherAgentId: agentId,
+          chatId,
+          anonId,
+          dispatcherChatDay,
+          portalChatId,
+          jobTypes: ["initial_dispatcher_reply", "unanswered_followup"],
+        });
         humanHandoffActivated = true;
         break;
       }
@@ -1616,6 +1643,17 @@ async function executeActionCalls({
             },
       });
       if (dispatchResult.ok) {
+        await cancelDispatcherJobs({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          workspaceId,
+          dispatcherAgentId: agentId,
+          chatId,
+          anonId,
+          dispatcherChatDay,
+          portalChatId,
+          jobTypes: ["initial_dispatcher_reply", "unanswered_followup"],
+        });
         await saveMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -3201,7 +3239,14 @@ async function verifyMetaWebhookSignature(req) {
   }
   return { ok: false, reason: "signature_mismatch" };
 }
-async function processIncomingMessage({ event, connection, headers }) {
+async function processIncomingMessage({
+  event,
+  connection,
+  headers,
+  skipDispatcherInitialDelay = false,
+  skipPortalCustomerLog = false,
+  scheduledPortalCustomerMessageId = null,
+}) {
   const requestStartedAt = Date.now();
   let agentId = String(connection.agent_id || "").trim() || null;
   const anonId = `${event.channel}:${event.senderId}`;
@@ -3228,7 +3273,9 @@ async function processIncomingMessage({ event, connection, headers }) {
   }
 
   let channelMode = getChannelMode({ agentId, agentInfo });
+  const dispatcherChatDay = getJordanDispatcherDay();
   let portalChatResult = { ok: true, chat: null };
+  let portalCustomerMessageId = null;
   if (channelMode !== "ai_agent") {
     portalChatResult = await ensurePortalChat({
       portalId: process.env.PORTAL_ID,
@@ -3296,7 +3343,32 @@ async function processIncomingMessage({ event, connection, headers }) {
       };
     }
 
-    if (channelMode !== "ai_agent") {
+    if (channelMode === "ai_dispatcher" && isUnassignedDispatcherHumanHandoffChat(portalChatResult.chat)) {
+      const saveResult = await saveChannelCustomerForPortal({
+        agentId: portalChatResult.chat?.agent_id ?? null,
+        workspaceId: portalChatResult.chat?.workspace_id ?? agentInfo?.workspace_id ?? null,
+        anonId,
+        chatId,
+        country: requestCountry,
+        customerName,
+        source,
+        incomingText,
+        assignedHumanAgentUserId: null,
+      });
+      if (!saveResult.ok) {
+        return { ok: false, status: saveResult.status || 502, error: saveResult.error };
+      }
+      requestSucceeded = true;
+      return {
+        ok: true,
+        humanHandoff: true,
+        portalChatOnly: true,
+        actionUsed: false,
+        actionCount: 0,
+      };
+    }
+
+    if (channelMode !== "ai_agent" && !skipPortalCustomerLog) {
       const savePortalCustomerResult = await saveHumanMessageToPortalFeed({
         portalId: process.env.PORTAL_ID,
         portalSecretKey: process.env.PORTAL_SECRET_KEY,
@@ -3315,6 +3387,38 @@ async function processIncomingMessage({ event, connection, headers }) {
           ok: false,
           status: savePortalCustomerResult.status || 502,
           error: savePortalCustomerResult.error,
+        };
+      }
+      portalCustomerMessageId = savePortalCustomerResult.messageId ?? null;
+    } else if (scheduledPortalCustomerMessageId !== null && scheduledPortalCustomerMessageId !== undefined) {
+      portalCustomerMessageId = scheduledPortalCustomerMessageId;
+    }
+
+    if (channelMode === "ai_dispatcher" && !skipDispatcherInitialDelay) {
+      const scheduleResult = await scheduleInitialDispatcherReply({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        workspaceId: agentInfo.workspace_id,
+        dispatcherAgentId: agentId,
+        chatId,
+        anonId,
+        dispatcherChatDay,
+        portalChatId: portalChatResult.chat?.id ?? null,
+        portalCustomerMessageId,
+        event,
+        connection,
+      });
+      if (!scheduleResult.ok) {
+        return { ok: false, status: scheduleResult.status || 502, error: scheduleResult.error };
+      }
+      if (scheduleResult.delayed) {
+        requestSucceeded = true;
+        return {
+          ok: true,
+          delayed: true,
+          portalChatOnly: true,
+          actionUsed: false,
+          actionCount: 0,
         };
       }
     }
@@ -3350,7 +3454,6 @@ async function processIncomingMessage({ event, connection, headers }) {
   let dispatcherPromptBlock = "";
   let dispatcherSettings = null;
   let dispatcherRouteAiAgents = [];
-  const dispatcherChatDay = getJordanDispatcherDay();
   if (channelMode === "ai_dispatcher") {
     const dispatcherSettingsResult = await getDispatcherRoutingIntakeSettings({
       supId: process.env.SUP_ID,
@@ -3540,6 +3643,7 @@ async function processIncomingMessage({ event, connection, headers }) {
       anonId,
       chatId,
       dispatcherChatDay,
+      portalChatId: portalChatResult.chat?.id ?? null,
       country: requestCountry,
       customerName,
       source: `meta_${event.channel}`,
@@ -3687,6 +3791,29 @@ async function processIncomingMessage({ event, connection, headers }) {
         });
     if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
+    if (channelMode === "ai_dispatcher" && !humanHandoffActivated && !aiHandoffActivated) {
+      const unansweredScheduleResult = await scheduleUnansweredDispatcherCheck({
+        supId: process.env.SUP_ID,
+        supKey: process.env.SUP_KEY,
+        workspaceId: agentInfo.workspace_id,
+        dispatcherAgentId: agentId,
+        chatId,
+        anonId,
+        dispatcherChatDay,
+        portalChatId: portalChatResult.chat?.id ?? null,
+        portalCustomerMessageId,
+        event,
+        connection,
+      });
+      if (!unansweredScheduleResult.ok) {
+        return {
+          ok: false,
+          status: unansweredScheduleResult.status || 502,
+          error: unansweredScheduleResult.error,
+        };
+      }
+    }
+
     const firstCallTokens = usageToTokens(completion.usage);
     const secondCallTokens = usageToTokens(followup.usage);
     trackMessageAnalytics({
@@ -3751,6 +3878,29 @@ async function processIncomingMessage({ event, connection, headers }) {
     action: false,
   });
   if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
+
+  if (channelMode === "ai_dispatcher") {
+    const unansweredScheduleResult = await scheduleUnansweredDispatcherCheck({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      workspaceId: agentInfo.workspace_id,
+      dispatcherAgentId: agentId,
+      chatId,
+      anonId,
+      dispatcherChatDay,
+      portalChatId: portalChatResult.chat?.id ?? null,
+      portalCustomerMessageId,
+      event,
+      connection,
+    });
+    if (!unansweredScheduleResult.ok) {
+      return {
+        ok: false,
+        status: unansweredScheduleResult.status || 502,
+        error: unansweredScheduleResult.error,
+      };
+    }
+  }
 
   const firstCallTokens = usageToTokens(completion.usage);
   trackMessageAnalytics({
@@ -4390,6 +4540,11 @@ module.exports = async function handler(req, res) {
   }
 };
 
+module.exports.processIncomingMessage = processIncomingMessage;
+module.exports.sendMetaTextReply = sendMetaTextReply;
+module.exports.sendWhatsAppTextReply = sendWhatsAppTextReply;
+module.exports.sendTelegramTextReply = sendTelegramTextReply;
+module.exports.insertMetaWebhookDebugMessage = insertMetaWebhookDebugMessage;
 
 
 

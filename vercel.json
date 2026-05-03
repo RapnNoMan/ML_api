@@ -82,7 +82,14 @@
     { "source": "/v1/chat-page/:agent_id", "destination": "/api/v1/chat_page?agent_id=:agent_id" },
     { "source": "/v1/channels", "destination": "/api/v1/channels" },
     { "source": "/v1/channels_human_send", "destination": "/api/v1/channels_human_send" },
+    { "source": "/v1/dispatcher_jobs", "destination": "/api/v1/dispatcher_jobs" },
     { "source": "/v1/widget_human_log", "destination": "/api/v1/widget_human_log" },
     { "source": "/v1/ticket_tool_test", "destination": "/api/v1/ticket_tool_test" }
+  ],
+  "crons": [
+    {
+      "path": "/api/v1/dispatcher_jobs",
+      "schedule": "* * * * *"
+    }
   ]
 }

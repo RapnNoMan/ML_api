@@ -136,7 +136,7 @@ async function getPortalConversationChats({
   }
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const params = {
-    select: "id,created_at,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id",
+    select: "id,created_at,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id,subject,summery,message_start_id,contact_id",
     chat_id: `eq.${chatId}`,
     order: "created_at.desc",
     limit: "20",
@@ -164,11 +164,12 @@ async function getPortalConversationChats({
   }
 }
 
-function selectReusablePortalChat(chats, now = new Date()) {
+function selectReusablePortalChat(chats, { now = new Date(), allowClosedSameDay = false } = {}) {
   const rows = Array.isArray(chats) ? chats : [];
   const active = rows.find((row) => String(row?.status || "") !== "closed");
   if (active) return { chat: active, reopen: false };
 
+  if (!allowClosedSameDay) return { chat: null, reopen: false };
   const today = getJordanDispatcherDay(now);
   const sameDayClosed = rows.find((row) =>
     String(row?.status || "") === "closed" &&
@@ -178,7 +179,15 @@ function selectReusablePortalChat(chats, now = new Date()) {
   return { chat: null, reopen: false };
 }
 
-async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chatId, workspaceId = null, anonId = null }) {
+async function getActivePortalChat({
+  portalId,
+  portalSecretKey,
+  chatSource,
+  chatId,
+  workspaceId = null,
+  anonId = null,
+  allowClosedSameDay = false,
+}) {
   const result = await getPortalConversationChats({
     portalId,
     portalSecretKey,
@@ -188,7 +197,7 @@ async function getActivePortalChat({ portalId, portalSecretKey, chatSource, chat
     chatSource,
   });
   if (!result.ok) return result;
-  const selected = selectReusablePortalChat(result.chats);
+  const selected = selectReusablePortalChat(result.chats, { allowClosedSameDay });
   if (!selected.chat) return { ok: true, chat: null };
   return { ok: true, chat: selected.chat, reopen: selected.reopen };
 }
@@ -656,6 +665,7 @@ async function assignDispatcherHandoffChat({
     chatId,
     workspaceId,
     anonId,
+    allowClosedSameDay: true,
   });
   if (!existingResult.ok) return existingResult;
 
@@ -767,6 +777,7 @@ async function assignDispatcherAiAgentChat({
     chatId,
     workspaceId,
     anonId,
+    allowClosedSameDay: true,
   });
   if (!existingResult.ok) return existingResult;
 
@@ -1022,7 +1033,7 @@ async function updateHumanHandoffChatMessageStart({
       method: "PATCH",
       headers: authHeaders(portalSecretKey, {
         "Content-Type": "application/json",
-        Prefer: "return=minimal",
+        Prefer: "return=representation",
       }),
       body: JSON.stringify({
         message_start_id: Math.floor(numericMessageStartId),
@@ -1077,7 +1088,9 @@ async function saveHumanMessageToPortalFeed({
       body: JSON.stringify(payload),
     });
     if (!response.ok) return { ok: false, status: 502, error: "Human message service unavailable" };
-    return { ok: true };
+    const rows = await response.json().catch(() => []);
+    const row = Array.isArray(rows) ? rows[0] : rows;
+    return { ok: true, row: row || null, messageId: row?.id ?? null };
   } catch (_) {
     return { ok: false, status: 502, error: "Human message service unavailable" };
   }
