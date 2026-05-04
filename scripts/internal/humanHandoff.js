@@ -270,6 +270,7 @@ async function ensurePortalChat({
   customerName = null,
   subject = null,
   summery = null,
+  reuseClosedSameDay = false,
 }) {
   const existing = await getActivePortalChat({
     portalId,
@@ -278,36 +279,16 @@ async function ensurePortalChat({
     chatId,
     workspaceId,
     anonId,
+    allowClosedSameDay: reuseClosedSameDay,
   });
   if (!existing.ok) return existing;
   if (existing.chat) {
-    if (!existing.reopen) return { ok: true, created: false, chat: existing.chat };
-    const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
-    let response;
-    try {
-      response = await fetch(
-        buildRestUrl(baseUrl, "human_handoff_chats", { id: `eq.${existing.chat.id}` }),
-        {
-          method: "PATCH",
-          headers: authHeaders(portalSecretKey, {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-            Prefer: "return=representation",
-          }),
-          body: JSON.stringify({
-            status: "active",
-            ended_at: null,
-            updated_at: new Date().toISOString(),
-          }),
-        }
-      );
-    } catch (_) {
-      return { ok: false, status: 502, error: "Portal chat service unavailable" };
-    }
-    if (!response.ok) return { ok: false, status: 502, error: "Portal chat service unavailable" };
-    const rows = await response.json().catch(() => []);
-    const row = Array.isArray(rows) ? rows[0] : rows;
-    return { ok: true, created: false, reopened: true, chat: row || existing.chat };
+    return {
+      ok: true,
+      created: false,
+      reopenPending: Boolean(existing.reopen),
+      chat: existing.chat,
+    };
   }
   return createPortalChat({
     portalId,
@@ -667,7 +648,9 @@ async function assignDispatcherHandoffChat({
     shift_id: assignmentResult.shiftId ?? null,
     contact_id: contactResult.contactId ?? null,
     message_start_id: messageStartId ?? null,
+    message_end_id: null,
     status: "active",
+    ended_at: null,
     updated_at: new Date().toISOString(),
   };
 
@@ -777,7 +760,9 @@ async function assignDispatcherAiAgentChat({
     summery: normalizeNullableText(summery) || "Dispatcher routed this conversation to an AI agent.",
     assigned_human_agent_user_id: null,
     shift_id: null,
+    message_end_id: null,
     status: "active",
+    ended_at: null,
     updated_at: new Date().toISOString(),
   };
 

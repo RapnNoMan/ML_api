@@ -132,8 +132,13 @@ async function markUnansweredChat({ portalId, portalSecretKey, portalChatId }) {
     }),
     body: JSON.stringify({
       status: "active",
+      agent_id: null,
       assigned_human_agent_user_id: null,
       shift_id: null,
+      contact_id: null,
+      message_start_id: null,
+      message_end_id: null,
+      ended_at: null,
       subject: "Unanswered conversation",
       summery: "Unanswered conversation. The dispatcher did not hand this chat off within one hour.",
       updated_at: new Date().toISOString(),
@@ -184,7 +189,9 @@ async function processInitialJob(job) {
     chatId: job.portal_chat_id,
   });
   if (!chatResult.ok) return chatResult;
-  if (isAlreadyHandedOff(chatResult.chat)) return { ok: true, skipped: true };
+  if (String(chatResult.chat?.status || "") !== "closed" && isAlreadyHandedOff(chatResult.chat)) {
+    return { ok: true, skipped: true };
+  }
 
   const messagesResult = await getPortalCustomerMessages({
     portalId: process.env.PORTAL_ID,

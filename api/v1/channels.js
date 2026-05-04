@@ -897,7 +897,7 @@ async function getDispatcherRouteAiAgents({
 
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
   const url = new URL(`${baseUrl}/agents`);
-  url.searchParams.set("select", "id,name,role,dispatcher,created_at");
+  url.searchParams.set("select", "id,name,dispatcher,created_at");
   url.searchParams.set("workspace_id", `eq.${workspaceId}`);
   url.searchParams.set("id", toPostgrestIn(ids));
 
@@ -936,13 +936,15 @@ async function getDispatcherRouteAiAgents({
     agents.push({
       id: aiAgentId,
       name: String(row?.name || "").trim() || "Untitled agent",
-      role: String(row?.role || "").trim(),
       tools,
     });
   }
 
   const order = new Map(ids.map((id, index) => [id, index]));
   agents.sort((a, b) => (order.get(a.id) ?? 9999) - (order.get(b.id) ?? 9999));
+  agents.forEach((agent, index) => {
+    agent.optionId = String(index + 1);
+  });
   return { ok: true, agents };
 }
 
@@ -1121,12 +1123,11 @@ function buildDispatcherRoutingPromptBlock({ settings, draft, channel, routeAiAg
   if (settings.dispatch_to_ai_agents && routeAiAgents.length > 0) {
     const lines = [
       "AI agent handoff options:",
-      "If one of these AI agents can solve or meaningfully help with the customer's request using its role or tools, call dispatch_to_ai_agent instead of dispatch_to_human.",
+      "If one of these AI agents can solve or meaningfully help with the customer's request using its tools, call dispatch_to_ai_agent instead of dispatch_to_human.",
       "Use AI agent handoff only when the selected AI agent is a strong fit. Otherwise continue intake or dispatch to a human.",
     ];
     for (const agent of routeAiAgents) {
-      lines.push(`- ${agent.name} (${agent.id})`);
-      if (agent.role) lines.push(`  Role: ${agent.role}`);
+      lines.push(`- ${agent.optionId}. ${agent.name}`);
       if (agent.tools.length > 0) {
         lines.push("  Tools:");
         for (const tool of agent.tools.slice(0, 12)) {
@@ -1159,8 +1160,8 @@ function buildDispatcherAiHandoffTool({ routeAiAgents }) {
       properties: {
         ai_agent_id: {
           type: "string",
-          enum: agents.map((agent) => agent.id),
-          description: "The allowed AI agent ID that best fits the customer's request.",
+          enum: agents.map((agent) => agent.optionId),
+          description: "The short option ID of the allowed AI agent that best fits the customer's request.",
         },
         subject: {
           type: "string",
@@ -1598,14 +1599,16 @@ async function executeActionCalls({
     }
 
     if (actionDef.kind === "dispatcher_ai_handoff") {
-      const aiAgentId = String(variables?.ai_agent_id ?? "").trim();
+      const aiAgentOptionId = String(variables?.ai_agent_id ?? "").trim();
       const subject = String(variables?.subject ?? "").trim() || "AI agent handoff";
       const summery =
         String(variables?.summery ?? variables?.summary ?? "").trim() ||
         `Dispatcher routed this conversation to an AI agent. Last message: ${String(incomingMessage || "").trim()}`;
-      const allowedAiAgentIds = toCleanUuidArray(actionDef.allowed_ai_agent_ids);
+      const allowedAiAgents = Array.isArray(actionDef.allowed_ai_agents) ? actionDef.allowed_ai_agents : [];
+      const selectedAiAgent = allowedAiAgents.find((agent) => String(agent?.optionId || "").trim() === aiAgentOptionId);
+      const aiAgentId = String(selectedAiAgent?.id || "").trim();
 
-      if (!aiAgentId || !allowedAiAgentIds.includes(aiAgentId)) {
+      if (!aiAgentOptionId || !aiAgentId) {
         toolResults.push({
           call_id: call.call_id ?? null,
           action_key: call.action_key,
@@ -3323,14 +3326,17 @@ async function processIncomingMessage({
       customerName,
       subject: customerName ? `Conversation with ${customerName}` : "Channel conversation",
       summery: "Incoming channel conversation.",
+      reuseClosedSameDay: channelMode === "ai_dispatcher",
     });
     if (!portalChatResult.ok) {
       return { ok: false, status: portalChatResult.status || 502, error: portalChatResult.error };
     }
 
-    const assignedHumanAgentUserId =
-      portalChatResult.chat?.assigned_human_agent_user_id ?? null;
-    const existingPortalAgentId = String(portalChatResult.chat?.agent_id || "").trim();
+    const portalChatIsClosed = String(portalChatResult.chat?.status || "") === "closed";
+    const assignedHumanAgentUserId = portalChatIsClosed
+      ? null
+      : (portalChatResult.chat?.assigned_human_agent_user_id ?? null);
+    const existingPortalAgentId = portalChatIsClosed ? "" : String(portalChatResult.chat?.agent_id || "").trim();
     if (!assignedHumanAgentUserId && existingPortalAgentId && existingPortalAgentId !== agentId) {
       const portalAgentInfoResult = await getAgentInfo({
         supId: process.env.SUP_ID,
@@ -3592,7 +3598,10 @@ async function processIncomingMessage({
               {
                 kind: "dispatcher_ai_handoff",
                 tool_name: "dispatch_to_ai_agent",
-                allowed_ai_agent_ids: dispatcherRouteAiAgents.map((agent) => agent.id),
+                allowed_ai_agents: dispatcherRouteAiAgents.map((agent) => ({
+                  optionId: agent.optionId,
+                  id: agent.id,
+                })),
               },
             ]);
           }
