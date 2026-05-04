@@ -1116,7 +1116,8 @@ function buildDispatcherRoutingPromptBlock({ settings, draft, channel, routeAiAg
       "Dispatcher handoff tool:",
       "When the customer's request is clear and all required fields are known, call dispatch_to_human.",
       "Choose the best routing category silently.",
-      "Do not tell the customer the chat is assigned until the tool succeeds.",
+      "Do not tell the customer the chat is assigned, routed, transferred, or handed off until the tool succeeds.",
+      "If the tool is not called or does not succeed, continue intake or ask for the missing required information.",
     ].join("\n")
   );
 
@@ -1125,6 +1126,7 @@ function buildDispatcherRoutingPromptBlock({ settings, draft, channel, routeAiAg
       "AI agent handoff options:",
       "If one of these AI agents can solve or meaningfully help with the customer's request using its tools, call dispatch_to_ai_agent instead of dispatch_to_human.",
       "Use AI agent handoff only when the selected AI agent is a strong fit. Otherwise continue intake or dispatch to a human.",
+      "Do not tell the customer they are connected to an AI agent unless dispatch_to_ai_agent succeeds.",
     ];
     for (const agent of routeAiAgents) {
       lines.push(`- ${agent.optionId}. ${agent.name}`);
@@ -3028,6 +3030,10 @@ const DISPATCHER_SYSTEM_INSTRUCTION = [
   "Do not ask for unnecessary information. Do not ask diagnostic or troubleshooting questions unless they are strictly required for routing.",
   "",
   "As soon as the correct category is clear and all required information is collected, immediately hand off the conversation.",
+  "",
+  "If a handoff is ready, call the appropriate handoff tool. Do not describe or promise a handoff instead of calling the tool.",
+  "",
+  "Never say you have routed, assigned, connected, transferred, handed off, or found the right person unless a handoff tool succeeded in the current turn.",
   "",
   "Keep replies short, clear, and natural.",
   "",

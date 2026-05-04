@@ -96,8 +96,8 @@ async function scheduleInitialDispatcherReply({
     portalChatId,
   });
   if (!existing.ok) return existing;
-  if (existing.job?.status === "done" || existing.job?.status === "running") {
-    return { ok: true, delayed: false, alreadyDone: existing.job.status === "done" };
+  if (existing.job?.status === "running") {
+    return { ok: true, delayed: true, alreadyRunning: true };
   }
 
   const delaySeconds = existing.job?.status === "pending"
