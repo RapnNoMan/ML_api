@@ -66,6 +66,12 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
 }
 
+function getJordanDispatcherDayStartIso(value = new Date()) {
+  const dispatcherDay = getJordanDispatcherDay(value);
+  const startUtcMs = Date.parse(`${dispatcherDay}T00:00:00.000Z`) - getJordanOffsetMinutes(value) * 60 * 1000;
+  return new Date(startUtcMs + 2 * 60 * 60 * 1000).toISOString();
+}
+
 function normalizeCountry(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim().toUpperCase();
@@ -3542,6 +3548,7 @@ async function processIncomingMessage({
     anonId,
     chatId,
     maxRows: 4,
+    createdAfter: channelMode === "ai_dispatcher" ? getJordanDispatcherDayStartIso() : null,
   });
   const ragPromise =
     channelMode !== "ai_dispatcher" && normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
@@ -3689,6 +3696,7 @@ async function processIncomingMessage({
         anonId,
         chatId,
         maxRows: 10,
+        createdAfter: getJordanDispatcherDayStartIso(),
       });
       if (!dispatcherHistoryResult.ok) {
         return {

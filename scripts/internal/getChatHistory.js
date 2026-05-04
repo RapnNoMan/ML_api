@@ -1,4 +1,4 @@
-async function getChatHistory({ supId, supKey, agentId, anonId, chatId, maxRows = 4 }) {
+async function getChatHistory({ supId, supKey, agentId, anonId, chatId, maxRows = 4, createdAfter = null }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
@@ -9,6 +9,9 @@ async function getChatHistory({ supId, supKey, agentId, anonId, chatId, maxRows 
   url.searchParams.set("agent_id", `eq.${agentId}`);
   url.searchParams.set("annon", `eq.${anonId}`);
   url.searchParams.set("chat_id", `eq.${chatId}`);
+  if (createdAfter) {
+    url.searchParams.set("created_at", `gte.${createdAfter}`);
+  }
   url.searchParams.set("order", "created_at.desc");
   if (Number.isFinite(Number(maxRows)) && Number(maxRows) > 0) {
     url.searchParams.set("limit", String(Math.floor(Number(maxRows))));
