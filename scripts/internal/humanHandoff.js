@@ -73,26 +73,7 @@ function authHeaders(secret, extra = {}) {
 }
 
 async function checkHumanAgentsAppEnabled({ supId, supKey, agentId }) {
-  if (!supId || !supKey || !agentId) return { ok: true, enabled: false };
-  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-  const url = buildRestUrl(baseUrl, "workspace_apps", {
-    select: "enabled,human_agents_enabled",
-    agent_id: `eq.${agentId}`,
-    limit: "1",
-  });
-
-  try {
-    const response = await fetch(url, {
-      headers: authHeaders(supKey, { Accept: "application/json" }),
-    });
-    if (!response.ok) return { ok: false, status: 502, error: "Workspace apps service unavailable" };
-    const payload = await response.json();
-    const row = Array.isArray(payload) ? payload[0] : null;
-    const enabled = Boolean(row?.enabled) && Boolean(row?.human_agents_enabled);
-    return { ok: true, enabled };
-  } catch (_) {
-    return { ok: false, status: 502, error: "Workspace apps service unavailable" };
-  }
+  return { ok: true, enabled: true };
 }
 
 async function getOpenHumanHandoffChat({ portalId, portalSecretKey, agentId, chatSource, chatId }) {

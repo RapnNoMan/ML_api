@@ -6,8 +6,8 @@ const ACTIONS_CACHE_TTL_MS = Math.max(
 );
 const agentActionsCache = new Map();
 
-function getActionsCacheKey({ supId, agentId, includePortalTickets }) {
-  return `${supId || ""}::${agentId || ""}::${includePortalTickets ? "tickets" : "base"}`;
+function getActionsCacheKey({ supId, agentId, includePortalTickets, suppressTicketPhoneRequired }) {
+  return `${supId || ""}::${agentId || ""}::${includePortalTickets ? "tickets" : "base"}::${suppressTicketPhoneRequired ? "no_ticket_phone" : "ticket_phone_default"}`;
 }
 
 function sanitizeToolName(rawName, id, usedNames) {
@@ -83,9 +83,9 @@ async function fetchTable({ supId, supKey, agentId, table, fields }) {
   return { ok: true, rows: Array.isArray(payload) ? payload : [] };
 }
 
-async function fetchWorkspaceAppsRow({ supId, supKey, agentId }) {
+async function fetchWorkspaceTicketAgentRow({ supId, supKey, agentId }) {
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-  const url = `${baseUrl}/workspace_apps?select=workspace_id,tickets_enabled,ticket_email_required,ticket_phone_required&agent_id=eq.${agentId}&limit=1`;
+  const url = `${baseUrl}/workspace_ticket_agents?select=workspace_id,agent_id,ticket_email_required,ticket_phone_required,agents!inner(dispatcher)&agent_id=eq.${agentId}&agents.dispatcher=eq.false&limit=1`;
 
   const response = await fetch(url, {
     headers: {
@@ -96,7 +96,7 @@ async function fetchWorkspaceAppsRow({ supId, supKey, agentId }) {
   });
 
   if (!response.ok) {
-    return { ok: false, status: 502, error: "Apps service unavailable" };
+    return { ok: false, status: 502, error: "Ticket agents service unavailable" };
   }
 
   const payload = await response.json();
@@ -104,12 +104,18 @@ async function fetchWorkspaceAppsRow({ supId, supKey, agentId }) {
   return { ok: true, row: rows[0] || null };
 }
 
-async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets = false }) {
+async function getAgentAllActions({
+  supId,
+  supKey,
+  agentId,
+  includePortalTickets = false,
+  suppressTicketPhoneRequired = false,
+}) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
 
-  const cacheKey = getActionsCacheKey({ supId, agentId, includePortalTickets });
+  const cacheKey = getActionsCacheKey({ supId, agentId, includePortalTickets, suppressTicketPhoneRequired });
   const cached = agentActionsCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) {
     return cached.value;
@@ -129,7 +135,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
   let dynamicSourcesRows = [];
   let dynamicSourceColumnsRows = [];
   let dynamicSourceRowsRows = [];
-  let workspaceAppsRow = null;
+  let workspaceTicketAgentRow = null;
 
   try {
     const requests = [
@@ -213,7 +219,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
     ];
     if (includePortalTickets) {
       requests.push(
-        fetchWorkspaceAppsRow({
+        fetchWorkspaceTicketAgentRow({
           supId,
           supKey,
           agentId,
@@ -234,7 +240,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
       dynamicSources,
       dynamicSourceColumns,
       dynamicSourceRows,
-      workspaceApps,
+      workspaceTicketAgent,
     ] = results;
 
     const statusResults = [
@@ -250,7 +256,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
       dynamicSourceColumns,
       dynamicSourceRows,
     ];
-    if (includePortalTickets) statusResults.push(workspaceApps);
+    if (includePortalTickets) statusResults.push(workspaceTicketAgent);
 
     const firstFailed = statusResults.find((result) => !result?.ok);
     if (firstFailed) return firstFailed;
@@ -266,7 +272,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
     dynamicSourcesRows = dynamicSources.rows;
     dynamicSourceColumnsRows = dynamicSourceColumns.rows;
     dynamicSourceRowsRows = dynamicSourceRows.rows;
-    workspaceAppsRow = workspaceApps?.row || null;
+    workspaceTicketAgentRow = workspaceTicketAgent?.row || null;
   } catch (error) {
     return { ok: false, status: 502, error: "Actions service unavailable" };
   }
@@ -583,17 +589,39 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
     });
   }
 
-  if (includePortalTickets && workspaceAppsRow && workspaceAppsRow.tickets_enabled === true) {
+  if (includePortalTickets && workspaceTicketAgentRow?.workspace_id) {
     if (!process.env.PORTAL_ID || !process.env.PORTAL_SECRET_KEY) {
       return { ok: false, status: 500, error: "Server configuration error" };
     }
 
     const toolName = sanitizeToolName("create_support_ticket", "tickets", usedNames);
-    const ticketEmailRequired = workspaceAppsRow.ticket_email_required !== false;
-    const ticketPhoneRequired = workspaceAppsRow.ticket_phone_required === true;
+    const ticketEmailRequired = workspaceTicketAgentRow.ticket_email_required === true;
+    const ticketPhoneRequired =
+      workspaceTicketAgentRow.ticket_phone_required === true && suppressTicketPhoneRequired !== true;
     const requiredFields = ["subject", "summary", "customer_name"];
     if (ticketEmailRequired) requiredFields.push("customer_email");
     if (ticketPhoneRequired) requiredFields.push("customer_phone");
+    const ticketProperties = {
+      subject: {
+        type: "string",
+        description: "Generate this yourself from the reported issue. Do not ask the user for it.",
+      },
+      summary: {
+        type: "string",
+        description: "Generate this yourself from the reported issue. Do not ask the user for it.",
+      },
+      summery: {
+        type: "string",
+        description: "Legacy alias for summary. Generate from issue; do not ask user for it.",
+      },
+      customer_name: { type: "string" },
+    };
+    if (ticketEmailRequired) {
+      ticketProperties.customer_email = { type: "string" };
+    }
+    if (ticketPhoneRequired) {
+      ticketProperties.customer_phone = { type: "string" };
+    }
 
     tools.push({
       type: "function",
@@ -602,25 +630,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
         "Create a new customer support ticket. Do not ask the user for subject or summary; ask only what the issue is, then write subject and summary yourself. Ask only for other missing required fields before calling.",
       parameters: {
         type: "object",
-        properties: {
-          subject: {
-            type: "string",
-            description: "Generate this yourself from the reported issue. Do not ask the user for it.",
-          },
-          summary: {
-            type: "string",
-            description: "Generate this yourself from the reported issue. Do not ask the user for it.",
-          },
-          summery: {
-            type: "string",
-            description: "Legacy alias for summary. Generate from issue; do not ask user for it.",
-          },
-          customer_name: { type: "string" },
-          customer_email: { type: "string" },
-          email: { type: "string" },
-          customer_phone: { type: "string" },
-          phone: { type: "string" },
-        },
+        properties: ticketProperties,
         required: requiredFields,
         additionalProperties: false,
       },
@@ -628,7 +638,7 @@ async function getAgentAllActions({ supId, supKey, agentId, includePortalTickets
 
     actionMap.set(toolName, {
       tool_name: toolName,
-      id: workspaceAppsRow.workspace_id ?? null,
+      id: workspaceTicketAgentRow.workspace_id ?? null,
       title: "Create Support Ticket",
       description:
         "Create a new customer support ticket. Do not ask for subject/summary; generate both from the reported issue.",

@@ -979,7 +979,6 @@ module.exports = async function handler(req, res) {
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId: body.agent_id,
-    includePortalTickets: true,
   });
 
   const [vectorResult, historyResult, agentInfo, toolsResult] = await Promise.all([

@@ -1284,7 +1284,6 @@ module.exports = async function handler(req, res) {
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
     agentId,
-    includePortalTickets: true,
   });
   const customButtonRowsPromise = fetchCustomButtonActionRows({
     supId: process.env.SUP_ID,

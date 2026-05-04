@@ -292,8 +292,8 @@ async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSourc
 
   if (chatSource === "whatsapp") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-    const numbersUrl = new URL(`${baseUrl}/whatsapp_channel_numbers`);
-    numbersUrl.searchParams.set("select", "agent_id,phone_number_id,connected");
+    const numbersUrl = new URL(`${baseUrl}/workspace_whatsapp_numbers`);
+    numbersUrl.searchParams.set("select", "workspace_id,assigned_agent_id,phone_number_id,connected");
     numbersUrl.searchParams.set("phone_number_id", `eq.${threadId}`);
     numbersUrl.searchParams.set("limit", "1");
     let numbersResponse;
@@ -307,13 +307,13 @@ async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSourc
     if (!numbersResponse.ok) return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
     const numbersPayload = await numbersResponse.json().catch(() => []);
     const numberRow = (Array.isArray(numbersPayload) ? numbersPayload : []).find(
-      (row) => Boolean(row?.connected) && String(row?.agent_id || "").trim() === agentId
+      (row) => Boolean(row?.connected) && String(row?.assigned_agent_id || "").trim() === agentId
     );
     if (!numberRow) return { ok: false, status: 404, error: "WhatsApp number not connected" };
 
-    const connUrl = new URL(`${baseUrl}/whatsapp_channel_connections`);
-    connUrl.searchParams.set("select", "agent_id,business_access_token,connected");
-    connUrl.searchParams.set("agent_id", `eq.${agentId}`);
+    const connUrl = new URL(`${baseUrl}/workspace_whatsapp_connections`);
+    connUrl.searchParams.set("select", "workspace_id,business_access_token,connected");
+    connUrl.searchParams.set("workspace_id", `eq.${numberRow.workspace_id}`);
     connUrl.searchParams.set("limit", "1");
     let connResponse;
     try {

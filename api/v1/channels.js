@@ -877,7 +877,13 @@ async function getDispatcherRoutingIntakeSettings({ supId, supKey, agentId }) {
   };
 }
 
-async function getDispatcherRouteAiAgents({ supId, supKey, workspaceId, aiAgentIds }) {
+async function getDispatcherRouteAiAgents({
+  supId,
+  supKey,
+  workspaceId,
+  aiAgentIds,
+  suppressTicketPhoneRequired = false,
+}) {
   const ids = toCleanUuidArray(aiAgentIds);
   if (!supId || !supKey || !workspaceId || ids.length === 0) {
     return { ok: true, agents: [] };
@@ -914,6 +920,7 @@ async function getDispatcherRouteAiAgents({ supId, supKey, workspaceId, aiAgentI
       supKey,
       agentId: aiAgentId,
       includePortalTickets: true,
+      suppressTicketPhoneRequired,
     });
     if (!actionsResult.ok) return actionsResult;
     const tools = (Array.isArray(actionsResult.tools) ? actionsResult.tools : []).map((tool) => ({
@@ -1362,6 +1369,7 @@ async function executeActionCalls({
   portalChatId = null,
   country,
   customerName,
+  customerPhone = null,
   source,
   chatSource,
   incomingMessage,
@@ -1870,7 +1878,12 @@ async function executeActionCalls({
       const normalizedSummary = String(variables?.summary ?? variables?.summery ?? "").trim();
       const normalizedCustomerName = String(variables?.customer_name ?? customerName ?? "").trim();
       const normalizedCustomerEmail = String(variables?.customer_email ?? variables?.email ?? "").trim();
-      const normalizedCustomerPhone = String(variables?.customer_phone ?? variables?.phone ?? "").trim();
+      const normalizedCustomerPhone = String(
+        variables?.customer_phone ??
+          variables?.phone ??
+          (chatSource === "whatsapp" ? customerPhone : "") ??
+          ""
+      ).trim();
       const missingTicketFields = [];
       if (!normalizedSubject) missingTicketFields.push("subject");
       if (!normalizedSummary) missingTicketFields.push("summary");
@@ -2454,8 +2467,8 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
 
   if (channel === "whatsapp") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-    const numbersUrl = new URL(`${baseUrl}/whatsapp_channel_numbers`);
-    numbersUrl.searchParams.set("select", "agent_id,phone_number_id,waba_id,connected");
+    const numbersUrl = new URL(`${baseUrl}/workspace_whatsapp_numbers`);
+    numbersUrl.searchParams.set("select", "workspace_id,assigned_agent_id,phone_number_id,waba_id,connected");
     numbersUrl.searchParams.set("phone_number_id", `eq.${lookupId}`);
     numbersUrl.searchParams.set("limit", "5");
 
@@ -2483,10 +2496,13 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
     const numbers = Array.isArray(numbersPayload) ? numbersPayload : [];
     const numberRow = numbers.find((row) => Boolean(row?.connected));
     if (!numberRow) return { ok: false, status: 404, error: "WhatsApp number not connected" };
+    if (!numberRow?.assigned_agent_id) {
+      return { ok: false, status: 404, error: "WhatsApp number not assigned" };
+    }
 
-    const connectionsUrl = new URL(`${baseUrl}/whatsapp_channel_connections`);
-    connectionsUrl.searchParams.set("select", "agent_id,business_access_token,connected,waba_id");
-    connectionsUrl.searchParams.set("agent_id", `eq.${numberRow.agent_id}`);
+    const connectionsUrl = new URL(`${baseUrl}/workspace_whatsapp_connections`);
+    connectionsUrl.searchParams.set("select", "workspace_id,business_access_token,connected,waba_id");
+    connectionsUrl.searchParams.set("workspace_id", `eq.${numberRow.workspace_id}`);
     connectionsUrl.searchParams.set("limit", "1");
 
     let connectionsRes;
@@ -2521,7 +2537,8 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
       ok: true,
       connection: {
         kind: "whatsapp",
-        agent_id: String(numberRow.agent_id || "").trim(),
+        workspace_id: String(numberRow.workspace_id || "").trim(),
+        agent_id: String(numberRow.assigned_agent_id || "").trim(),
         thread_id: String(numberRow.phone_number_id || ""),
         phone_number_id: String(numberRow.phone_number_id || "").trim(),
         access_token: String(connectionRow.business_access_token || "").trim(),
@@ -3071,6 +3088,7 @@ async function generateAiHandoffReply({
   chatId,
   country,
   customerName,
+  customerPhone = null,
   source,
   chatSource,
   incomingText,
@@ -3097,6 +3115,7 @@ async function generateAiHandoffReply({
       supKey: process.env.SUP_KEY,
       agentId: aiAgentId,
       includePortalTickets: true,
+      suppressTicketPhoneRequired: chatSource === "whatsapp",
     }),
   ]);
   if (!ragResult.ok) return ragResult;
@@ -3147,6 +3166,7 @@ async function generateAiHandoffReply({
       chatId,
       country,
       customerName,
+      customerPhone,
       source,
       chatSource,
       incomingMessage: incomingText,
@@ -3480,6 +3500,7 @@ async function processIncomingMessage({
         supKey: process.env.SUP_KEY,
         workspaceId: agentInfo.workspace_id,
         aiAgentIds: dispatcherSettings.route_ai_agent_ids,
+        suppressTicketPhoneRequired: event.channel === "whatsapp",
       });
       if (!aiAgentsResult.ok) {
         return { ok: false, status: aiAgentsResult.status || 502, error: aiAgentsResult.error };
@@ -3523,7 +3544,7 @@ async function processIncomingMessage({
     maxRows: 4,
   });
   const ragPromise =
-    normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
+    channelMode !== "ai_dispatcher" && normalizedMessage && !SKIP_VECTOR_MESSAGES.has(normalizedMessage)
       ? getRelevantKnowledgeChunks({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -3575,6 +3596,7 @@ async function processIncomingMessage({
           supKey: process.env.SUP_KEY,
           agentId,
           includePortalTickets: true,
+          suppressTicketPhoneRequired: event.channel === "whatsapp",
         });
 
   let latencyFirstCallMs = null;
@@ -3652,6 +3674,7 @@ async function processIncomingMessage({
       portalChatId: portalChatResult.chat?.id ?? null,
       country: requestCountry,
       customerName,
+      customerPhone: event.channel === "whatsapp" ? event.senderId : null,
       source: `meta_${event.channel}`,
       chatSource: event.channel,
       incomingMessage: incomingText,
@@ -3682,6 +3705,7 @@ async function processIncomingMessage({
         chatId,
         country: requestCountry,
         customerName,
+        customerPhone: event.channel === "whatsapp" ? event.senderId : null,
         source: `meta_${event.channel}`,
         chatSource: event.channel,
         incomingText,
