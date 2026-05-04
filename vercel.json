@@ -85,11 +85,5 @@
     { "source": "/v1/dispatcher_jobs", "destination": "/api/v1/dispatcher_jobs" },
     { "source": "/v1/widget_human_log", "destination": "/api/v1/widget_human_log" },
     { "source": "/v1/ticket_tool_test", "destination": "/api/v1/ticket_tool_test" }
-  ],
-  "crons": [
-    {
-      "path": "/api/v1/dispatcher_jobs",
-      "schedule": "* * * * *"
-    }
   ]
 }

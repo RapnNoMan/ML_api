@@ -1,5 +1,15 @@
 const channels = require("./channels");
 
+const DISPATCHER_JOBS_BATCH_SIZE = Math.max(
+  1,
+  Math.min(
+    100,
+    Number.isFinite(Number(process.env.DISPATCHER_JOBS_BATCH_SIZE))
+      ? Math.floor(Number(process.env.DISPATCHER_JOBS_BATCH_SIZE))
+      : 50
+  )
+);
+
 function authHeaders(secret, extra = {}) {
   return {
     apikey: secret,
@@ -286,7 +296,7 @@ module.exports = async function handler(req, res) {
   const claimed = await claimDueJobs({
     supId: process.env.SUP_ID,
     supKey: process.env.SUP_KEY,
-    limit: 5,
+    limit: DISPATCHER_JOBS_BATCH_SIZE,
   });
   if (!claimed.ok) {
     res.status(claimed.status || 502).json({ error: claimed.error });
