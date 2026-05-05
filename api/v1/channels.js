@@ -2996,6 +2996,12 @@ async function sendTelegramTextReply({ botToken, chatId, text }) {
   return { ok: true };
 }
 
+function buildTelegramErrorText(stage, details = {}) {
+  const status = details.status === null || details.status === undefined ? "" : ` status=${details.status}`;
+  const error = String(details.error || "Unknown error").slice(0, 300);
+  return `Telegram debug: ${stage}${status}\n${error}`;
+}
+
 async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/messages`);
   endpoint.searchParams.set("access_token", pageAccessToken);
@@ -4179,6 +4185,21 @@ module.exports = async function handler(req, res) {
             error: connectionResult?.error ?? "Unknown page lookup error",
           },
         });
+        if (event.channel === "telegram") {
+          const tokenFromPayload =
+            String(req?.query?.telegram_bot_token || req?.query?.bot_token || "").trim() ||
+            String(process.env.TELEGRAM_DEBUG_BOT_TOKEN || "").trim();
+          if (tokenFromPayload && event.recipientId) {
+            await sendTelegramTextReply({
+              botToken: tokenFromPayload,
+              chatId: event.recipientId,
+              text: buildTelegramErrorText("page_lookup_failed", {
+                status: connectionResult?.status,
+                error: connectionResult?.error || "Unknown page lookup error",
+              }),
+            });
+          }
+        }
         continue;
       }
       await insertMetaWebhookDebugMessage({
@@ -4435,6 +4456,16 @@ module.exports = async function handler(req, res) {
         headers: req.headers,
       });
       if (!handled.ok) {
+        if (connectionResult.connection?.kind === "telegram") {
+          await sendTelegramTextReply({
+            botToken: connectionResult.connection.bot_token,
+            chatId: event.recipientId,
+            text: buildTelegramErrorText("handle_failed", {
+              status: handled?.status,
+              error: handled?.error || "Unknown processing error",
+            }),
+          });
+        }
         if (typingOnOk && META_MIN_TYPING_MS > 0) {
           const elapsed = Date.now() - typingStartedAt;
           const waitMs = META_MIN_TYPING_MS - elapsed;
@@ -4477,6 +4508,18 @@ module.exports = async function handler(req, res) {
         continue;
       }
       if ((handled.humanHandoff || handled.portalChatOnly) && !handled.reply) {
+        if (connectionResult.connection?.kind === "telegram") {
+          await sendTelegramTextReply({
+            botToken: connectionResult.connection.bot_token,
+            chatId: event.recipientId,
+            text: buildTelegramErrorText(
+              handled.portalChatOnly ? "portal_chat_only" : "human_handoff_active",
+              {
+                error: handled.portalLogError || "Message was accepted but no AI reply was sent.",
+              }
+            ),
+          });
+        }
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -4574,6 +4617,16 @@ module.exports = async function handler(req, res) {
       } else {
         const replyRecipientId =
           connectionResult.connection?.kind === "telegram" ? event.recipientId : event.senderId;
+        if (connectionResult.connection?.kind === "telegram") {
+          await sendTelegramTextReply({
+            botToken: connectionResult.connection.bot_token,
+            chatId: event.recipientId,
+            text: buildTelegramErrorText("send_failed", {
+              status: sendResult?.status,
+              error: sendResult?.error || "Unknown send error",
+            }),
+          });
+        }
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
