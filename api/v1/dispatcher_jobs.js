@@ -231,12 +231,13 @@ async function processInitialJob(job) {
   const customerMessages = messagesResult.messages
     .map((message) => String(message?.prompt || "").trim())
     .filter(Boolean);
-  if (customerMessages.length === 0) return { ok: true, skipped: true };
+  const fallbackText = String(job.raw_event?.text || "").trim();
+  if (customerMessages.length === 0 && !fallbackText) return { ok: true, skipped: true };
   const latestMessageId = messagesResult.messages[messagesResult.messages.length - 1]?.id ?? job.portal_customer_message_id ?? null;
 
   const event = {
     ...(job.raw_event && typeof job.raw_event === "object" ? job.raw_event : {}),
-    text: customerMessages.join("\n"),
+    text: customerMessages.length > 0 ? customerMessages.join("\n") : fallbackText,
   };
   const connection = job.raw_connection && typeof job.raw_connection === "object" ? job.raw_connection : {};
   const handled = await channels.processIncomingMessage({
@@ -244,7 +245,7 @@ async function processInitialJob(job) {
     connection,
     headers: {},
     skipDispatcherInitialDelay: true,
-    skipPortalCustomerLog: true,
+    skipPortalCustomerLog: latestMessageId !== null && latestMessageId !== undefined,
     scheduledPortalCustomerMessageId: latestMessageId,
   });
   if (!handled.ok) return handled;

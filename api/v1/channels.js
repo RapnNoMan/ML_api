@@ -3338,30 +3338,6 @@ async function processIncomingMessage({
       }
 
       if (!existingPortalChatResult.chat) {
-        if (!skipPortalCustomerLog) {
-          const savePortalCustomerResult = await saveHumanMessageToPortalFeed({
-            portalId: process.env.PORTAL_ID,
-            portalSecretKey: process.env.PORTAL_SECRET_KEY,
-            agentId: null,
-            workspaceId: agentInfo?.workspace_id ?? null,
-            anonId,
-            chatId,
-            source,
-            senderType: "customer",
-            assignedHumanAgentUserId: null,
-            prompt: incomingText,
-            result: null,
-          });
-          if (!savePortalCustomerResult.ok) {
-            return {
-              ok: false,
-              status: savePortalCustomerResult.status || 502,
-              error: savePortalCustomerResult.error,
-            };
-          }
-          portalCustomerMessageId = savePortalCustomerResult.messageId ?? null;
-        }
-
         const scheduleResult = await scheduleInitialDispatcherReply({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
