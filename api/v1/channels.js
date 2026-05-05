@@ -61,9 +61,15 @@ const META_MIN_TYPING_MS = Math.max(
     : 1200
 );
 const OPENAI_MODEL_FALLBACKS = [PRIMARY_MODEL];
+const JORDAN_TIME_ZONE = "Asia/Amman";
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms) || 0)));
+}
+
+function getJordanOffsetMinutes(value = new Date()) {
+  const date = value instanceof Date ? value : new Date(value);
+  return getTimeZoneOffsetMinutes(date, JORDAN_TIME_ZONE);
 }
 
 function getJordanDispatcherDayStartIso(value = new Date()) {
