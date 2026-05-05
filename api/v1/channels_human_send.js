@@ -262,32 +262,7 @@ async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSourc
       }
     }
 
-    const url = new URL(`${baseUrl}/telegram_channel_connections`);
-    url.searchParams.set("select", "agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled");
-    url.searchParams.set("agent_id", `eq.${agentId}`);
-    url.searchParams.set("limit", "1");
-    let response;
-    try {
-      response = await fetch(url.toString(), {
-        headers: { apikey: supKey, Authorization: `Bearer ${supKey}`, Accept: "application/json" },
-      });
-    } catch (_) {
-      return { ok: false, status: 502, error: "Telegram channel service unavailable" };
-    }
-    if (!response.ok) return { ok: false, status: 502, error: "Telegram channel service unavailable" };
-    const payload = await response.json().catch(() => []);
-    const row = (Array.isArray(payload) ? payload : []).find(
-      (item) =>
-        Boolean(item?.connected) &&
-        Boolean(item?.webhook_enabled) &&
-        String(item?.agent_id || "").trim() === agentId
-    );
-    if (!row?.bot_token) return { ok: false, status: 404, error: "Telegram connection not found" };
-    const thread = String(row?.bot_id || row?.bot_username || row?.agent_id || "").trim();
-    if (threadId && thread && threadId !== thread) {
-      return { ok: false, status: 409, error: "Telegram thread mismatch" };
-    }
-    return { ok: true, connection: { kind: "telegram", botToken: String(row.bot_token) } };
+    return { ok: false, status: 404, error: "Telegram workspace bot not found" };
   }
 
   if (chatSource === "whatsapp") {

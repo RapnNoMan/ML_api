@@ -2375,7 +2375,27 @@ function telegramAccessItemMatchesChatId(item, chatId) {
   ].some((value) => String(value || "").trim() === normalizedChatId);
 }
 
-async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
+function normalizeWebhookUrl(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  try {
+    const url = new URL(text);
+    url.hash = "";
+    return url.toString().replace(/\/+$/, "");
+  } catch (_) {
+    return text.replace(/\/+$/, "");
+  }
+}
+
+function getRequestFullUrl(req) {
+  const host = String(req?.headers?.["x-forwarded-host"] || req?.headers?.host || "").trim();
+  const proto = String(req?.headers?.["x-forwarded-proto"] || "https").split(",")[0].trim() || "https";
+  const path = String(req?.url || "").trim();
+  if (!host || !path) return "";
+  return `${proto}://${host}${path}`;
+}
+
+async function fetchChannelConnection({ supId, supKey, channel, lookupId, requestUrl = "" }) {
   if (!supId || !supKey) return { ok: false, status: 500, error: "Server configuration error" };
 
   if (channel === "telegram") {
@@ -2383,7 +2403,7 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
     const url = new URL(`${baseUrl}/workspace_telegram_bots`);
     url.searchParams.set(
       "select",
-      "id,workspace_id,assigned_agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
+      "id,workspace_id,assigned_agent_id,bot_token,bot_id,bot_username,webhook_url,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
     );
     if (/^\d+$/.test(String(lookupId || "").trim())) {
       url.searchParams.set("id", `eq.${String(lookupId).trim()}`);
@@ -2392,7 +2412,7 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
       url.searchParams.set("connected", "eq.true");
       url.searchParams.set("webhook_enabled", "eq.true");
       url.searchParams.set("order", "created_at.asc,id.asc");
-      url.searchParams.set("limit", "2");
+      url.searchParams.set("limit", "50");
     }
 
     let response;
@@ -2416,16 +2436,21 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
       return { ok: false, status: 502, error: "Telegram channel service unavailable" };
     }
     const rows = Array.isArray(payload) ? payload : [];
-    if (!/^\d+$/.test(String(lookupId || "").trim()) && rows.length !== 1) {
+    const requestUrlNormalized = normalizeWebhookUrl(requestUrl);
+    const matchingWebhookRows = requestUrlNormalized
+      ? rows.filter((item) => normalizeWebhookUrl(item?.webhook_url) === requestUrlNormalized)
+      : [];
+    const candidateRows = matchingWebhookRows.length > 0 ? matchingWebhookRows : rows;
+    if (!/^\d+$/.test(String(lookupId || "").trim()) && candidateRows.length !== 1) {
       return {
         ok: false,
         status: 400,
-        error: rows.length === 0
+        error: candidateRows.length === 0
           ? "No active Telegram workspace bot found"
-          : "Missing numeric Telegram workspace_bot_id; multiple active workspace bots found",
+          : "Missing numeric Telegram workspace_bot_id; multiple active workspace bots matched",
       };
     }
-    const row = rows[0] || null;
+    const row = candidateRows[0] || null;
     if (!row || !row.connected || !row.webhook_enabled) {
       return { ok: false, status: 404, error: "Telegram workspace bot not found" };
     }
@@ -4121,6 +4146,7 @@ module.exports = async function handler(req, res) {
           supKey: process.env.SUP_KEY,
           channel: event.channel,
           lookupId: event.lookupId,
+          requestUrl: getRequestFullUrl(req),
         });
         connectionCache.set(cacheKey, connectionResult);
       }
