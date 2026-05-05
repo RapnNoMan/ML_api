@@ -39,6 +39,9 @@ const {
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 const PRIMARY_MODEL = process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini";
 const FOLLOWUP_MODEL = process.env.OPENAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
+const DISPATCHER_MODEL = process.env.OPENAI_DISPATCHER_MODEL || "gpt-5.5-2026-04-23";
+const DISPATCHER_FOLLOWUP_MODEL = process.env.OPENAI_DISPATCHER_FOLLOWUP_MODEL || DISPATCHER_MODEL;
+const DISPATCHER_REASONING_EFFORT = process.env.OPENAI_DISPATCHER_REASONING_EFFORT || "minimal";
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
 const SONIOX_API_BASE_URL = String(process.env.SONIOX_API_BASE_URL || "https://api.soniox.com").replace(/\/+$/, "");
 const SONIOX_STT_MODEL = process.env.SONIOX_STT_MODEL || "stt-async-v4";
@@ -387,7 +390,12 @@ function toXAiInputItems(messages, assistantBlocks, toolResults) {
   return input;
 }
 
-function createXAiRequestBody({ model, instructions, messages, tools, inputItems }) {
+function normalizeReasoningEffort(value) {
+  const effort = String(value || "").trim().toLowerCase();
+  return ["none", "minimal", "low", "medium", "high", "xhigh"].includes(effort) ? effort : "";
+}
+
+function createXAiRequestBody({ model, reasoning, instructions, messages, tools, inputItems }) {
   const systemRules = [
     "TOOL RULES (MUST FOLLOW):",
     "- Use provided tools when needed.",
@@ -403,6 +411,10 @@ function createXAiRequestBody({ model, instructions, messages, tools, inputItems
     text: { verbosity: "medium" },
     stream: false,
   };
+  const reasoningEffort = normalizeReasoningEffort(reasoning?.effort ?? reasoning);
+  if (reasoningEffort) {
+    requestBody.reasoning = { effort: reasoningEffort };
+  }
 
   if (Array.isArray(tools) && tools.length > 0) {
     requestBody.tools = tools;
@@ -412,9 +424,10 @@ function createXAiRequestBody({ model, instructions, messages, tools, inputItems
   return requestBody;
 }
 
-async function callXAiWithModel({ apiKey, model, instructions, messages, tools, inputItems }) {
+async function callXAiWithModel({ apiKey, model, reasoning, instructions, messages, tools, inputItems }) {
   const requestBody = createXAiRequestBody({
     model,
+    reasoning,
     instructions,
     messages,
     tools,
@@ -476,7 +489,7 @@ async function callXAiWithModel({ apiKey, model, instructions, messages, tools, 
   };
 }
 
-async function getXAiChatCompletion({ apiKey, model, instructions, messages, tools, inputItems }) {
+async function getXAiChatCompletion({ apiKey, model, reasoning, instructions, messages, tools, inputItems }) {
   if (!apiKey) return { ok: false, status: 500, error: "Server configuration error" };
   const uniqueModels = Array.from(
     new Set(
@@ -491,6 +504,7 @@ async function getXAiChatCompletion({ apiKey, model, instructions, messages, too
     const result = await callXAiWithModel({
       apiKey,
       model: modelName,
+      reasoning,
       instructions,
       messages,
       tools,
@@ -3665,9 +3679,13 @@ async function processIncomingMessage({
   ];
 
   const completionStartedAt = Date.now();
+  const firstCallModel = channelMode === "ai_dispatcher" ? DISPATCHER_MODEL : PRIMARY_MODEL;
+  const secondCallModel = channelMode === "ai_dispatcher" ? DISPATCHER_FOLLOWUP_MODEL : FOLLOWUP_MODEL;
+  const reasoning = channelMode === "ai_dispatcher" ? { effort: DISPATCHER_REASONING_EFFORT } : null;
   const completion = await getXAiChatCompletion({
     apiKey: process.env.OPENAI_API_KEY,
-    model: PRIMARY_MODEL,
+    model: firstCallModel,
+    reasoning,
     instructions: prompt,
     messages,
     tools: effectiveTools,
@@ -3795,7 +3813,8 @@ async function processIncomingMessage({
     const followupStartedAt = Date.now();
     const followup = await getXAiChatCompletion({
       apiKey: process.env.OPENAI_API_KEY,
-      model: FOLLOWUP_MODEL,
+      model: secondCallModel,
+      reasoning,
       instructions: followupPrompt,
       messages,
       inputItems: followupInputItems,
@@ -3890,8 +3909,8 @@ async function processIncomingMessage({
       country: requestCountry,
       anonId,
       chatId,
-      modelFirstCall: PRIMARY_MODEL,
-      modelSecondCall: FOLLOWUP_MODEL,
+      modelFirstCall: firstCallModel,
+      modelSecondCall: secondCallModel,
       firstInputTokens: firstCallTokens.input,
       firstOutputTokens: firstCallTokens.output,
       secondInputTokens: secondCallTokens.input,
@@ -3977,8 +3996,8 @@ async function processIncomingMessage({
     country: requestCountry,
     anonId,
     chatId,
-    modelFirstCall: PRIMARY_MODEL,
-    modelSecondCall: FOLLOWUP_MODEL,
+    modelFirstCall: firstCallModel,
+    modelSecondCall: secondCallModel,
     firstInputTokens: firstCallTokens.input,
     firstOutputTokens: firstCallTokens.output,
     secondInputTokens: 0,
