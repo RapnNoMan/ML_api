@@ -3386,31 +3386,6 @@ async function processIncomingMessage({
       };
     }
 
-    if (channelMode === "ai_dispatcher" && isUnassignedDispatcherHumanHandoffChat(portalChatResult.chat)) {
-      const saveResult = await saveChannelCustomerForPortal({
-        agentId: portalChatResult.chat?.agent_id ?? null,
-        workspaceId: portalChatResult.chat?.workspace_id ?? agentInfo?.workspace_id ?? null,
-        anonId,
-        chatId,
-        country: requestCountry,
-        customerName,
-        source,
-        incomingText,
-        assignedHumanAgentUserId: null,
-      });
-      if (!saveResult.ok) {
-        return { ok: false, status: saveResult.status || 502, error: saveResult.error };
-      }
-      requestSucceeded = true;
-      return {
-        ok: true,
-        humanHandoff: true,
-        portalChatOnly: true,
-        actionUsed: false,
-        actionCount: 0,
-      };
-    }
-
     if (channelMode !== "ai_agent" && !skipPortalCustomerLog) {
       const savePortalCustomerResult = await saveHumanMessageToPortalFeed({
         portalId: process.env.PORTAL_ID,
