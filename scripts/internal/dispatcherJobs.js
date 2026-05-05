@@ -81,7 +81,18 @@ async function scheduleInitialDispatcherReply({
   event,
   connection,
 }) {
-  if (!supId || !supKey || !workspaceId || !dispatcherAgentId || !chatId || !anonId || !dispatcherChatDay || !portalChatId) {
+  if (
+    !supId ||
+    !supKey ||
+    !workspaceId ||
+    !dispatcherAgentId ||
+    !chatId ||
+    !anonId ||
+    !dispatcherChatDay ||
+    portalChatId === null ||
+    portalChatId === undefined ||
+    String(portalChatId).trim() === ""
+  ) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
 
@@ -153,7 +164,18 @@ async function scheduleUnansweredDispatcherCheck({
   event,
   connection,
 }) {
-  if (!supId || !supKey || !workspaceId || !dispatcherAgentId || !chatId || !anonId || !dispatcherChatDay || !portalChatId) {
+  if (
+    !supId ||
+    !supKey ||
+    !workspaceId ||
+    !dispatcherAgentId ||
+    !chatId ||
+    !anonId ||
+    !dispatcherChatDay ||
+    portalChatId === null ||
+    portalChatId === undefined ||
+    String(portalChatId).trim() === ""
+  ) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;

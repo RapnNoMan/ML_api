@@ -181,26 +181,42 @@ async function sendChannelReply({ connection, event, reply }) {
   });
 }
 
-function isAlreadyHandedOff(chat) {
+function isAlreadyHandedOff(chat, { dispatcherAgentId = null } = {}) {
   if (!chat) return true;
   if (String(chat.status || "") === "closed") return true;
   if (chat.assigned_human_agent_user_id) return true;
-  if (chat.agent_id) return true;
+  const chatAgentId = String(chat.agent_id || "").trim();
+  const cleanDispatcherAgentId = String(dispatcherAgentId || "").trim();
+  if (chatAgentId && (!cleanDispatcherAgentId || chatAgentId !== cleanDispatcherAgentId)) return true;
   if (chat.message_start_id !== null && chat.message_start_id !== undefined) return true;
   if (chat.contact_id !== null && chat.contact_id !== undefined) return true;
   const summery = String(chat.summery || "").trim();
   return Boolean(summery && summery !== "Incoming channel conversation.");
 }
 
+function getInitialCustomerLookupStart(job, { hasPortalChat }) {
+  if (hasPortalChat) return job.created_at;
+  const createdAtMs = Date.parse(String(job?.created_at || ""));
+  if (!Number.isFinite(createdAtMs)) return null;
+  return new Date(createdAtMs - 10 * 60 * 1000).toISOString();
+}
+
 async function processInitialJob(job) {
-  const chatResult = await getPortalChatById({
-    portalId: process.env.PORTAL_ID,
-    portalSecretKey: process.env.PORTAL_SECRET_KEY,
-    chatId: job.portal_chat_id,
-  });
-  if (!chatResult.ok) return chatResult;
-  if (String(chatResult.chat?.status || "") !== "closed" && isAlreadyHandedOff(chatResult.chat)) {
-    return { ok: true, skipped: true };
+  const numericPortalChatId = Number(job.portal_chat_id);
+  const hasPortalChat = Number.isFinite(numericPortalChatId) && numericPortalChatId > 0;
+  if (hasPortalChat) {
+    const chatResult = await getPortalChatById({
+      portalId: process.env.PORTAL_ID,
+      portalSecretKey: process.env.PORTAL_SECRET_KEY,
+      chatId: job.portal_chat_id,
+    });
+    if (!chatResult.ok) return chatResult;
+    if (
+      String(chatResult.chat?.status || "") !== "closed" &&
+      isAlreadyHandedOff(chatResult.chat, { dispatcherAgentId: job.dispatcher_agent_id })
+    ) {
+      return { ok: true, skipped: true };
+    }
   }
 
   const messagesResult = await getPortalCustomerMessages({
@@ -209,7 +225,7 @@ async function processInitialJob(job) {
     workspaceId: job.workspace_id,
     anonId: job.annon,
     chatId: job.chat_id,
-    createdAfter: job.created_at,
+    createdAfter: getInitialCustomerLookupStart(job, { hasPortalChat }),
   });
   if (!messagesResult.ok) return messagesResult;
   const customerMessages = messagesResult.messages
@@ -246,7 +262,7 @@ async function processUnansweredJob(job) {
   });
   if (!chatResult.ok) return chatResult;
   const chat = chatResult.chat;
-  if (!chat || String(chat.status || "") === "closed" || chat.assigned_human_agent_user_id || chat.agent_id || isAlreadyHandedOff(chat)) {
+  if (!chat || isAlreadyHandedOff(chat, { dispatcherAgentId: job.dispatcher_agent_id })) {
     return { ok: true, skipped: true };
   }
 
