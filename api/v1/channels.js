@@ -2377,21 +2377,23 @@ function telegramAccessItemMatchesChatId(item, chatId) {
 
 async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
   if (!supId || !supKey) return { ok: false, status: 500, error: "Server configuration error" };
-  if (!lookupId) return { ok: false, status: 404, error: "Channel not found" };
 
   if (channel === "telegram") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-    if (!/^\d+$/.test(String(lookupId || "").trim())) {
-      return { ok: false, status: 400, error: "Missing numeric Telegram workspace_bot_id" };
-    }
-
     const url = new URL(`${baseUrl}/workspace_telegram_bots`);
     url.searchParams.set(
       "select",
       "id,workspace_id,assigned_agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
     );
-    url.searchParams.set("id", `eq.${String(lookupId).trim()}`);
-    url.searchParams.set("limit", "1");
+    if (/^\d+$/.test(String(lookupId || "").trim())) {
+      url.searchParams.set("id", `eq.${String(lookupId).trim()}`);
+      url.searchParams.set("limit", "1");
+    } else {
+      url.searchParams.set("connected", "eq.true");
+      url.searchParams.set("webhook_enabled", "eq.true");
+      url.searchParams.set("order", "created_at.asc,id.asc");
+      url.searchParams.set("limit", "2");
+    }
 
     let response;
     try {
@@ -2413,7 +2415,17 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
     } catch (_) {
       return { ok: false, status: 502, error: "Telegram channel service unavailable" };
     }
-    const row = Array.isArray(payload) ? payload[0] : null;
+    const rows = Array.isArray(payload) ? payload : [];
+    if (!/^\d+$/.test(String(lookupId || "").trim()) && rows.length !== 1) {
+      return {
+        ok: false,
+        status: 400,
+        error: rows.length === 0
+          ? "No active Telegram workspace bot found"
+          : "Missing numeric Telegram workspace_bot_id; multiple active workspace bots found",
+      };
+    }
+    const row = rows[0] || null;
     if (!row || !row.connected || !row.webhook_enabled) {
       return { ok: false, status: 404, error: "Telegram workspace bot not found" };
     }
@@ -2435,6 +2447,8 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
       },
     };
   }
+
+  if (!lookupId) return { ok: false, status: 404, error: "Channel not found" };
 
   if (channel === "whatsapp") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
