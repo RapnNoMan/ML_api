@@ -2322,30 +2322,18 @@ async function insertMetaWebhookDebugMessage({ supId, supKey, event, raw }) {
 async function updateTelegramPendingRequests({
   supId,
   supKey,
-  agentId,
   workspaceBotId,
-  connectionKind = "telegram_legacy",
   pendingAccessRequests,
 }) {
   if (!supId || !supKey) {
     return { ok: false, status: 500, error: "Server configuration error" };
   }
   const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-  const isWorkspaceBot = connectionKind === "workspace_telegram_bot";
-  if (isWorkspaceBot && !workspaceBotId) {
+  if (!workspaceBotId) {
     return { ok: false, status: 500, error: "Missing workspace bot id" };
   }
-  if (!isWorkspaceBot && !agentId) {
-    return { ok: false, status: 500, error: "Missing Telegram agent id" };
-  }
-  const url = new URL(
-    `${baseUrl}/${isWorkspaceBot ? "workspace_telegram_bots" : "telegram_channel_connections"}`
-  );
-  if (isWorkspaceBot) {
-    url.searchParams.set("id", `eq.${workspaceBotId}`);
-  } else {
-    url.searchParams.set("agent_id", `eq.${agentId}`);
-  }
+  const url = new URL(`${baseUrl}/workspace_telegram_bots`);
+  url.searchParams.set("id", `eq.${workspaceBotId}`);
   const payload = {
     updated_at: new Date().toISOString(),
   };
@@ -2393,64 +2381,16 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
 
   if (channel === "telegram") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
-    if (/^\d+$/.test(String(lookupId || "").trim())) {
-      const url = new URL(`${baseUrl}/workspace_telegram_bots`);
-      url.searchParams.set(
-        "select",
-        "id,workspace_id,assigned_agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
-      );
-      url.searchParams.set("id", `eq.${String(lookupId).trim()}`);
-      url.searchParams.set("limit", "1");
-
-      let response;
-      try {
-        response = await fetch(url.toString(), {
-          headers: {
-            apikey: supKey,
-            Authorization: `Bearer ${supKey}`,
-            Accept: "application/json",
-          },
-        });
-      } catch (_) {
-        return { ok: false, status: 502, error: "Telegram channel service unavailable" };
-      }
-      if (!response.ok) return { ok: false, status: 502, error: "Telegram channel service unavailable" };
-
-      let payload;
-      try {
-        payload = await response.json();
-      } catch (_) {
-        return { ok: false, status: 502, error: "Telegram channel service unavailable" };
-      }
-      const row = Array.isArray(payload) ? payload[0] : null;
-      if (!row || !row.connected || !row.webhook_enabled) {
-        return { ok: false, status: 404, error: "Telegram workspace bot not found" };
-      }
-      if (!row?.bot_token) return { ok: false, status: 400, error: "Missing Telegram bot token" };
-
-      return {
-        ok: true,
-        connection: {
-          kind: "telegram",
-          connection_kind: "workspace_telegram_bot",
-          workspace_bot_id: row.id ?? null,
-          workspace_id: row.workspace_id ?? null,
-          agent_id: String(row.assigned_agent_id || "").trim() || null,
-          thread_id: String(row.bot_id || row.bot_username || row.id || "").trim(),
-          bot_token: String(row.bot_token || "").trim(),
-          security_enabled: Boolean(row.security_enabled),
-          pending_access_requests: normalizeJsonArray(row.pending_access_requests),
-          allowed_chat_users: normalizeJsonArray(row.allowed_chat_users),
-        },
-      };
+    if (!/^\d+$/.test(String(lookupId || "").trim())) {
+      return { ok: false, status: 400, error: "Missing numeric Telegram workspace_bot_id" };
     }
 
-    const url = new URL(`${baseUrl}/telegram_channel_connections`);
+    const url = new URL(`${baseUrl}/workspace_telegram_bots`);
     url.searchParams.set(
       "select",
-      "agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
+      "id,workspace_id,assigned_agent_id,bot_token,bot_id,bot_username,connected,webhook_enabled,security_enabled,pending_access_requests,allowed_chat_users"
     );
-    url.searchParams.set("agent_id", `eq.${lookupId}`);
+    url.searchParams.set("id", `eq.${String(lookupId).trim()}`);
     url.searchParams.set("limit", "1");
 
     let response;
@@ -2473,20 +2413,21 @@ async function fetchChannelConnection({ supId, supKey, channel, lookupId }) {
     } catch (_) {
       return { ok: false, status: 502, error: "Telegram channel service unavailable" };
     }
-    const rows = Array.isArray(payload) ? payload : [];
-    const row = rows.find((item) => Boolean(item?.connected) && Boolean(item?.webhook_enabled));
-    if (!row) return { ok: false, status: 404, error: "Telegram connection not found" };
+    const row = Array.isArray(payload) ? payload[0] : null;
+    if (!row || !row.connected || !row.webhook_enabled) {
+      return { ok: false, status: 404, error: "Telegram workspace bot not found" };
+    }
     if (!row?.bot_token) return { ok: false, status: 400, error: "Missing Telegram bot token" };
 
     return {
       ok: true,
       connection: {
         kind: "telegram",
-        connection_kind: "telegram_legacy",
-        workspace_bot_id: null,
-        workspace_id: null,
-        agent_id: String(row.agent_id || "").trim(),
-        thread_id: String(row.bot_id || row.bot_username || row.agent_id || "").trim(),
+        connection_kind: "workspace_telegram_bot",
+        workspace_bot_id: row.id ?? null,
+        workspace_id: row.workspace_id ?? null,
+        agent_id: String(row.assigned_agent_id || "").trim() || null,
+        thread_id: String(row.bot_id || row.bot_username || row.id || "").trim(),
         bot_token: String(row.bot_token || "").trim(),
         security_enabled: Boolean(row.security_enabled),
         pending_access_requests: normalizeJsonArray(row.pending_access_requests),
@@ -4138,10 +4079,7 @@ module.exports = async function handler(req, res) {
           req?.query?.workspace_bot_id ??
           req?.query?.workspaceBotId ??
           req?.query?.telegram_workspace_bot_id ??
-          req?.query?.telegramWorkspaceBotId ??
-          req?.query?.telegram_agent_id ??
-          req?.query?.agent_id ??
-          req?.query?.telegramAgentId;
+          req?.query?.telegramWorkspaceBotId;
         const queryAgentId = Array.isArray(queryAgentIdRaw)
           ? String(queryAgentIdRaw[0] || "").trim()
           : String(queryAgentIdRaw || "").trim();
@@ -4221,9 +4159,7 @@ module.exports = async function handler(req, res) {
           await updateTelegramPendingRequests({
             supId: process.env.SUP_ID,
             supKey: process.env.SUP_KEY,
-            agentId: connectionResult.connection.agent_id,
             workspaceBotId: connectionResult.connection.workspace_bot_id,
-            connectionKind: connectionResult.connection.connection_kind,
           });
         }
         const securityEnabled = Boolean(connectionResult.connection.security_enabled);
@@ -4260,9 +4196,7 @@ module.exports = async function handler(req, res) {
             const pendingUpdateResult = await updateTelegramPendingRequests({
               supId: process.env.SUP_ID,
               supKey: process.env.SUP_KEY,
-              agentId: connectionResult.connection.agent_id,
               workspaceBotId: connectionResult.connection.workspace_bot_id,
-              connectionKind: connectionResult.connection.connection_kind,
               pendingAccessRequests: nextPending,
             });
             if (pendingUpdateResult.ok) {
