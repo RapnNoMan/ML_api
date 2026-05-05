@@ -26,6 +26,7 @@ const {
 const {
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
+  getActivePortalChat,
   ensurePortalChat,
   resolveConversationStartMessageId,
   updateHumanHandoffChatMessageStart,
@@ -3316,6 +3317,54 @@ async function processIncomingMessage({
   const dispatcherChatDay = getJordanDispatcherDay();
   let portalChatResult = { ok: true, chat: null };
   let portalCustomerMessageId = null;
+  if (channelMode === "ai_dispatcher") {
+    const existingPortalChatResult = await getActivePortalChat({
+      portalId: process.env.PORTAL_ID,
+      portalSecretKey: process.env.PORTAL_SECRET_KEY,
+      chatSource: event.channel,
+      chatId,
+      workspaceId: agentInfo?.workspace_id ?? null,
+      anonId,
+      allowClosedSameDay: false,
+    });
+    if (!existingPortalChatResult.ok) {
+      return {
+        ok: false,
+        status: existingPortalChatResult.status || 502,
+        error: existingPortalChatResult.error,
+      };
+    }
+
+    const assignedHumanAgentUserId =
+      String(existingPortalChatResult.chat?.status || "") === "closed"
+        ? null
+        : (existingPortalChatResult.chat?.assigned_human_agent_user_id ?? null);
+    if (assignedHumanAgentUserId) {
+      const saveResult = await saveChannelCustomerForPortal({
+        agentId: existingPortalChatResult.chat?.agent_id ?? null,
+        workspaceId: existingPortalChatResult.chat?.workspace_id ?? agentInfo?.workspace_id ?? null,
+        anonId,
+        chatId,
+        country: requestCountry,
+        customerName,
+        source,
+        incomingText,
+        assignedHumanAgentUserId,
+      });
+      if (!saveResult.ok) {
+        return { ok: false, status: saveResult.status || 502, error: saveResult.error };
+      }
+      requestSucceeded = true;
+      return {
+        ok: true,
+        humanHandoff: true,
+        portalChatOnly: false,
+        actionUsed: false,
+        actionCount: 0,
+      };
+    }
+  }
+
   if (channelMode !== "ai_agent" && channelMode !== "ai_dispatcher") {
     portalChatResult = await ensurePortalChat({
       portalId: process.env.PORTAL_ID,
