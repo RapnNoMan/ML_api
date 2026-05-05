@@ -2159,10 +2159,22 @@ function toWebhookEvents(payload) {
     Number.isFinite(Number(payload?.update_id)) ||
     payload?.message ||
     payload?.edited_message ||
+    payload?.channel_post ||
+    payload?.edited_channel_post ||
     payload?.callback_query;
   if (hasTelegramShape) {
-    const message = payload?.message || payload?.edited_message || payload?.callback_query?.message;
-    const from = payload?.message?.from || payload?.edited_message?.from || payload?.callback_query?.from;
+    const message =
+      payload?.message ||
+      payload?.edited_message ||
+      payload?.channel_post ||
+      payload?.edited_channel_post ||
+      payload?.callback_query?.message;
+    const from =
+      payload?.message?.from ||
+      payload?.edited_message?.from ||
+      payload?.channel_post?.sender_chat ||
+      payload?.edited_channel_post?.sender_chat ||
+      payload?.callback_query?.from;
     const chat = message?.chat;
     const telegramAudio = extractTelegramAudioPayload(message);
     const text =
@@ -2170,13 +2182,20 @@ function toWebhookEvents(payload) {
         ? payload.message.text.trim()
         : typeof payload?.edited_message?.text === "string"
           ? payload.edited_message.text.trim()
-          : typeof payload?.callback_query?.data === "string"
-            ? payload.callback_query.data.trim()
-            : "";
+          : typeof payload?.channel_post?.text === "string"
+            ? payload.channel_post.text.trim()
+            : typeof payload?.edited_channel_post?.text === "string"
+              ? payload.edited_channel_post.text.trim()
+              : typeof payload?.callback_query?.data === "string"
+                ? payload.callback_query.data.trim()
+                : "";
     const hasAttachment =
       Array.isArray(payload?.message?.photo) ||
+      Array.isArray(payload?.channel_post?.photo) ||
       Boolean(payload?.message?.document) ||
+      Boolean(payload?.channel_post?.document) ||
       Boolean(payload?.message?.video) ||
+      Boolean(payload?.channel_post?.video) ||
       Boolean(telegramAudio);
 
     if (chat?.id) {
@@ -4075,6 +4094,27 @@ module.exports = async function handler(req, res) {
 
     const events = toWebhookEvents(payload);
     if (events.length === 0) {
+      if (isTelegramPayload) {
+        await insertMetaWebhookDebugMessage({
+          supId: process.env.SUP_ID,
+          supKey: process.env.SUP_KEY,
+          event: {
+            object: "telegram",
+            field: "",
+            channel: "telegram",
+            lookupId: "",
+            senderId: "",
+            recipientId: "",
+            messageId: "",
+            text: "",
+          },
+          raw: {
+            stage: "telegram_no_supported_events",
+            payload_keys: Object.keys(payload || {}),
+            raw_payload: payload,
+          },
+        });
+      }
       res.status(200).json({ ok: true, processed: 0 });
       return;
     }
