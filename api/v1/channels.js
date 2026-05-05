@@ -3316,7 +3316,7 @@ async function processIncomingMessage({
   const dispatcherChatDay = getJordanDispatcherDay();
   let portalChatResult = { ok: true, chat: null };
   let portalCustomerMessageId = null;
-  if (channelMode !== "ai_agent") {
+  if (channelMode !== "ai_agent" && channelMode !== "ai_dispatcher") {
     portalChatResult = await ensurePortalChat({
       portalId: process.env.PORTAL_ID,
       portalSecretKey: process.env.PORTAL_SECRET_KEY,
@@ -3790,7 +3790,12 @@ async function processIncomingMessage({
         });
     if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
-    if (channelMode === "ai_dispatcher" && !humanHandoffActivated && !aiHandoffActivated) {
+    if (
+      channelMode === "ai_dispatcher" &&
+      !humanHandoffActivated &&
+      !aiHandoffActivated &&
+      portalChatResult.chat?.id
+    ) {
       const unansweredScheduleResult = await scheduleUnansweredDispatcherCheck({
         supId: process.env.SUP_ID,
         supKey: process.env.SUP_KEY,
@@ -3878,7 +3883,7 @@ async function processIncomingMessage({
   });
   if (!saveResult.ok) return { ok: false, status: saveResult.status, error: saveResult.error };
 
-  if (channelMode === "ai_dispatcher") {
+  if (channelMode === "ai_dispatcher" && portalChatResult.chat?.id) {
     const unansweredScheduleResult = await scheduleUnansweredDispatcherCheck({
       supId: process.env.SUP_ID,
       supKey: process.env.SUP_KEY,
