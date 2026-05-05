@@ -3351,14 +3351,14 @@ async function processIncomingMessage({
         incomingText,
         assignedHumanAgentUserId,
       });
-      if (!saveResult.ok) {
-        return { ok: false, status: saveResult.status || 502, error: saveResult.error };
-      }
       requestSucceeded = true;
       return {
         ok: true,
         humanHandoff: true,
         portalChatOnly: false,
+        portalLogOk: Boolean(saveResult.ok),
+        portalLogStatus: saveResult.ok ? null : (saveResult.status || 502),
+        portalLogError: saveResult.ok ? null : (saveResult.error || "Portal handoff log failed"),
         actionUsed: false,
         actionCount: 0,
       };
@@ -4445,6 +4445,9 @@ module.exports = async function handler(req, res) {
             stage: handled.portalChatOnly ? "portal_chat_only" : "human_handoff_active",
             channel: event.channel,
             chat_id: `${event.channel}:${connectionResult.connection.thread_id}:${event.senderId}`,
+            portal_log_ok: handled.portalLogOk ?? null,
+            portal_log_status: handled.portalLogStatus ?? null,
+            portal_log_error: handled.portalLogError ?? null,
           },
         });
         if (typeof stopTypingHeartbeat === "function") {
@@ -4513,6 +4516,8 @@ module.exports = async function handler(req, res) {
               text: handled.reply,
             });
       if (sendResult.ok) {
+        const replyRecipientId =
+          connectionResult.connection?.kind === "telegram" ? event.recipientId : event.senderId;
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -4520,13 +4525,15 @@ module.exports = async function handler(req, res) {
           raw: {
             stage: "send_ok",
             channel: event.channel,
-            recipient_id: event.senderId,
+            recipient_id: replyRecipientId,
             action_used: Boolean(handled.actionUsed),
             action_count: Number(handled.actionCount || 0),
           },
         });
         processedCount += 1;
       } else {
+        const replyRecipientId =
+          connectionResult.connection?.kind === "telegram" ? event.recipientId : event.senderId;
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -4534,7 +4541,7 @@ module.exports = async function handler(req, res) {
           raw: {
             stage: "send_failed",
             channel: event.channel,
-            recipient_id: event.senderId,
+            recipient_id: replyRecipientId,
             status: sendResult?.status ?? null,
             error: sendResult?.error ?? "Unknown send error",
           },
