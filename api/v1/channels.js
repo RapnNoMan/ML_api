@@ -20,14 +20,12 @@ const {
   buildTicketOutcomeInstruction,
 } = require("../../scripts/internal/ticketOutcome");
 const {
-  scheduleInitialDispatcherReply,
   scheduleUnansweredDispatcherCheck,
   cancelDispatcherJobs,
 } = require("../../scripts/internal/dispatcherJobs");
 const {
   saveHumanMessageToMessages,
   saveHumanMessageToPortalFeed,
-  getActivePortalChat,
   ensurePortalChat,
   resolveConversationStartMessageId,
   updateHumanHandoffChatMessageStart,
@@ -3319,55 +3317,6 @@ async function processIncomingMessage({
   let portalChatResult = { ok: true, chat: null };
   let portalCustomerMessageId = null;
   if (channelMode !== "ai_agent") {
-    if (channelMode === "ai_dispatcher" && !skipDispatcherInitialDelay) {
-      const existingPortalChatResult = await getActivePortalChat({
-        portalId: process.env.PORTAL_ID,
-        portalSecretKey: process.env.PORTAL_SECRET_KEY,
-        chatSource: event.channel,
-        chatId,
-        workspaceId: agentInfo?.workspace_id ?? null,
-        anonId,
-        allowClosedSameDay: true,
-      });
-      if (!existingPortalChatResult.ok) {
-        return {
-          ok: false,
-          status: existingPortalChatResult.status || 502,
-          error: existingPortalChatResult.error,
-        };
-      }
-
-      if (!existingPortalChatResult.chat) {
-        const scheduleResult = await scheduleInitialDispatcherReply({
-          supId: process.env.SUP_ID,
-          supKey: process.env.SUP_KEY,
-          workspaceId: agentInfo.workspace_id,
-          dispatcherAgentId: agentId,
-          chatId,
-          anonId,
-          dispatcherChatDay,
-          // The initial dispatcher delay should not create a portal chat before the job runs.
-          portalChatId: 0,
-          portalCustomerMessageId,
-          event,
-          connection,
-        });
-        if (!scheduleResult.ok) {
-          return { ok: false, status: scheduleResult.status || 502, error: scheduleResult.error };
-        }
-        if (scheduleResult.delayed) {
-          requestSucceeded = true;
-          return {
-            ok: true,
-            delayed: true,
-            portalChatOnly: true,
-            actionUsed: false,
-            actionCount: 0,
-          };
-        }
-      }
-    }
-
     portalChatResult = await ensurePortalChat({
       portalId: process.env.PORTAL_ID,
       portalSecretKey: process.env.PORTAL_SECRET_KEY,
@@ -3488,34 +3437,6 @@ async function processIncomingMessage({
       portalCustomerMessageId = scheduledPortalCustomerMessageId;
     }
 
-    if (channelMode === "ai_dispatcher" && !skipDispatcherInitialDelay) {
-      const scheduleResult = await scheduleInitialDispatcherReply({
-        supId: process.env.SUP_ID,
-        supKey: process.env.SUP_KEY,
-        workspaceId: agentInfo.workspace_id,
-        dispatcherAgentId: agentId,
-        chatId,
-        anonId,
-        dispatcherChatDay,
-        portalChatId: portalChatResult.chat?.id ?? null,
-        portalCustomerMessageId,
-        event,
-        connection,
-      });
-      if (!scheduleResult.ok) {
-        return { ok: false, status: scheduleResult.status || 502, error: scheduleResult.error };
-      }
-      if (scheduleResult.delayed) {
-        requestSucceeded = true;
-        return {
-          ok: true,
-          delayed: true,
-          portalChatOnly: true,
-          actionUsed: false,
-          actionCount: 0,
-        };
-      }
-    }
   }
 
   const spamGuardResult = await evaluateAnonSpamAndMaybeBan({
