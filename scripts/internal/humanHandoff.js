@@ -117,7 +117,7 @@ async function getPortalConversationChats({
   }
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
   const params = {
-    select: "id,created_at,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id,subject,summery,message_start_id,contact_id",
+    select: "id,created_at,agent_id,workspace_id,status,assigned_human_agent_user_id,shift_id,subject,summery,message_start_id,contact_id,ad_campaign_headline,ad_campaign_body",
     chat_id: `eq.${chatId}`,
     order: "created_at.desc",
     limit: "20",
@@ -311,6 +311,16 @@ function normalizeNullableText(value) {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
   return text || null;
+}
+
+function normalizeAdCampaign(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { headline: null, body: null };
+  }
+  return {
+    headline: normalizeNullableText(value.headline),
+    body: normalizeNullableText(value.body),
+  };
 }
 
 function normalizePositiveInteger(value) {
@@ -588,6 +598,7 @@ async function assignDispatcherHandoffChat({
   email = null,
   customFields = null,
   messageStartId = null,
+  adCampaign = null,
 }) {
   if (!portalId || !portalSecretKey || !workspaceId || !chatSource || !chatId) {
     return { ok: false, status: 500, error: "Server configuration error" };
@@ -632,6 +643,10 @@ async function assignDispatcherHandoffChat({
   if (!existingResult.ok) return existingResult;
 
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const normalizedAdCampaign = normalizeAdCampaign(adCampaign);
+  const existingHasAdCampaign =
+    normalizeNullableText(existingResult.chat?.ad_campaign_headline) &&
+    normalizeNullableText(existingResult.chat?.ad_campaign_body);
   const payload = {
     workspace_id: workspaceId,
     agent_id: null,
@@ -653,6 +668,10 @@ async function assignDispatcherHandoffChat({
     ended_at: null,
     updated_at: new Date().toISOString(),
   };
+  if (!existingHasAdCampaign) {
+    if (normalizedAdCampaign.headline) payload.ad_campaign_headline = normalizedAdCampaign.headline;
+    if (normalizedAdCampaign.body) payload.ad_campaign_body = normalizedAdCampaign.body;
+  }
 
   let response;
   try {
@@ -729,6 +748,7 @@ async function assignDispatcherAiAgentChat({
   customerName = null,
   subject = null,
   summery = null,
+  adCampaign = null,
 }) {
   if (!portalId || !portalSecretKey || !workspaceId || !aiAgentId || !chatSource || !chatId) {
     return { ok: false, status: 500, error: "Server configuration error" };
@@ -746,6 +766,10 @@ async function assignDispatcherAiAgentChat({
   if (!existingResult.ok) return existingResult;
 
   const baseUrl = `https://${portalId}.supabase.co/rest/v1`;
+  const normalizedAdCampaign = normalizeAdCampaign(adCampaign);
+  const existingHasAdCampaign =
+    normalizeNullableText(existingResult.chat?.ad_campaign_headline) &&
+    normalizeNullableText(existingResult.chat?.ad_campaign_body);
   const payload = {
     workspace_id: workspaceId,
     agent_id: aiAgentId,
@@ -765,6 +789,10 @@ async function assignDispatcherAiAgentChat({
     ended_at: null,
     updated_at: new Date().toISOString(),
   };
+  if (!existingHasAdCampaign) {
+    if (normalizedAdCampaign.headline) payload.ad_campaign_headline = normalizedAdCampaign.headline;
+    if (normalizedAdCampaign.body) payload.ad_campaign_body = normalizedAdCampaign.body;
+  }
 
   let response;
   try {

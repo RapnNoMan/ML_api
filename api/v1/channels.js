@@ -39,7 +39,7 @@ const {
 const OPENAI_RESPONSES_API_URL = "https://api.openai.com/v1/responses";
 const PRIMARY_MODEL = process.env.OPENAI_PRIMARY_MODEL || "gpt-4o-mini";
 const FOLLOWUP_MODEL = process.env.OPENAI_FOLLOWUP_MODEL || PRIMARY_MODEL;
-const DISPATCHER_MODEL = process.env.OPENAI_DISPATCHER_MODEL || "gpt-5.5-2026-04-23";
+const DISPATCHER_MODEL = process.env.OPENAI_DISPATCHER_MODEL || "gpt-5.4-nano";
 const DISPATCHER_FOLLOWUP_MODEL = process.env.OPENAI_DISPATCHER_FOLLOWUP_MODEL || DISPATCHER_MODEL;
 const DISPATCHER_REASONING_EFFORT = process.env.OPENAI_DISPATCHER_REASONING_EFFORT || "none";
 const META_GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || "v23.0";
@@ -108,6 +108,17 @@ function getWhatsAppContactName(value, senderId) {
     contacts[0] ||
     null;
   return normalizeCustomerName(matchingContact?.profile?.name || matchingContact?.name);
+}
+
+function getWhatsAppAdCampaign(referral) {
+  if (!referral || typeof referral !== "object" || Array.isArray(referral)) return null;
+  const headline = String(referral.headline || "").trim();
+  const body = String(referral.body || "").trim();
+  if (!headline && !body) return null;
+  return {
+    headline: headline || null,
+    body: body || null,
+  };
 }
 
 function getRequestCountry(headers) {
@@ -396,12 +407,15 @@ function normalizeReasoningEffort(value) {
 }
 
 function createXAiRequestBody({ model, reasoning, instructions, messages, tools, inputItems }) {
-  const systemRules = [
-    "TOOL RULES (MUST FOLLOW):",
-    "- Use provided tools when needed.",
-    "- Never call a tool unless required parameters are present.",
-    "- If a tool is needed, call it before user-facing final answer text.",
-  ].join("\n");
+  const hasTools = Array.isArray(tools) && tools.length > 0;
+  const systemRules = hasTools
+    ? [
+        "TOOL RULES (MUST FOLLOW):",
+        "- Use provided tools when needed.",
+        "- Never call a tool unless required parameters are present.",
+        "- If a tool is needed, call it before user-facing final answer text.",
+      ].join("\n")
+    : "";
 
   const finalInstructions = [systemRules, String(instructions || "")].filter(Boolean).join("\n\n");
   const requestBody = {
@@ -416,7 +430,7 @@ function createXAiRequestBody({ model, reasoning, instructions, messages, tools,
     requestBody.reasoning = { effort: reasoningEffort };
   }
 
-  if (Array.isArray(tools) && tools.length > 0) {
+  if (hasTools) {
     requestBody.tools = tools;
     requestBody.tool_choice = "auto";
   }
@@ -968,6 +982,133 @@ async function getDispatcherRouteAiAgents({
   return { ok: true, agents };
 }
 
+async function upsertChannelChatAttribution({
+  supId,
+  supKey,
+  workspaceId,
+  agentId,
+  chatSource,
+  chatId,
+  anonId,
+  adCampaign,
+}) {
+  const headline = String(adCampaign?.headline || "").trim();
+  const body = String(adCampaign?.body || "").trim();
+  if (!supId || !supKey || !workspaceId || !chatSource || !chatId || (!headline && !body)) {
+    return { ok: true, skipped: true };
+  }
+
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const lookupUrl = new URL(`${baseUrl}/channel_chat_attribution`);
+  lookupUrl.searchParams.set("select", "id,ad_campaign_headline,ad_campaign_body");
+  lookupUrl.searchParams.set("workspace_id", `eq.${workspaceId}`);
+  lookupUrl.searchParams.set("chat_source", `eq.${chatSource}`);
+  lookupUrl.searchParams.set("chat_id", `eq.${chatId}`);
+  lookupUrl.searchParams.set("limit", "1");
+
+  let existing = null;
+  try {
+    const lookupResponse = await fetch(lookupUrl.toString(), {
+      headers: { apikey: supKey, Authorization: `Bearer ${supKey}`, Accept: "application/json" },
+    });
+    if (!lookupResponse.ok) return { ok: false, status: 502, error: "Attribution lookup failed" };
+    const rows = await lookupResponse.json().catch(() => []);
+    existing = Array.isArray(rows) ? rows[0] || null : null;
+  } catch (_) {
+    return { ok: false, status: 502, error: "Attribution lookup failed" };
+  }
+
+  const existingHeadline = String(existing?.ad_campaign_headline || "").trim();
+  const existingBody = String(existing?.ad_campaign_body || "").trim();
+  if (existingHeadline && existingBody) return { ok: true, skipped: true, attribution: existing };
+
+  const payload = {
+    workspace_id: workspaceId,
+    agent_id: agentId || null,
+    chat_source: chatSource,
+    chat_id: chatId,
+    annon: anonId || null,
+    updated_at: new Date().toISOString(),
+  };
+  if (!existingHeadline && headline) payload.ad_campaign_headline = headline;
+  if (!existingBody && body) payload.ad_campaign_body = body;
+
+  const writeUrl = existing?.id
+    ? new URL(`${baseUrl}/channel_chat_attribution`)
+    : new URL(`${baseUrl}/channel_chat_attribution`);
+  if (existing?.id) {
+    writeUrl.searchParams.set("id", `eq.${existing.id}`);
+  } else {
+    writeUrl.searchParams.set("on_conflict", "workspace_id,chat_source,chat_id");
+    payload.created_at = new Date().toISOString();
+  }
+
+  try {
+    const response = await fetch(writeUrl.toString(), {
+      method: existing?.id ? "PATCH" : "POST",
+      headers: {
+        apikey: supKey,
+        Authorization: `Bearer ${supKey}`,
+        "Content-Type": "application/json",
+        Prefer: existing?.id ? "return=representation" : "resolution=merge-duplicates,return=representation",
+      },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Attribution save failed" };
+    const rows = await response.json().catch(() => []);
+    return { ok: true, attribution: Array.isArray(rows) ? rows[0] || null : rows || null };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Attribution save failed" };
+  }
+}
+
+function mergeAdCampaign(current, stored) {
+  const currentHeadline = String(current?.headline || "").trim();
+  const currentBody = String(current?.body || "").trim();
+  const storedHeadline = String(stored?.headline || "").trim();
+  const storedBody = String(stored?.body || "").trim();
+  const headline = storedHeadline || currentHeadline;
+  const body = storedBody || currentBody;
+  return headline || body
+    ? {
+        headline: headline || null,
+        body: body || null,
+      }
+    : null;
+}
+
+async function getChannelChatAttribution({ supId, supKey, workspaceId, chatSource, chatId }) {
+  if (!supId || !supKey || !workspaceId || !chatSource || !chatId) {
+    return { ok: true, attribution: null };
+  }
+  const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+  const url = new URL(`${baseUrl}/channel_chat_attribution`);
+  url.searchParams.set("select", "ad_campaign_headline,ad_campaign_body");
+  url.searchParams.set("workspace_id", `eq.${workspaceId}`);
+  url.searchParams.set("chat_source", `eq.${chatSource}`);
+  url.searchParams.set("chat_id", `eq.${chatId}`);
+  url.searchParams.set("limit", "1");
+  try {
+    const response = await fetch(url.toString(), {
+      headers: { apikey: supKey, Authorization: `Bearer ${supKey}`, Accept: "application/json" },
+    });
+    if (!response.ok) return { ok: false, status: 502, error: "Attribution lookup failed" };
+    const rows = await response.json().catch(() => []);
+    const row = Array.isArray(rows) ? rows[0] || null : null;
+    return {
+      ok: true,
+      attribution: row
+        ? {
+            headline: String(row.ad_campaign_headline || "").trim() || null,
+            body: String(row.ad_campaign_body || "").trim() || null,
+          }
+        : null,
+    };
+  } catch (_) {
+    return { ok: false, status: 502, error: "Attribution lookup failed" };
+  }
+}
+
 async function upsertDispatcherRoutingIntakeDraft({
   supId,
   supKey,
@@ -1399,6 +1540,7 @@ async function executeActionCalls({
   country,
   customerName,
   customerPhone = null,
+  adCampaign = null,
   source,
   chatSource,
   incomingMessage,
@@ -1579,6 +1721,7 @@ async function executeActionCalls({
         email: variables?.email ?? null,
         customFields,
         messageStartId,
+        adCampaign,
       });
       toolResults.push({
         call_id: call.call_id ?? null,
@@ -1659,6 +1802,7 @@ async function executeActionCalls({
         customerName,
         subject,
         summery,
+        adCampaign,
       });
       toolResults.push({
         call_id: call.call_id ?? null,
@@ -2271,6 +2415,7 @@ function toWebhookEvents(payload) {
             messageId: String(message?.id || "").trim(),
             customerName: getWhatsAppContactName(value, senderId),
             text: textBody || "[User sent an attachment]",
+            adCampaign: getWhatsAppAdCampaign(message?.referral),
             rawItem: change,
           });
         }
@@ -2996,12 +3141,6 @@ async function sendTelegramTextReply({ botToken, chatId, text }) {
   return { ok: true };
 }
 
-function buildTelegramErrorText(stage, details = {}) {
-  const status = details.status === null || details.status === undefined ? "" : ` status=${details.status}`;
-  const error = String(details.error || "Unknown error").slice(0, 300);
-  return `Telegram debug: ${stage}${status}\n${error}`;
-}
-
 async function sendMetaSenderAction({ pageAccessToken, recipientId, action }) {
   const endpoint = new URL(`https://graph.facebook.com/${META_GRAPH_API_VERSION}/me/messages`);
   endpoint.searchParams.set("access_token", pageAccessToken);
@@ -3119,6 +3258,47 @@ function calendarContextNote(calendarContext) {
     calendarContext.event_type ? `Event type: ${calendarContext.event_type}` : "Event type: not set",
     "Speak as business availability, not as user's personal calendar.",
   ].join("\n");
+}
+
+function buildDispatcherFollowupPrompt({ channel, humanHandoffActivated, aiHandoffActivated }) {
+  const isWhatsApp = channel === "whatsapp";
+  const isTelegram = channel === "telegram";
+  const channelLine = isWhatsApp
+    ? "You are replying inside WhatsApp chat."
+    : isTelegram
+      ? "You are replying inside Telegram chat."
+      : "You are replying inside Instagram/Messenger chat.";
+
+  return [
+    "You are writing the final customer-facing dispatcher reply after a tool call.",
+    channelLine,
+    "Match the language of the customer's latest message.",
+    isWhatsApp || isTelegram ? "Use concise chat style." : "Use plain text only.",
+    isWhatsApp || isTelegram
+      ? null
+      : "Do not use Markdown symbols like **, *, _, #, or code fences.",
+    "Use the tool result only to know whether the handoff succeeded.",
+    "Do not expose tool names, IDs, JSON, internal systems, routing logic, or backend details.",
+    humanHandoffActivated
+      ? [
+          "HUMAN HANDOFF CONFIRMATION",
+          "A human handoff request has been successfully created.",
+          "Thank the customer for contacting us.",
+          "Tell them we will contact them as soon as possible.",
+          "Do not say they are in a queue or waiting for a human agent.",
+        ].join("\n")
+      : null,
+    aiHandoffActivated
+      ? [
+          "AI AGENT HANDOFF CONFIRMATION",
+          "The conversation has been routed to the selected AI agent.",
+          "Tell the customer you are connecting them with the right assistant for this request.",
+        ].join("\n")
+      : null,
+    "Keep the response concise and clear.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 async function generateAiHandoffReply({
@@ -3342,6 +3522,47 @@ async function processIncomingMessage({
   const dispatcherChatDay = getJordanDispatcherDay();
   let portalChatResult = { ok: true, chat: null };
   let portalCustomerMessageId = null;
+  let storedAdCampaign = null;
+  if (channelMode === "ai_dispatcher" && event.channel === "whatsapp" && event.adCampaign) {
+    const attributionSaveResult = await upsertChannelChatAttribution({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      workspaceId: agentInfo?.workspace_id ?? null,
+      agentId,
+      chatSource: event.channel,
+      chatId,
+      anonId,
+      adCampaign: event.adCampaign,
+    });
+    if (!attributionSaveResult.ok) {
+      return {
+        ok: false,
+        status: attributionSaveResult.status || 502,
+        error: attributionSaveResult.error || "Attribution save failed",
+      };
+    }
+    storedAdCampaign = {
+      headline: attributionSaveResult.attribution?.ad_campaign_headline ?? event.adCampaign?.headline ?? null,
+      body: attributionSaveResult.attribution?.ad_campaign_body ?? event.adCampaign?.body ?? null,
+    };
+  }
+  if (channelMode === "ai_dispatcher" && event.channel === "whatsapp" && !storedAdCampaign) {
+    const attributionResult = await getChannelChatAttribution({
+      supId: process.env.SUP_ID,
+      supKey: process.env.SUP_KEY,
+      workspaceId: agentInfo?.workspace_id ?? null,
+      chatSource: event.channel,
+      chatId,
+    });
+    if (!attributionResult.ok) {
+      return {
+        ok: false,
+        status: attributionResult.status || 502,
+        error: attributionResult.error || "Attribution lookup failed",
+      };
+    }
+    storedAdCampaign = attributionResult.attribution;
+  }
   if (channelMode === "ai_dispatcher") {
     const existingPortalChatResult = await getActivePortalChat({
       portalId: process.env.PORTAL_ID,
@@ -3721,6 +3942,7 @@ async function processIncomingMessage({
       country: requestCountry,
       customerName,
       customerPhone: event.channel === "whatsapp" ? event.senderId : null,
+      adCampaign: mergeAdCampaign(event.adCampaign, storedAdCampaign),
       source: `meta_${event.channel}`,
       chatSource: event.channel,
       incomingMessage: incomingText,
@@ -3778,37 +4000,47 @@ async function processIncomingMessage({
     }
 
     const assistantBlocks = Array.isArray(completion.output_items) ? completion.output_items : [];
-    const followupInputItems = toXAiInputItems(messages, assistantBlocks, toolResults);
+    const isDispatcherFollowup = channelMode === "ai_dispatcher";
+    const followupMessages = isDispatcherFollowup
+      ? [{ role: "user", content: incomingText }]
+      : messages;
+    const followupInputItems = toXAiInputItems(followupMessages, assistantBlocks, toolResults);
     const ticketOutcome = getLatestTicketOutcome({
       toolResults,
       actionMap: effectiveActionMap,
     });
-    const followupPrompt = [
-      prompt,
-      calendarContext ? calendarContextNote(calendarContext) : null,
-      buildTicketOutcomeInstruction(ticketOutcome),
-      humanHandoffActivated
-        ? [
-            "HUMAN HANDOFF CONFIRMATION",
-            "A human handoff request has been successfully created.",
-            "Thank the customer for contacting us.",
-            "Tell them we will contact them as soon as possible.",
-            "Do not say they are in a queue or waiting for a human agent.",
-            "Keep the response concise and clear.",
-          ].join("\n")
-        : null,
-      aiHandoffActivated
-        ? [
-            "AI AGENT HANDOFF CONFIRMATION",
-            "The conversation has been routed to the selected AI agent.",
-            "Tell the customer you are connecting them with the right assistant for this request.",
-            "Do not mention internal agent IDs, tools, routing logic, or backend systems.",
-            "Keep the response concise and clear.",
-          ].join("\n")
-        : null,
-    ]
-      .filter(Boolean)
-      .join("\n\n");
+    const followupPrompt = isDispatcherFollowup
+      ? buildDispatcherFollowupPrompt({
+          channel: event.channel,
+          humanHandoffActivated,
+          aiHandoffActivated,
+        })
+      : [
+          prompt,
+          calendarContext ? calendarContextNote(calendarContext) : null,
+          buildTicketOutcomeInstruction(ticketOutcome),
+          humanHandoffActivated
+            ? [
+                "HUMAN HANDOFF CONFIRMATION",
+                "A human handoff request has been successfully created.",
+                "Thank the customer for contacting us.",
+                "Tell them we will contact them as soon as possible.",
+                "Do not say they are in a queue or waiting for a human agent.",
+                "Keep the response concise and clear.",
+              ].join("\n")
+            : null,
+          aiHandoffActivated
+            ? [
+                "AI AGENT HANDOFF CONFIRMATION",
+                "The conversation has been routed to the selected AI agent.",
+                "Tell the customer you are connecting them with the right assistant for this request.",
+                "Do not mention internal agent IDs, tools, routing logic, or backend systems.",
+                "Keep the response concise and clear.",
+              ].join("\n")
+            : null,
+        ]
+          .filter(Boolean)
+          .join("\n\n");
 
     const followupStartedAt = Date.now();
     const followup = await getXAiChatCompletion({
@@ -3816,7 +4048,7 @@ async function processIncomingMessage({
       model: secondCallModel,
       reasoning,
       instructions: followupPrompt,
-      messages,
+      messages: followupMessages,
       inputItems: followupInputItems,
     });
     latencySecondCallMs = Date.now() - followupStartedAt;
@@ -4188,21 +4420,6 @@ module.exports = async function handler(req, res) {
             error: connectionResult?.error ?? "Unknown page lookup error",
           },
         });
-        if (event.channel === "telegram") {
-          const tokenFromPayload =
-            String(req?.query?.telegram_bot_token || req?.query?.bot_token || "").trim() ||
-            String(process.env.TELEGRAM_DEBUG_BOT_TOKEN || "").trim();
-          if (tokenFromPayload && event.recipientId) {
-            await sendTelegramTextReply({
-              botToken: tokenFromPayload,
-              chatId: event.recipientId,
-              text: buildTelegramErrorText("page_lookup_failed", {
-                status: connectionResult?.status,
-                error: connectionResult?.error || "Unknown page lookup error",
-              }),
-            });
-          }
-        }
         continue;
       }
       await insertMetaWebhookDebugMessage({
@@ -4455,16 +4672,6 @@ module.exports = async function handler(req, res) {
         headers: req.headers,
       });
       if (!handled.ok) {
-        if (connectionResult.connection?.kind === "telegram") {
-          await sendTelegramTextReply({
-            botToken: connectionResult.connection.bot_token,
-            chatId: event.recipientId,
-            text: buildTelegramErrorText("handle_failed", {
-              status: handled?.status,
-              error: handled?.error || "Unknown processing error",
-            }),
-          });
-        }
         if (typingOnOk && META_MIN_TYPING_MS > 0) {
           const elapsed = Date.now() - typingStartedAt;
           const waitMs = META_MIN_TYPING_MS - elapsed;
@@ -4507,18 +4714,6 @@ module.exports = async function handler(req, res) {
         continue;
       }
       if ((handled.humanHandoff || handled.portalChatOnly) && !handled.reply) {
-        if (connectionResult.connection?.kind === "telegram") {
-          await sendTelegramTextReply({
-            botToken: connectionResult.connection.bot_token,
-            chatId: event.recipientId,
-            text: buildTelegramErrorText(
-              handled.portalChatOnly ? "portal_chat_only" : "human_handoff_active",
-              {
-                error: handled.portalLogError || "Message was accepted but no AI reply was sent.",
-              }
-            ),
-          });
-        }
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
@@ -4616,16 +4811,6 @@ module.exports = async function handler(req, res) {
       } else {
         const replyRecipientId =
           connectionResult.connection?.kind === "telegram" ? event.recipientId : event.senderId;
-        if (connectionResult.connection?.kind === "telegram") {
-          await sendTelegramTextReply({
-            botToken: connectionResult.connection.bot_token,
-            chatId: event.recipientId,
-            text: buildTelegramErrorText("send_failed", {
-              status: sendResult?.status,
-              error: sendResult?.error || "Unknown send error",
-            }),
-          });
-        }
         await insertMetaWebhookDebugMessage({
           supId: process.env.SUP_ID,
           supKey: process.env.SUP_KEY,
