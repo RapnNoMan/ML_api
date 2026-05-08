@@ -231,7 +231,7 @@ async function fetchDashboardAgentWorkspaceId({ supId, supKey, agentId }) {
   return { ok: true, workspaceId };
 }
 
-async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSource, threadId }) {
+async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSource, threadId, workspaceId = null }) {
   if (chatSource === "telegram") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
     const workspaceResult = await fetchDashboardAgentWorkspaceId({ supId, supKey, agentId });
@@ -267,8 +267,15 @@ async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSourc
 
   if (chatSource === "whatsapp") {
     const baseUrl = `https://${supId}.supabase.co/rest/v1`;
+    const resolvedWorkspaceId =
+      normalizeIdValue(workspaceId) ||
+      (await fetchDashboardAgentWorkspaceId({ supId, supKey, agentId })).workspaceId;
+    if (!resolvedWorkspaceId) {
+      return { ok: false, status: 403, error: "Unauthorized" };
+    }
     const numbersUrl = new URL(`${baseUrl}/workspace_whatsapp_numbers`);
     numbersUrl.searchParams.set("select", "workspace_id,assigned_agent_id,phone_number_id,connected");
+    numbersUrl.searchParams.set("workspace_id", `eq.${resolvedWorkspaceId}`);
     numbersUrl.searchParams.set("phone_number_id", `eq.${threadId}`);
     numbersUrl.searchParams.set("limit", "1");
     let numbersResponse;
@@ -282,7 +289,7 @@ async function fetchChannelConnectionForSend({ supId, supKey, agentId, chatSourc
     if (!numbersResponse.ok) return { ok: false, status: 502, error: "WhatsApp channel service unavailable" };
     const numbersPayload = await numbersResponse.json().catch(() => []);
     const numberRow = (Array.isArray(numbersPayload) ? numbersPayload : []).find(
-      (row) => Boolean(row?.connected) && String(row?.assigned_agent_id || "").trim() === agentId
+      (row) => Boolean(row?.connected)
     );
     if (!numberRow) return { ok: false, status: 404, error: "WhatsApp number not connected" };
 
@@ -564,6 +571,7 @@ module.exports = async function handler(req, res) {
     agentId,
     chatSource,
     threadId: parsed.threadId,
+    workspaceId: workspaceLookup.workspaceId,
   });
   if (!connectionResult.ok) {
     res.status(connectionResult.status).json({ error: connectionResult.error });
