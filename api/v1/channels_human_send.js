@@ -140,7 +140,7 @@ async function validatePortalHumanAgentAccess({ portalId, portalSecretKey, agent
   let memberRows;
   try {
     const memberParams = new URLSearchParams({
-      select: "agent_id",
+      select: "user_id",
       workspace_id: `eq.${workspaceId}`,
       user_id: `eq.${userId}`,
       active: "eq.true",
@@ -161,10 +161,6 @@ async function validatePortalHumanAgentAccess({ portalId, portalSecretKey, agent
   }
   const memberRow = Array.isArray(memberRows) ? memberRows[0] : null;
   if (!memberRow) return { ok: false, status: 403, error: "Unauthorized" };
-  const memberAgentId = normalizeIdValue(memberRow?.agent_id);
-  if (memberAgentId && memberAgentId !== agentId) {
-    return { ok: false, status: 403, error: "Unauthorized" };
-  }
   return { ok: true };
 }
 
@@ -550,10 +546,6 @@ module.exports = async function handler(req, res) {
 
   const handoffChat = handoffChatResult.chat;
   const assignedUserId = normalizeIdValue(handoffChat?.assigned_human_agent_user_id);
-  if (!assignedUserId || assignedUserId !== authUser.userId) {
-    res.status(403).json({ error: "Chat is not assigned to this human agent" });
-    return;
-  }
 
   const parsed = parseChannelChatId(chatId);
   if (!parsed.ok) {
